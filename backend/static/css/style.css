@@ -114,6 +114,10 @@ textarea:focus-visible {
     --glass-bg: rgba(255, 255, 255, 0.72);
     --glass-border: rgba(255, 255, 255, 0.3);
     --glass-blur: 12px;
+
+    /* Semantic */
+    --text-on-primary: #ffffff;
+    --amc-radius-lg: 16px;
 }
 
 [data-theme="dark"] {
@@ -180,6 +184,9 @@ textarea:focus-visible {
     /* Glass */
     --glass-bg: rgba(9, 9, 11, 0.72);
     --glass-border: rgba(39, 39, 42, 0.3);
+
+    /* Semantic */
+    --text-on-primary: #09090b;
 }
 
 /* --- Global Reset & Base --- */
@@ -234,7 +241,7 @@ body {
     --sb-bg: #f9f9f9;
     --sb-bg-hover: #ECECF1;
     --sb-text-primary: #000000;
-    --sb-text-secondary: #000000;
+    --sb-text-secondary: #6b7280;
     --sb-border: #D9D9E3;
     --sb-icon: #000000;
     --brand-google-blue: #0024bb;
@@ -6286,7 +6293,7 @@ body.live-artifacts-open .live-artifacts-panel {
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     background: var(--bg-input);
-    color: var(--text);
+    color: var(--text-primary);
     font-size: 14px;
     outline: none;
 }
@@ -6302,7 +6309,7 @@ body.live-artifacts-open .live-artifacts-panel {
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     background: var(--bg-elevated);
-    color: var(--text);
+    color: var(--text-primary);
     cursor: pointer;
     display: inline-flex;
     align-items: center;
@@ -6944,7 +6951,6 @@ body.evidence-panel-open { overflow: hidden; }
    UI Polishing overrides
    ======================================== */
 .message-content {
-    font-size: 15px;
     letter-spacing: 0;
     word-break: break-word;
     overflow-wrap: anywhere;

@@ -113,6 +113,10 @@ textarea:focus-visible {
     --glass-bg: rgba(255, 255, 255, 0.72);
     --glass-border: rgba(255, 255, 255, 0.3);
     --glass-blur: 12px;
+
+    /* Semantic */
+    --text-on-primary: #ffffff;
+    --amc-radius-lg: 16px;
 }
 
 [data-theme="dark"] {
@@ -179,6 +183,9 @@ textarea:focus-visible {
     /* Glass */
     --glass-bg: rgba(9, 9, 11, 0.72);
     --glass-border: rgba(39, 39, 42, 0.3);
+
+    /* Semantic */
+    --text-on-primary: #09090b;
 }
 
 /* --- Global Reset & Base --- */

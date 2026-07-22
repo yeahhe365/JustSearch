@@ -18,7 +18,6 @@
    UI Polishing overrides
    ======================================== */
 .message-content {
-    font-size: 15px;
     letter-spacing: 0;
     word-break: break-word;
     overflow-wrap: anywhere;

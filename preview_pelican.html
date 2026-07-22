@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pelican Riding a Bicycle - SVG Showcase</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: #1e293b;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #14b8a6;
+      --accent-hover: #0d9488;
+      --border-color: #334155;
+    }
+
+    [data-theme="light"] {
+      --bg-color: #f8fafc;
+      --card-bg: #ffffff;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --accent: #0d9488;
+      --accent-hover: #14b8a6;
+      --border-color: #e2e8f0;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+      transition: background-color 0.3s ease, color 0.3s ease;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+      max-width: 800px;
+    }
+
+    header h1 {
+      font-size: 2.25rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(135deg, #2dd4bf, #f59e0b, #f97316);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    header p {
+      color: var(--text-muted);
+      font-size: 1.05rem;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    button {
+      background-color: var(--card-bg);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      padding: 0.6rem 1.2rem;
+      border-radius: 9999px;
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: all 0.2s ease;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+
+    button:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    button.primary {
+      background-color: var(--accent);
+      color: #ffffff;
+      border-color: var(--accent);
+    }
+
+    button.primary:hover {
+      background-color: var(--accent-hover);
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1000px;
+      background-color: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      padding: 2rem;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2rem;
+    }
+
+    .svg-wrapper {
+      width: 100%;
+      max-width: 900px;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+      background-color: #fdfbf7;
+      transition: transform 0.3s ease;
+    }
+
+    .svg-wrapper svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .code-section {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .code-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .code-header h2 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    pre {
+      background-color: #090d16;
+      color: #e2e8f0;
+      padding: 1.25rem;
+      border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid var(--border-color);
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 2rem;
+      background-color: var(--accent);
+      color: #ffffff;
+      padding: 0.75rem 1.5rem;
+      border-radius: 9999px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+      opacity: 0;
+      transform: translateY(20px);
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      pointer-events: none;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body data-theme="dark">
+
+  <header>
+    <h1>Pelican Riding a Bicycle</h1>
+    <p>A vector illustration created with SVG &amp; CSS styling</p>
+  </header>
+
+  <div class="toolbar">
+    <button id="toggleThemeBtn">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+      Toggle Page Theme
+    </button>
+    <button class="primary" id="copySvgBtn">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path></svg>
+      Copy SVG Code
+    </button>
+    <button id="downloadSvgBtn">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+      Download .svg File
+    </button>
+  </div>
+
+  <div class="container">
+    <div class="svg-wrapper" id="svgContainer">
+      <!-- SVG loaded dynamically or inline -->
+    </div>
+
+    <div class="code-section">
+      <div class="code-header">
+        <h2>SVG Source Code</h2>
+      </div>
+      <pre><code id="codeBlock">Loading SVG code...</code></pre>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">SVG code copied to clipboard!</div>
+
+  <script>
+    const svgFileUrl = 'pelican_riding_bicycle.svg';
+    const svgContainer = document.getElementById('svgContainer');
+    const codeBlock = document.getElementById('codeBlock');
+    const toast = document.getElementById('toast');
+
+    // Fetch and display SVG
+    fetch(svgFileUrl)
+      .then(res => res.text())
+      .then(svgText => {
+        svgContainer.innerHTML = svgText;
+        codeBlock.textContent = svgText;
+      })
+      .catch(err => {
+        console.error('Failed to load SVG:', err);
+      });
+
+    // Theme Toggle
+    document.getElementById('toggleThemeBtn').addEventListener('click', () => {
+      const currentTheme = document.body.getAttribute('data-theme');
+      const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+      document.body.setAttribute('data-theme', newTheme);
+    });
+
+    // Copy SVG Code
+    document.getElementById('copySvgBtn').addEventListener('click', () => {
+      const svgText = codeBlock.textContent;
+      navigator.clipboard.writeText(svgText).then(() => {
+        showToast('SVG code copied to clipboard!');
+      });
+    });
+
+    // Download SVG File
+    document.getElementById('downloadSvgBtn').addEventListener('click', () => {
+      const svgText = codeBlock.textContent;
+      const blob = new Blob([svgText], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'pelican_riding_bicycle.svg';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 2500);
+    }
+  </script>
+</body>
+</html>

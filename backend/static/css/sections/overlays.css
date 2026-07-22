@@ -229,7 +229,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     background: var(--bg-input);
-    color: var(--text);
+    color: var(--text-primary);
     font-size: 14px;
     outline: none;
 }
@@ -245,7 +245,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     background: var(--bg-elevated);
-    color: var(--text);
+    color: var(--text-primary);
     cursor: pointer;
     display: inline-flex;
     align-items: center;
