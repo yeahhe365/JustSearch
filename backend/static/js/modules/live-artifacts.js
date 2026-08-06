@@ -1985,7 +1985,12 @@ function injectPreviewBridge(code, frameId = '') {
     scheduleResize();
   };
   window.addEventListener('message', (event) => {
-    if (!event.data || event.data.channel !== 'justsearch-live-artifacts' || event.data.event !== 'stream-render') return;
+    if (!event.data || event.data.channel !== 'justsearch-live-artifacts') return;
+    if (event.data.event === 'ping') {
+      try { parent.postMessage({ channel: 'justsearch-live-artifacts', event: 'pong', frameId: FRAME_ID }, '*'); } catch {}
+      return;
+    }
+    if (event.data.event !== 'stream-render') return;
     renderStreamHtml(event.data.html);
   });
   const parsePayload = (raw) => {
@@ -2569,6 +2574,74 @@ function syncInlineArtifactFrameHeight(viewport, frame, artifact, container) {
     return nextHeight;
 }
 
+/**
+ * Create a fresh Live Artifact iframe node with the AMC-WebUI sandbox and the
+ * shared load handler. A brand-new node gets a brand-new browsing context, so
+ * this is also the recovery path for Chrome discarding srcdoc documents in
+ * background tabs (see pingAndRebuildDeadArtifactFrames).
+ */
+function createLiveArtifactFrameNode(viewport, container) {
+    const frame = document.createElement('iframe');
+    frame.className = 'live-artifact-inline-iframe';
+    frame.title = 'HTML Preview';
+    // Match AMC-WebUI ArtifactFrame sandbox exactly (no allow-same-origin).
+    // allow-popups enables target=_blank external links inside Live Artifacts.
+    frame.setAttribute(
+        'sandbox',
+        'allow-scripts allow-forms allow-popups allow-modals allow-downloads',
+    );
+    frame.setAttribute('scrolling', 'no');
+    frame.setAttribute('allow', 'clipboard-write');
+    // Hint the browser's built-in form/scroll styling for the active scheme.
+    frame.style.colorScheme = resolveLiveArtifactThemeId();
+    frame.dataset.liveArtifactMountedAt = String(Date.now());
+    attachLiveArtifactFrameLoadHandler(frame, viewport, container);
+    return frame;
+}
+
+/**
+ * Shared iframe load handler: after every srcdoc navigation re-push pending
+ * stream HTML and re-measure. Sandboxed frames often drop postMessages sent
+ * before the bridge listens, so the load handler is the reliable re-push point.
+ */
+function attachLiveArtifactFrameLoadHandler(frame, viewport, container) {
+    frame.addEventListener('load', () => {
+        frame.dataset.liveArtifactLoaded = '1';
+        // After every srcdoc navigation, re-push pending stream HTML and remeasure.
+        // Sandboxed frames often drop postMessages sent before the bridge listens.
+        const frameId = frame.dataset.liveArtifactFrameId || '';
+        const liveArtifact = frameId ? registry.get(frameId) : null;
+        if (liveArtifact) {
+            syncPendingStreamToFrame(frame, liveArtifact);
+        } else if (frame.dataset.liveArtifactStreaming === 'true' && frame.dataset.liveArtifactProbeHtml) {
+            postInlineArtifactStream(frame, frame.dataset.liveArtifactProbeHtml);
+        }
+        scheduleInlineArtifactFrameResize(frame, viewport);
+        const html = frame.dataset.liveArtifactProbeHtml || '';
+        if (!html) return;
+        const width = resolveInlineFrameWidth(viewport, container);
+        const hasDetails = /<details(?:\s|\/>|>)/i.test(html);
+        const height = measureArtifactContentHeight(html, width);
+        const expanded = hasDetails
+            ? measureArtifactContentHeight(html, width, { forceOpenDetails: true })
+            : height;
+        const estimated = (hasDetails && expanded <= INLINE_ARTIFACT_MIN_HEIGHT + 8)
+            ? estimateArtifactHeightFromMarkup(html)
+            : 0;
+        const fullHeight = Math.max(height, expanded, estimated);
+        frame.dataset.liveArtifactCollapsedHeight = String(height);
+        frame.dataset.liveArtifactExpandedHeight = String(Math.max(height, expanded));
+        frame.dataset.liveArtifactHasDetails = hasDetails ? 'true' : 'false';
+        // Seed height from probe; bridge may grow further but never shrink
+        // the initial seed (parent probe under-reports iframe metrics).
+        applyInlineArtifactFrameHeight(viewport, frame, fullHeight, {
+            allowShrink: false,
+            enforceExpandedFloor: false,
+        });
+        cacheFrameHeight(frame.dataset.liveArtifactHeightKey || '', fullHeight);
+    });
+}
+
 function renderInlineArtifactFrame(container, artifact) {
     let frameShell = container.querySelector(':scope > .live-artifact-inline-frame');
     let viewport = frameShell?.querySelector('.live-artifact-inline-viewport');
@@ -2616,54 +2689,7 @@ function renderInlineArtifactFrame(container, artifact) {
         viewport.className = 'live-artifact-inline-viewport';
         viewport.dataset.liveArtifactViewport = 'true';
 
-        frame = document.createElement('iframe');
-        frame.className = 'live-artifact-inline-iframe';
-        frame.title = 'HTML Preview';
-        // Match AMC-WebUI ArtifactFrame sandbox exactly (no allow-same-origin).
-        // allow-popups enables target=_blank external links inside Live Artifacts.
-        frame.setAttribute(
-            'sandbox',
-            'allow-scripts allow-forms allow-popups allow-modals allow-downloads',
-        );
-        frame.setAttribute('scrolling', 'no');
-        frame.setAttribute('allow', 'clipboard-write');
-        // Hint the browser's built-in form/scroll styling for the active scheme.
-        frame.style.colorScheme = resolveLiveArtifactThemeId();
-        frame.addEventListener('load', () => {
-            // After every srcdoc navigation, re-push pending stream HTML and remeasure.
-            // Sandboxed frames often drop postMessages sent before the bridge listens.
-            const frameId = frame.dataset.liveArtifactFrameId || '';
-            const liveArtifact = frameId ? registry.get(frameId) : null;
-            if (liveArtifact) {
-                syncPendingStreamToFrame(frame, liveArtifact);
-            } else if (frame.dataset.liveArtifactStreaming === 'true' && frame.dataset.liveArtifactProbeHtml) {
-                postInlineArtifactStream(frame, frame.dataset.liveArtifactProbeHtml);
-            }
-            scheduleInlineArtifactFrameResize(frame, viewport);
-            const html = frame.dataset.liveArtifactProbeHtml || '';
-            if (html) {
-                const width = resolveInlineFrameWidth(viewport, container);
-                const hasDetails = /<details(?:\s|\/>|>)/i.test(html);
-                const height = measureArtifactContentHeight(html, width);
-                const expanded = hasDetails
-                    ? measureArtifactContentHeight(html, width, { forceOpenDetails: true })
-                    : height;
-                const estimated = (hasDetails && expanded <= INLINE_ARTIFACT_MIN_HEIGHT + 8)
-                    ? estimateArtifactHeightFromMarkup(html)
-                    : 0;
-                const fullHeight = Math.max(height, expanded, estimated);
-                frame.dataset.liveArtifactCollapsedHeight = String(height);
-                frame.dataset.liveArtifactExpandedHeight = String(Math.max(height, expanded));
-                frame.dataset.liveArtifactHasDetails = hasDetails ? 'true' : 'false';
-                // Seed height from probe; bridge may grow further but never shrink
-                // the initial seed (parent probe under-reports iframe metrics).
-                applyInlineArtifactFrameHeight(viewport, frame, fullHeight, {
-                    allowShrink: false,
-                    enforceExpandedFloor: false,
-                });
-                cacheFrameHeight(frame.dataset.liveArtifactHeightKey || '', fullHeight);
-            }
-        });
+        frame = createLiveArtifactFrameNode(viewport, container);
 
         viewport.appendChild(frame);
         frameShell.appendChild(viewport);
@@ -3750,8 +3776,7 @@ function openArtifactInNewWindow(artifact) {
     setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
-const VISIBILITY_REBUILD_THRESHOLD_MS = 30 * 1000;
-let pageHiddenSince = 0;
+const FRAME_PING_TIMEOUT_MS = 1500;
 let visibilityRecoveryInitialized = false;
 
 function initLiveArtifactVisibilityRecovery() {
@@ -3763,24 +3788,18 @@ function initLiveArtifactVisibilityRecovery() {
     }
 
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-            pageHiddenSince = Date.now();
-            return;
-        }
-        if (pageHiddenSince) {
-            const hiddenMs = Date.now() - pageHiddenSince;
-            pageHiddenSince = 0;
-            if (hiddenMs >= VISIBILITY_REBUILD_THRESHOLD_MS) {
-                rebuildLiveArtifactFrames();
-            }
-        }
+        if (document.hidden) return;
+        // No 30s threshold: any background stay may have let Chrome discard the
+        // srcdoc sub-frame documents. Ping each frame; rebuild only the dead ones.
+        pingAndRebuildDeadArtifactFrames();
     });
 
     if (typeof window !== 'undefined') {
         window.addEventListener('pageshow', (event) => {
-            if (event && event.persisted) {
-                rebuildLiveArtifactFrames();
-            }
+            if (event && event.persisted) pingAndRebuildDeadArtifactFrames();
+        });
+        document.addEventListener('resume', () => {
+            pingAndRebuildDeadArtifactFrames();
         });
     }
 }
@@ -3795,7 +3814,7 @@ function initLiveArtifactVisibilityRecovery() {
 export function rebuildLiveArtifactFrames() {
     if (typeof document === 'undefined') return;
     document.querySelectorAll('.live-artifact-inline-iframe').forEach((frame) => {
-        reloadLiveArtifactFrame(frame);
+        recreateLiveArtifactFrame(frame);
     });
     if (panelState?.frame && activeArtifactId) {
         const artifact = registry.get(activeArtifactId);
@@ -3807,24 +3826,97 @@ export function rebuildLiveArtifactFrames() {
     }
 }
 
-function reloadLiveArtifactFrame(frame) {
+/**
+ * Replace an iframe with a brand-new node carrying the same state. A new node
+ * gets a new browsing context, which is the reliable way to revive a frame
+ * whose srcdoc document Chrome has discarded in the background — re-assigning
+ * srcdoc on the same element often cannot bring it back.
+ */
+function recreateLiveArtifactFrame(frame) {
     const frameId = frame.dataset?.liveArtifactFrameId || '';
     const artifact = frameId ? registry.get(frameId) : null;
+
+    let srcdoc = '';
     if (artifact?.renderable) {
         ensureArtifactSrcdocTheme(artifact);
-        if (artifact.srcdoc) {
-            forceReloadIframeDocument(frame, artifact.srcdoc);
-            if (artifact.isStreaming) {
-                syncPendingStreamToFrame(frame, artifact);
+        srcdoc = artifact.srcdoc || '';
+    }
+    if (!srcdoc) {
+        srcdoc = frame.srcdoc || frame.getAttribute?.('srcdoc') || '';
+    }
+    if (!srcdoc) return false;
+
+    const viewport = frame.closest('.live-artifact-inline-viewport');
+    if (!viewport) return false;
+    const container = viewport.closest('.live-artifact-inline-frame')?.parentElement || null;
+
+    const fresh = createLiveArtifactFrameNode(viewport, container);
+    Object.assign(fresh.dataset, frame.dataset); // 继承高度/stream 等状态
+    delete fresh.dataset.liveArtifactLoaded;
+    fresh.dataset.liveArtifactMountedAt = String(Date.now());
+    if (frame.style.height) fresh.style.height = frame.style.height;
+
+    frame.replaceWith(fresh); // 新节点 = 新浏览上下文
+    fresh.srcdoc = `${srcdoc}\n<!-- live-artifact-reload ${Date.now()} -->`;
+
+    if (artifact?.isStreaming) syncPendingStreamToFrame(fresh, artifact);
+    return true;
+}
+
+/**
+ * Ping every open Live Artifact iframe's in-document bridge. Frames that do not
+ * answer `pong` within FRAME_PING_TIMEOUT_MS have had their document discarded
+ * (background tab / Memory Saver / freeze) and are rebuilt as brand-new nodes.
+ * Healthy frames answer and are left completely untouched, so quick tab
+ * switches never cause a flash.
+ */
+function pingAndRebuildDeadArtifactFrames() {
+    if (typeof document === 'undefined') return;
+    const frames = Array.from(document.querySelectorAll('.live-artifact-inline-iframe'));
+    const panelFrame = (panelState?.frame && activeArtifactId) ? panelState.frame : null;
+    const targets = panelFrame ? [...frames, panelFrame] : frames;
+    if (!targets.length) return;
+
+    const alive = new Set();
+    const onMessage = (event) => {
+        const data = event?.data;
+        if (!data || data.channel !== 'justsearch-live-artifacts' || data.event !== 'pong') return;
+        const frameId = String(data.frameId || '');
+        if (frameId) alive.add(frameId);
+    };
+    window.addEventListener('message', onMessage);
+
+    targets.forEach((frame) => {
+        const frameId = frame.dataset?.liveArtifactFrameId || (frame === panelFrame ? activeArtifactId : '');
+        if (!frameId) return;
+        try {
+            frame.contentWindow?.postMessage({ channel: 'justsearch-live-artifacts', event: 'ping', frameId }, '*');
+        } catch { /* frame messaging may fail while mounting */ }
+    });
+
+    setTimeout(() => {
+        window.removeEventListener('message', onMessage);
+        const now = Date.now();
+        targets.forEach((frame) => {
+            const frameId = frame.dataset?.liveArtifactFrameId || (frame === panelFrame ? activeArtifactId : '');
+            if (!frameId || alive.has(frameId) || !frame.isConnected) return;
+            // 还在首次加载中的新 frame 不算死，避免误重建
+            const mountedAt = Number(frame.dataset?.liveArtifactMountedAt || 0);
+            if (mountedAt && now - mountedAt < 2500 && !frame.dataset.liveArtifactLoaded) return;
+            if (frame === panelFrame) {
+                const artifact = registry.get(activeArtifactId);
+                if (artifact?.renderable) {
+                    ensureArtifactSrcdocTheme(artifact);
+                    if (artifact.srcdoc) {
+                        forceReloadIframeDocument(panelFrame, artifact.srcdoc);
+                        syncPendingStreamToFrame(panelFrame, artifact);
+                    }
+                }
+            } else {
+                recreateLiveArtifactFrame(frame);
             }
-            return;
-        }
-    }
-    // Registry entry missing (e.g. superseded): re-navigate from the attribute value.
-    const current = frame.srcdoc || frame.getAttribute?.('srcdoc') || '';
-    if (current) {
-        forceReloadIframeDocument(frame, current);
-    }
+        });
+    }, FRAME_PING_TIMEOUT_MS);
 }
 
 /**
@@ -3872,7 +3964,9 @@ export const __liveArtifactsTestHooks = {
     parseLiveArtifactInteractionSpec,
     parseInfoAttributes,
     prefersHtmlArtifactPath,
+    pingAndRebuildDeadArtifactFrames,
     rebuildLiveArtifactFrames,
+    recreateLiveArtifactFrame,
     resolveLiveArtifactFontSizePx,
     resolveLiveArtifactThemeId,
     resolveLiveArtifactsModeFlag,

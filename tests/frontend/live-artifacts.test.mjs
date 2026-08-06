@@ -72,6 +72,7 @@ function installBrowserGlobals(html = '<!doctype html><body></body>') {
         render: value => String(value || ''),
         utils: { escapeHtml: value => String(value || '') },
     });
+    globalThis.MessageEvent = dom.window.MessageEvent;
     window.DOMPurify = { sanitize: value => String(value || '') };
     window.hljs = { getLanguage: () => false };
     window.matchMedia = () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} });
@@ -2363,7 +2364,10 @@ test('rebuildLiveArtifactFrames re-navigates srcdoc iframes after background dis
 
     rebuildLiveArtifactFrames();
 
-    const rebuilt = frame.getAttribute('srcdoc') || '';
+    // The frame node is replaced with a fresh one (new browsing context).
+    const rebuiltFrame = container.querySelector('.live-artifact-inline-iframe');
+    assert.notEqual(rebuiltFrame, frame, 'frame node is replaced');
+    const rebuilt = rebuiltFrame.getAttribute('srcdoc') || '';
     assert.match(rebuilt, /Recovered content/);
     assert.match(rebuilt, /live-artifact-reload/);
     assert.notEqual(rebuilt, original);
@@ -2389,6 +2393,64 @@ test('rebuildLiveArtifactFrames re-pushes streaming content after reload', () =>
 
     rebuildLiveArtifactFrames();
 
-    assert.match(frame.getAttribute('srcdoc') || '', /live-artifact-reload/);
-    assert.ok(posts.some((msg) => msg?.event === 'stream-render' && /body/.test(msg.html || '')));
+    // Frame node is replaced; the fresh node inherits the pending-stream state.
+    const newFrame = container.querySelector('.live-artifact-inline-iframe');
+    assert.notEqual(newFrame, frame, 'frame node is replaced');
+    assert.match(newFrame.getAttribute('srcdoc') || '', /live-artifact-reload/);
+    assert.match(newFrame.dataset.liveArtifactPendingStreamHtml || '', /body/);
+});
+
+test('pingAndRebuildDeadArtifactFrames rebuilds only frames that do not answer pong', async () => {
+    installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
+    const container = document.getElementById('message');
+    const hooks = __liveArtifactsTestHooks;
+
+    renderLiveArtifactsForMessage(container, '<section><h1>ALIVE</h1></section>', {
+        messageId: 'ping-alive',
+        isStreaming: false,
+    });
+    const aliveFrame = container.querySelector('.live-artifact-inline-iframe');
+
+    // Simulate Chrome discarding the second frame's document: contentWindow is gone
+    // so a ping can never be answered, but the node stays connected.
+    const deadHolder = document.createElement('div');
+    container.appendChild(deadHolder);
+    deadHolder.innerHTML = '<div class="live-artifact-inline-frame"><div class="live-artifact-inline-viewport"><iframe class="live-artifact-inline-iframe"></iframe></div></div>';
+    const deadFrame = deadHolder.querySelector('iframe');
+    deadFrame.dataset.liveArtifactFrameId = 'ping-dead-frame';
+    deadFrame.dataset.liveArtifactMountedAt = String(Date.now() - 10000); // aged past mount guard
+    deadFrame.dataset.liveArtifactLoaded = '1';
+    deadFrame.srcdoc = '<!doctype html><html><body><div>DEAD</div></body></html>';
+    Object.defineProperty(deadFrame, 'contentWindow', {
+        value: null, // never answers ping
+        configurable: true,
+    });
+
+    // aliveFrame answers pong.
+    Object.defineProperty(aliveFrame, 'contentWindow', {
+        value: {
+            postMessage(data) {
+                if (data?.event === 'ping') {
+                    window.dispatchEvent(new MessageEvent('message', {
+                        data: { channel: 'justsearch-live-artifacts', event: 'pong', frameId: data.frameId },
+                        source: aliveFrame.contentWindow,
+                    }));
+                }
+            },
+        },
+        configurable: true,
+    });
+
+    // Trigger the recovery manually. It pings every frame and, after its 1.5s
+    // window, replaces only the frames that did not answer `pong`.
+    hooks.pingAndRebuildDeadArtifactFrames();
+
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    const framesAfter = container.querySelectorAll('.live-artifact-inline-iframe');
+    const aliveStillPresent = Array.from(framesAfter).some((f) => f === aliveFrame);
+    const deadStillPresent = Array.from(framesAfter).some((f) => f === deadFrame);
+
+    assert.equal(aliveStillPresent, true, 'healthy frame must not be replaced');
+    assert.equal(deadStillPresent, false, 'dead frame must be replaced');
 });
