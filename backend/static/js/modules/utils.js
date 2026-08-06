@@ -152,7 +152,7 @@ export function applyTheme(theme) {
 
     // Rebuild open Live Artifact iframes so dark/light theme tokens stay readable.
     // Mirrors AMC re-injecting --amc-live-artifact-* when themeId changes.
-    import('./live-artifacts.js?v=51')
+    import('./live-artifacts.js?v=53')
         .then((mod) => {
             if (typeof mod.refreshLiveArtifactPreviews === 'function') {
                 mod.refreshLiveArtifactPreviews({ theme: document.documentElement.getAttribute('data-theme') });

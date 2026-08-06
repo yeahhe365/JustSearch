@@ -1102,13 +1102,13 @@ def test_source_rendering_helpers_are_split_from_ui_module():
     assert "hasCitationSources" in chat_source
     assert "from './source-renderer.js?v=12'" in ui_source
     assert "from './source-renderer.js?v=12'" in chat_source
-    assert "from './ui.js?v=41'" in (
+    assert "from './ui.js?v=43'" in (
         PROJECT_ROOT / "backend/static/js/modules/history-view.js"
     ).read_text(encoding="utf-8")
-    assert "from './ui.js?v=41'" in (
+    assert "from './ui.js?v=43'" in (
         PROJECT_ROOT / "backend/static/js/modules/settings-modal.js"
     ).read_text(encoding="utf-8")
-    assert "from './ui.js?v=41'" in (
+    assert "from './ui.js?v=43'" in (
         PROJECT_ROOT / "backend/static/js/modules/sidebar.js"
     ).read_text(encoding="utf-8")
     assert "export function extractSources" not in ui_source
@@ -1156,7 +1156,7 @@ def test_sidebar_stylesheet_changes_are_cache_busted():
 
     # style.css 现为各分片拼接（不再用 @import）；index.html 引用带缓存版本号的单文件
     assert 'href="/static/css/style.css?v=50"' in index_source
-    assert 'src="/static/js/main.js?v=85"' in index_source
+    assert 'src="/static/js/main.js?v=87"' in index_source
     assert "=== base.css (inlined) ===" in style_source
     assert "=== sidebar.css (inlined) ===" in style_source
     assert "=== chat.css (inlined) ===" in style_source
@@ -1168,11 +1168,11 @@ def test_sidebar_stylesheet_changes_are_cache_busted():
     assert "edit-message-banner" in style_source
     assert "from './modules/auth.js?v=1'" in main_source
     assert "from './modules/state.js?v=5'" in main_source
-    assert "from './modules/ui.js?v=41'" in main_source
-    assert "from './modules/chat.js?v=54'" in main_source
-    assert "from './modules/history-view.js?v=26'" in main_source
-    assert "from './modules/settings-modal.js?v=58'" in main_source
-    assert "from './modules/sidebar.js?v=23'" in main_source
+    assert "from './modules/ui.js?v=43'" in main_source
+    assert "from './modules/chat.js?v=56'" in main_source
+    assert "from './modules/history-view.js?v=28'" in main_source
+    assert "from './modules/settings-modal.js?v=60'" in main_source
+    assert "from './modules/sidebar.js?v=25'" in main_source
     assert "from './modules/model-selector.js?v=16'" in main_source
     assert "from './modules/api.js?v=14'" in main_source
     assert "import('./modules/utils.js?v=13')" in main_source

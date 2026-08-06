@@ -14,10 +14,10 @@ import {
     setLiveArtifactsMode,
 } from './state.js?v=5';
 import { createCopyButton, createMessageActionRail, createRegenerateButton } from './utils.js?v=13';
-import { updateActiveHistoryItem } from './history-view.js?v=26';
-import { createDynamicLogContainer, createLogEntry, scrollToBottom, appendMessage, renderMessages, showConfirm, createMessageShell } from './ui.js?v=41';
+import { updateActiveHistoryItem } from './history-view.js?v=28';
+import { createDynamicLogContainer, createLogEntry, scrollToBottom, appendMessage, renderMessages, showConfirm, createMessageShell } from './ui.js?v=43';
 import { extractSources, hasCitationSources, linkCitationsInElement, renderWithCitations } from './source-renderer.js?v=12';
-import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=51';
+import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=53';
 import { bindCitationEvidenceClicks } from './evidence-panel.js?v=5';
 import {
     applyIntensityPresetToSettings,

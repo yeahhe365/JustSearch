@@ -78,7 +78,7 @@ test('editing state fills composer and shows AMC edit chrome', async () => {
 
 test('user edit button stages resend edit via onEdit callback', async () => {
     installBrowserGlobals(CHAT_HTML);
-    const { elements, appendMessage, initUI } = await import('../../backend/static/js/modules/ui.js?v=40');
+    const { elements, appendMessage, initUI } = await import('../../backend/static/js/modules/ui.js?v=43');
     initUI();
     Object.assign(elements, {
         chatContainer: document.getElementById('chat-container'),
@@ -107,7 +107,7 @@ test('user edit button stages resend edit via onEdit callback', async () => {
 
 test('assistant regenerate passes previous user index for AMC truncate', async () => {
     installBrowserGlobals(CHAT_HTML);
-    const { elements, renderMessages, initUI } = await import('../../backend/static/js/modules/ui.js?v=40');
+    const { elements, renderMessages, initUI } = await import('../../backend/static/js/modules/ui.js?v=43');
     initUI();
     Object.assign(elements, {
         chatContainer: document.getElementById('chat-container'),

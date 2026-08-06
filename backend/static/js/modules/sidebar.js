@@ -1,7 +1,7 @@
 import { state, setCurrentSessionId } from './state.js?v=5';
-import { elements } from './ui.js?v=41';
-import { updateActiveHistoryItem, getCachedHistory, openHistorySearch } from './history-view.js?v=26';
-import { detachCurrentStream } from './chat.js?v=54';
+import { elements } from './ui.js?v=43';
+import { updateActiveHistoryItem, getCachedHistory, openHistorySearch } from './history-view.js?v=28';
+import { detachCurrentStream } from './chat.js?v=56';
 import { t } from './i18n.js?v=1';
 
 let popoverEl = null;

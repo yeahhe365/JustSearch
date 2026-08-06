@@ -3845,6 +3845,10 @@ function openArtifactInNewWindow(artifact) {
 }
 
 const FRAME_PING_TIMEOUT_MS = 1500;
+// Fast window used when a frame scrolls into view: healthy frames confirm with
+// a synchronous pong in a fraction of this, dead frames are rebuilt quickly so
+// the user does not stare at a white artifact for the full 1.5s.
+const FRAME_VIEW_RECOVERY_TIMEOUT_MS = 150;
 let visibilityRecoveryInitialized = false;
 
 /**
@@ -3855,7 +3859,7 @@ let visibilityRecoveryInitialized = false;
  * frame scrolls back into the viewport, where Chrome may have dropped its
  * off-screen document even while the page stays in the foreground.
  */
-function pingAndRebuildArtifactFrame(frame) {
+function pingAndRebuildArtifactFrame(frame, timeoutMs = FRAME_PING_TIMEOUT_MS) {
     if (!frame || typeof document === 'undefined') return;
     const frameId = frame.dataset?.liveArtifactFrameId || '';
     if (!frameId || !frame.isConnected) return;
@@ -3883,7 +3887,7 @@ function pingAndRebuildArtifactFrame(frame) {
         } else {
             recreateLiveArtifactFrame(frame);
         }
-    }, FRAME_PING_TIMEOUT_MS);
+    }, timeoutMs);
 }
 
 function initLiveArtifactVisibilityRecovery() {
@@ -3916,10 +3920,18 @@ function initLiveArtifactVisibilityRecovery() {
         // viewport a small rootMargin head-start so a quick flick-past does
         // not leave a blank artifact waiting for the next intersection.
         if ('IntersectionObserver' in window) {
+            // A frame entering the viewport gets a fast recovery check: 150ms
+            // instead of the 1.5s background-tab window. Healthy frames answer
+            // pong synchronously, so they are confirmed in a fraction of the
+            // window and never rebuilt; a frame whose document Chrome discarded
+            // while it was off-screen is rebuilt almost immediately — the
+            // "whole artifact is white when I scroll back" case. AMC avoids this
+            // structurally (Virtuoso unloads off-screen messages), so a static
+            // renderer needs the fast path here.
             const observer = new IntersectionObserver((entries) => {
                 entries.forEach((entry) => {
                     if (entry.isIntersecting) {
-                        pingAndRebuildArtifactFrame(entry.target);
+                        pingAndRebuildArtifactFrame(entry.target, FRAME_VIEW_RECOVERY_TIMEOUT_MS);
                     }
                 });
             }, { rootMargin: '200px 0px 200px 0px' });
@@ -3934,6 +3946,29 @@ function initLiveArtifactVisibilityRecovery() {
                     .forEach((frame) => observer.observe(frame));
             }).observe(document.body, { childList: true, subtree: true });
         }
+
+        // Scroll-stop sweep: IntersectionObserver fires when a frame crosses into
+        // view, but a frame can stay in the viewport the whole time and still have
+        // its document discarded under memory pressure (a 20k-px srcdoc iframe is
+        // the top candidate). IO does not re-fire for an element that never leaves
+        // the viewport, so after a scroll settles we ping every in-viewport frame
+        // and rebuild the dead ones. Debounced so a long continuous scroll does not
+        // hammer the pings.
+        let scrollSettleTimer = null;
+        window.addEventListener('scroll', () => {
+            if (scrollSettleTimer) clearTimeout(scrollSettleTimer);
+            scrollSettleTimer = setTimeout(() => {
+                scrollSettleTimer = null;
+                const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+                if (!viewportHeight) return;
+                document.querySelectorAll('.live-artifact-inline-iframe, .live-artifacts-frame')
+                    .forEach((frame) => {
+                        const rect = frame.getBoundingClientRect();
+                        if (rect.bottom < -200 || rect.top > viewportHeight + 200) return;
+                        pingAndRebuildArtifactFrame(frame, FRAME_VIEW_RECOVERY_TIMEOUT_MS);
+                    });
+            }, 400);
+        }, { passive: true });
     }
 }
 
