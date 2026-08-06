@@ -2723,7 +2723,7 @@ function renderInlineArtifactFrame(container, artifact) {
         if (frame.dataset.liveArtifactFreshMount === '1') {
             delete frame.dataset.liveArtifactFreshMount;
         }
-        if (frame.srcdoc !== artifact.srcdoc) frame.srcdoc = artifact.srcdoc;
+        frame.srcdoc = artifact.srcdoc;
     }
     if (artifact.isStreaming) {
         frame.dataset.liveArtifactStreamShell = '1';
@@ -3816,14 +3816,7 @@ export function rebuildLiveArtifactFrames() {
     document.querySelectorAll('.live-artifact-inline-iframe').forEach((frame) => {
         recreateLiveArtifactFrame(frame);
     });
-    if (panelState?.frame && activeArtifactId) {
-        const artifact = registry.get(activeArtifactId);
-        if (artifact?.renderable) {
-            ensureArtifactSrcdocTheme(artifact);
-            forceReloadIframeDocument(panelState.frame, artifact.srcdoc);
-            syncPendingStreamToFrame(panelState.frame, artifact);
-        }
-    }
+    recoverPanelFrame(panelState?.frame);
 }
 
 /**
@@ -3857,7 +3850,7 @@ function recreateLiveArtifactFrame(frame) {
     if (frame.style.height) fresh.style.height = frame.style.height;
 
     frame.replaceWith(fresh); // 新节点 = 新浏览上下文
-    fresh.srcdoc = `${srcdoc}\n<!-- live-artifact-reload ${Date.now()} -->`;
+    fresh.srcdoc = buildReloadSrcdoc(srcdoc);
 
     if (artifact?.isStreaming) syncPendingStreamToFrame(fresh, artifact);
     return true;
@@ -3904,14 +3897,7 @@ function pingAndRebuildDeadArtifactFrames() {
             const mountedAt = Number(frame.dataset?.liveArtifactMountedAt || 0);
             if (mountedAt && now - mountedAt < 2500 && !frame.dataset.liveArtifactLoaded) return;
             if (frame === panelFrame) {
-                const artifact = registry.get(activeArtifactId);
-                if (artifact?.renderable) {
-                    ensureArtifactSrcdocTheme(artifact);
-                    if (artifact.srcdoc) {
-                        forceReloadIframeDocument(panelFrame, artifact.srcdoc);
-                        syncPendingStreamToFrame(panelFrame, artifact);
-                    }
-                }
+                recoverPanelFrame(panelFrame);
             } else {
                 recreateLiveArtifactFrame(frame);
             }
@@ -3925,9 +3911,28 @@ function pingAndRebuildDeadArtifactFrames() {
  * timestamp comment guarantees a fresh navigation without a blank flash
  * and without mutating the registry's clean srcdoc.
  */
+function buildReloadSrcdoc(srcdoc) {
+    return `${srcdoc}\n<!-- live-artifact-reload ${Date.now()} -->`;
+}
+
 function forceReloadIframeDocument(frame, srcdoc) {
     if (!srcdoc) return;
-    frame.srcdoc = `${srcdoc}\n<!-- live-artifact-reload ${Date.now()} -->`;
+    frame.srcdoc = buildReloadSrcdoc(srcdoc);
+}
+
+/**
+ * Revive the single panel Live Artifact frame (not an inline message frame)
+ * from the registry after its srcdoc document was discarded in the background.
+ */
+function recoverPanelFrame(panelFrame) {
+    if (!panelFrame || !activeArtifactId) return;
+    const artifact = registry.get(activeArtifactId);
+    if (!artifact?.renderable) return;
+    ensureArtifactSrcdocTheme(artifact);
+    if (artifact.srcdoc) {
+        forceReloadIframeDocument(panelFrame, artifact.srcdoc);
+        syncPendingStreamToFrame(panelFrame, artifact);
+    }
 }
 
 export const __liveArtifactsTestHooks = {
