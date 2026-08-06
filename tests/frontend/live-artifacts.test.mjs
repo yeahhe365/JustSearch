@@ -942,7 +942,7 @@ test('quick Live Artifacts button toggles AMC-style active prompt state', async 
             </body>
         `);
         const { state, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=54');
         const button = document.getElementById('quick-live-artifacts-btn');
 
         state.settings = { search_engine: 'google', interactive_search: true };
@@ -1073,7 +1073,7 @@ test('saved HTML answers with sources render citation links instead of inline ar
 
     const { state, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
     setLiveArtifactsMode(false);
-    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=40');
+    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=41');
     Object.assign(elements, {
         chatContainer: document.getElementById('chat-container'),
         heroSection: document.getElementById('hero-section'),
@@ -1110,7 +1110,7 @@ test('saved rich HTML table answers link citation tags in place', async () => {
 
     const { state, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
     setLiveArtifactsMode(false);
-    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=40');
+    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=41');
     Object.assign(elements, {
         chatContainer: document.getElementById('chat-container'),
         heroSection: document.getElementById('hero-section'),
@@ -1160,7 +1160,7 @@ test('saved HTML answers with JSON-encoded sources still render citation links',
 
     const { state, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
     setLiveArtifactsMode(false);
-    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=40');
+    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=41');
     Object.assign(elements, {
         chatContainer: document.getElementById('chat-container'),
         heroSection: document.getElementById('hero-section'),
@@ -1700,8 +1700,8 @@ test('streaming chat re-renders citations when sources arrive after answer chunk
 
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
+        const { elements } = await import('../../backend/static/js/modules/ui.js?v=41');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=54');
         const encoder = new TextEncoder();
         const events = [
             { type: 'meta', session_id: 'late-sources-session' },
@@ -1798,8 +1798,8 @@ test('streaming chat marks SSE error events as failed instead of completed', asy
 
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
+        const { elements } = await import('../../backend/static/js/modules/ui.js?v=41');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=54');
         const encoder = new TextEncoder();
         const events = [
             { type: 'meta', session_id: 'error-status-session' },
@@ -1898,8 +1898,8 @@ test('final baked srcdoc is not overwritten by a delayed streaming render (race 
 
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
+        const { elements } = await import('../../backend/static/js/modules/ui.js?v=41');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=54');
         const encoder = new TextEncoder();
         // chunk and final answer in the same macrotask so rAF is still pending.
         const finalHtml = '<div style="display:block;width:100%"><h2>Final</h2><p>done</p></div>';
@@ -1999,8 +1999,8 @@ test('streaming raw HTML answer exits inline artifact mode when sources arrive',
 
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
+        const { elements } = await import('../../backend/static/js/modules/ui.js?v=41');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=54');
         const encoder = new TextEncoder();
         const htmlAnswer = '<div style="display:block;width:100%"><h2>LinuxDo 是什么？</h2><p>来源给出的官网是 linux.do/。[2]</p></div>';
         const events = [
@@ -2100,8 +2100,8 @@ test('streaming raw HTML answer links citations from final answer sources', asyn
 
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
+        const { elements } = await import('../../backend/static/js/modules/ui.js?v=41');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=54');
         const encoder = new TextEncoder();
         const htmlAnswer = '<div style="display:block;width:100%"><h2>LinuxDo 是什么？</h2><p>来源给出的官网是 linux.do/。[2]</p></div>';
         const events = [
@@ -2453,6 +2453,60 @@ test('pingAndRebuildDeadArtifactFrames rebuilds only frames that do not answer p
 
     assert.equal(aliveStillPresent, true, 'healthy frame must not be replaced');
     assert.equal(deadStillPresent, false, 'dead frame must be replaced');
+});
+
+test('pingAndRebuildArtifactFrame rebuilds only the dead frame that scrolls into view', async () => {
+    installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
+    const container = document.getElementById('message');
+    const hooks = __liveArtifactsTestHooks;
+
+    renderLiveArtifactsForMessage(container, '<section><h1>ALIVE</h1></section>', {
+        messageId: 'view-alive',
+        isStreaming: false,
+    });
+    const aliveFrame = container.querySelector('.live-artifact-inline-iframe');
+
+    const deadHolder = document.createElement('div');
+    container.appendChild(deadHolder);
+    deadHolder.innerHTML = '<div class="live-artifact-inline-frame"><div class="live-artifact-inline-viewport"><iframe class="live-artifact-inline-iframe"></iframe></div></div>';
+    const deadFrame = deadHolder.querySelector('iframe');
+    deadFrame.dataset.liveArtifactFrameId = 'view-dead-frame';
+    deadFrame.dataset.liveArtifactMountedAt = String(Date.now() - 10000);
+    deadFrame.dataset.liveArtifactLoaded = '1';
+    deadFrame.srcdoc = '<!doctype html><html><body><div>DEAD</div></body></html>';
+    Object.defineProperty(deadFrame, 'contentWindow', {
+        value: null,
+        configurable: true,
+    });
+
+    // aliveFrame answers pong.
+    Object.defineProperty(aliveFrame, 'contentWindow', {
+        value: {
+            postMessage(data) {
+                if (data?.event === 'ping') {
+                    window.dispatchEvent(new MessageEvent('message', {
+                        data: { channel: 'justsearch-live-artifacts', event: 'pong', frameId: data.frameId },
+                        source: aliveFrame.contentWindow,
+                    }));
+                }
+            },
+        },
+        configurable: true,
+    });
+
+    // Simulate the IntersectionObserver path: the dead frame scrolls into view
+    // and is pinged individually. The healthy frame is NOT pinged at all here —
+    // only the single target frame is checked.
+    hooks.pingAndRebuildArtifactFrame(deadFrame);
+
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    const framesAfter = container.querySelectorAll('.live-artifact-inline-iframe');
+    const aliveStillPresent = Array.from(framesAfter).some((f) => f === aliveFrame);
+    const deadStillPresent = Array.from(framesAfter).some((f) => f === deadFrame);
+
+    assert.equal(aliveStillPresent, true, 'untouched healthy frame must remain');
+    assert.equal(deadStillPresent, false, 'dead frame scrolled into view must be rebuilt');
 });
 
 test('bridge stream-render patches incrementally, preserving DOM node identity', () => {

@@ -1,13 +1,13 @@
 import { initializeAuth, normalizeSettings } from './modules/auth.js?v=1';
 import { initI18n, applyI18n } from './modules/i18n.js?v=1';
 import { state, setCurrentSessionId, setLiveArtifactsMode } from './modules/state.js?v=5';
-import { initUI, elements } from './modules/ui.js?v=40';
-import { detachCurrentStream, setupChatHandler, syncQuickSettingsFromState } from './modules/chat.js?v=53';
+import { initUI, elements } from './modules/ui.js?v=41';
+import { detachCurrentStream, setupChatHandler, syncQuickSettingsFromState } from './modules/chat.js?v=54';
 import { initEvidencePanel } from './modules/evidence-panel.js?v=5';
-import { openHistorySearch, renderHistory, setupHistoryGroups, setupHistorySearch, updateActiveHistoryItem } from './modules/history-view.js?v=25';
-import { setupSettingsModal } from './modules/settings-modal.js?v=57';
+import { openHistorySearch, renderHistory, setupHistoryGroups, setupHistorySearch, updateActiveHistoryItem } from './modules/history-view.js?v=26';
+import { setupSettingsModal } from './modules/settings-modal.js?v=58';
 import { setupShortcutsHelp } from './modules/shortcuts-help.js?v=2';
-import { setupSidebar, toggleSidebarFromShortcut } from './modules/sidebar.js?v=22';
+import { setupSidebar, toggleSidebarFromShortcut } from './modules/sidebar.js?v=23';
 import {
     findOptionForModelPreference,
     initCustomModelSelect,

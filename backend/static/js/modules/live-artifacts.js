@@ -3847,6 +3847,45 @@ function openArtifactInNewWindow(artifact) {
 const FRAME_PING_TIMEOUT_MS = 1500;
 let visibilityRecoveryInitialized = false;
 
+/**
+ * Ping a single Live Artifact frame's bridge. Frames that answer `pong` are
+ * healthy; frames that do not within FRAME_PING_TIMEOUT_MS have had their
+ * srcdoc document discarded and are rebuilt as brand-new nodes. Unlike the
+ * full ping (background-tab recovery), this targets one frame — used when a
+ * frame scrolls back into the viewport, where Chrome may have dropped its
+ * off-screen document even while the page stays in the foreground.
+ */
+function pingAndRebuildArtifactFrame(frame) {
+    if (!frame || typeof document === 'undefined') return;
+    const frameId = frame.dataset?.liveArtifactFrameId || '';
+    if (!frameId || !frame.isConnected) return;
+
+    let alive = false;
+    const onMessage = (event) => {
+        const data = event?.data;
+        if (!data || data.channel !== 'justsearch-live-artifacts' || data.event !== 'pong') return;
+        if (String(data.frameId || '') === frameId) alive = true;
+    };
+    window.addEventListener('message', onMessage);
+
+    try {
+        frame.contentWindow?.postMessage({ channel: 'justsearch-live-artifacts', event: 'ping', frameId }, '*');
+    } catch { /* frame messaging may fail while mounting */ }
+
+    setTimeout(() => {
+        window.removeEventListener('message', onMessage);
+        if (alive || !frame.isConnected) return;
+        // A frame still mounting its first document is not "dead" — give it time.
+        const mountedAt = Number(frame.dataset?.liveArtifactMountedAt || 0);
+        if (mountedAt && Date.now() - mountedAt < 2500 && !frame.dataset.liveArtifactLoaded) return;
+        if (frame.classList.contains('live-artifacts-frame')) {
+            recoverPanelFrame(frame);
+        } else {
+            recreateLiveArtifactFrame(frame);
+        }
+    }, FRAME_PING_TIMEOUT_MS);
+}
+
 function initLiveArtifactVisibilityRecovery() {
     if (visibilityRecoveryInitialized || typeof document === 'undefined') return;
     if (typeof window !== 'undefined' && window.__liveArtifactVisibilityRecoveryInitialized) return;
@@ -3869,6 +3908,32 @@ function initLiveArtifactVisibilityRecovery() {
         document.addEventListener('resume', () => {
             pingAndRebuildDeadArtifactFrames();
         });
+        // Rolling a Live Artifact back into view is where Chrome most often
+        // drops off-screen srcdoc documents while the page stays foregrounded
+        // (JustSearch renders all messages statically; AMC unloads off-screen
+        // messages via Virtuoso, so it never keeps an off-screen iframe alive).
+        // Ping only the frame that just entered the viewport — and give the
+        // viewport a small rootMargin head-start so a quick flick-past does
+        // not leave a blank artifact waiting for the next intersection.
+        if ('IntersectionObserver' in window) {
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach((entry) => {
+                    if (entry.isIntersecting) {
+                        pingAndRebuildArtifactFrame(entry.target);
+                    }
+                });
+            }, { rootMargin: '200px 0px 200px 0px' });
+            // Observe existing frames plus any created later.
+            const startObserving = () => {
+                document.querySelectorAll('.live-artifact-inline-iframe, .live-artifacts-frame')
+                    .forEach((frame) => observer.observe(frame));
+            };
+            startObserving();
+            new MutationObserver(() => {
+                document.querySelectorAll('.live-artifact-inline-iframe, .live-artifacts-frame')
+                    .forEach((frame) => observer.observe(frame));
+            }).observe(document.body, { childList: true, subtree: true });
+        }
     }
 }
 
@@ -4037,6 +4102,7 @@ export const __liveArtifactsTestHooks = {
     parseLiveArtifactInteractionSpec,
     parseInfoAttributes,
     prefersHtmlArtifactPath,
+    pingAndRebuildArtifactFrame,
     pingAndRebuildDeadArtifactFrames,
     rebuildLiveArtifactFrames,
     recreateLiveArtifactFrame,

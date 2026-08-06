@@ -1,11 +1,11 @@
 import { authFetch } from './auth.js?v=1';
 import { coerceBooleanSetting, setCurrentSessionId, state } from './state.js?v=5';
-import { abandonActiveChatWork } from './chat.js?v=53';
+import { abandonActiveChatWork } from './chat.js?v=54';
 import { showToast } from './toast.js';
-import { elements, showConfirm } from './ui.js?v=40';
+import { elements, showConfirm } from './ui.js?v=41';
 import { t, getLanguage, setLanguage } from './i18n.js?v=1';
 import { setupSettingsSearch } from './settings-search.js?v=2';
-import { renderHistory } from './history-view.js?v=25';
+import { renderHistory } from './history-view.js?v=26';
 import {
     getModelDisplayName,
     getSupportedModelItems,

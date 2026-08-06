@@ -4,8 +4,8 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
-// Must match history-view.js import: `./ui.js?v=40` so both share one `elements` object.
-const UI_MODULE = '../../backend/static/js/modules/ui.js?v=40';
+// Must match history-view.js import: `./ui.js?v=41` so both share one `elements` object.
+const UI_MODULE = '../../backend/static/js/modules/ui.js?v=41';
 
 function installBrowserGlobals() {
     const { JSDOM } = require('jsdom');

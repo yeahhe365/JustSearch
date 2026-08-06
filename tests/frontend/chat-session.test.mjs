@@ -201,7 +201,7 @@ test('detachCurrentStream keeps an in-flight stream running (background), abando
     const { state, setCurrentSessionId, setLiveArtifactsMode } = await import(
         pathToFileURL(path.join(root, 'backend/static/js/modules/state.js')).href + '?v=5'
     );
-    const uiUrl = pathToFileURL(path.join(root, 'backend/static/js/modules/ui.js')).href + '?v=40';
+    const uiUrl = pathToFileURL(path.join(root, 'backend/static/js/modules/ui.js')).href + '?v=41';
     const { elements } = await import(uiUrl);
     const chatUrl = pathToFileURL(path.join(root, 'backend/static/js/modules/chat.js')).href + `?t=${Date.now()}`;
     const { setupChatHandler, detachCurrentStream, abandonActiveChatWork } = await import(chatUrl);

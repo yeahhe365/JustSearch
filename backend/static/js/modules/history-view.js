@@ -13,7 +13,7 @@ import {
 } from './api.js?v=14';
 import { state } from './state.js?v=5';
 import { showToast } from './toast.js';
-import { elements, showConfirm } from './ui.js?v=40';
+import { elements, showConfirm } from './ui.js?v=41';
 import { t } from './i18n.js?v=1';
 
 let _fullHistory = [];
