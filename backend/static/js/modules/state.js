@@ -11,8 +11,6 @@ export const state = {
     isProcessing: false,
     abortController: null,
     liveArtifactsMode: false,
-    openBrowserModal: null,
-    connectionStatus: 'connected', // connected | disconnected | reconnecting
     /** null = unknown, true/false after health poll */
     bridgeConnected: null,
     bridgeWsUrl: 'ws://127.0.0.1:8000/justsearch',
@@ -22,7 +20,6 @@ export const state = {
     bridgeExtensionName: null,
     bridgeLatestExtensionVersion: null,
     bridgeUpdateAvailable: false,
-    lastActivityTime: Date.now(),
     /**
      * AMC-style message edit/resend:
      * - editingMessageIndex: 0-based history index of the user message being edited

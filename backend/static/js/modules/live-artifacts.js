@@ -311,10 +311,6 @@ function resolveLiveArtifactsModeFlag(options = {}) {
     return Boolean(state?.liveArtifactsMode);
 }
 
-export function getLiveArtifactInteraction(markdownText, isStreaming = false) {
-    return extractLiveArtifactInteraction(markdownText, isStreaming);
-}
-
 /**
  * Rebuild open Live Artifact iframe srcdocs when base font size or app theme changes.
  * Mirrors AMC injecting --amc-live-artifact-font-size and transparent theme tokens.

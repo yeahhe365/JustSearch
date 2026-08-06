@@ -20,7 +20,6 @@ import time
 import uuid
 from typing import Any, Optional
 
-import httpx
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .auth import authorize_websocket
@@ -65,7 +64,6 @@ class ExtensionConnection:
         # JSON-RPC 客户端侧:pending 请求的 Future。
         self._next_id = 1
         self._pending: dict[int, asyncio.Future] = {}
-        self._notification_handlers: dict[str, list] = {}
 
     def apply_extension_meta(self, params: Any) -> None:
         """Update identity fields from extension hello/ping payloads."""
@@ -142,12 +140,6 @@ class ExtensionConnection:
                         self.extension_version,
                         self.extension_instance_id,
                     )
-            handlers = self._notification_handlers.get(method, [])
-            for h in handlers:
-                try:
-                    await h(params if isinstance(params, dict) else {})
-                except Exception as e:
-                    logger.warning("[bridge] notification handler %s error: %s", method, e)
             return
 
         # 请求(有 id,有 method):扩展主动发来的请求。首版几乎不用,但支持 ping 响应。
@@ -341,18 +333,6 @@ class BridgeClient:
             params["session_id"] = session_id
         return await self._conn().call("createTab", params)
 
-    async def attach_tab_to_session(self, tab_id: int, session_id: str) -> None:
-        """显式把一个已存在的 tab 纳入 session(扩展端据此归入标签组 + 跟踪光标)。
-
-        createTab 已带 session_id 时无需调用;用于 claimUserTab 类场景的后续接入。
-        """
-        try:
-            await self._conn().call(
-                "attachTabToSession", {"tabId": tab_id, "session_id": session_id}, timeout_ms=5000
-            )
-        except Exception:
-            pass
-
     async def close_tab(self, tab_id: int) -> None:
         try:
             await self._conn().call("closeTab", {"tabId": tab_id}, timeout_ms=10000)
@@ -378,10 +358,6 @@ class BridgeClient:
     async def get_tab_url(self, tab_id: int) -> str:
         r = await self._conn().call("getTabUrl", {"tabId": tab_id}, timeout_ms=5000)
         return r.get("url", "") if isinstance(r, dict) else ""
-
-    async def get_tab_title(self, tab_id: int) -> str:
-        r = await self._conn().call("getTabTitle", {"tabId": tab_id}, timeout_ms=5000)
-        return r.get("title", "") if isinstance(r, dict) else ""
 
     # --- 核心:执行 JS ---
 
@@ -412,12 +388,6 @@ class BridgeClient:
         )
         return result if isinstance(result, dict) else {}
 
-    # --- 截图 ---
-
-    async def screenshot(self, tab_id: int, full_page: bool = False) -> Optional[str]:
-        r = await self._conn().call("screenshot", {"tabId": tab_id, "fullPage": full_page}, timeout_ms=35000)
-        return r.get("data") if isinstance(r, dict) else None
-
     # --- 交互 ---
 
     async def click_at(self, tab_id: int, x: float, y: float) -> None:
@@ -425,19 +395,6 @@ class BridgeClient:
 
     async def scroll_by(self, tab_id: int, delta_x: float = 0, delta_y: float = 0, x: float = 0, y: float = 0) -> None:
         await self._conn().call("scrollBy", {"tabId": tab_id, "deltaX": delta_x, "deltaY": delta_y, "x": x, "y": y}, timeout_ms=10000)
-
-    async def type_text(self, tab_id: int, text: str) -> None:
-        await self._conn().call("typeText", {"tabId": tab_id, "text": text}, timeout_ms=15000)
-
-    async def press_key(self, tab_id: int, key: str) -> None:
-        await self._conn().call("pressKey", {"tabId": tab_id, "key": key}, timeout_ms=10000)
-
-    async def get_visible_elements(self, tab_id: int) -> list[dict]:
-        r = await self._conn().call("getVisibleElements", {"tabId": tab_id}, timeout_ms=20000)
-        if isinstance(r, dict):
-            els = r.get("elements")
-            return els if isinstance(els, list) else []
-        return []
 
     async def move_mouse(
         self,
@@ -470,13 +427,6 @@ class BridgeClient:
         except Exception:
             # 虚拟光标失败不应阻断真实点击流程。
             return False
-
-    async def name_session(self, name: str, session_id: str = "default") -> None:
-        """给当前 session 的标签组命名(对应 BCB 的 nameSession)。"""
-        try:
-            await self._conn().call("nameSession", {"name": name, "session_id": session_id}, timeout_ms=5000)
-        except Exception:
-            pass
 
     async def detach_tab(self, tab_id: int) -> None:
         try:
@@ -578,10 +528,6 @@ def get_ws_endpoint() -> str:
 
 def get_ws_route_path() -> str:
     return _WS_PATH
-
-
-def get_ws_port() -> int:
-    return _WS_PORT
 
 
 def is_extension_connected() -> bool:

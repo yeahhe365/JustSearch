@@ -105,12 +105,6 @@ export function getFrameEvidenceContext(frameId) {
     return frameContexts.get(id) || null;
 }
 
-export function clearFrameEvidenceContext(frameId) {
-    const id = String(frameId ?? '').trim();
-    if (!id) return;
-    frameContexts.delete(id);
-}
-
 function normalizeId(id) {
     return String(id ?? '').trim();
 }
@@ -160,13 +154,6 @@ function findEvidenceForOccurrence(citations, opts) {
     return [];
 }
 
-function findCitationsForMarker(citations, sourceId) {
-    const id = normalizeId(sourceId);
-    return (Array.isArray(citations) ? citations : []).filter(
-        (c) => normalizeId(c?.marker) === id || normalizeId(c?.source_id) === id
-    );
-}
-
 function statusLabel(status) {
     // Map any status (legacy or new) to the honest 4-level set.
     const s = String(status || '').toLowerCase();
@@ -187,12 +174,6 @@ function verificationLabel(verification) {
     if (verdict === 'CONTRADICTED') return { text: t('evidence.verifyContradicted'), className: 'missing' };
     if (verdict === 'NOT_ENOUGH_INFO') return { text: t('evidence.verifyInsufficient'), className: 'related' };
     return null;
-}
-
-function scoreDots(score) {
-    const s = Math.max(0, Math.min(1, Number(score) || 0));
-    const filled = Math.round(s * 5);
-    return '●'.repeat(filled) + '○'.repeat(5 - filled);
 }
 
 function getSafeUrl(url) {
@@ -244,7 +225,6 @@ function escapeHtml(value) {
 export function openEvidencePanel({
     sourceId,
     occurrenceId,
-    occurrenceIndex,
     markerOccurrenceIndex,
     groupIndex,
     markerIndex,

@@ -15,14 +15,11 @@ import { state } from './state.js?v=5';
 import { showToast } from './toast.js';
 import { elements, showConfirm } from './ui.js?v=43';
 import { t } from './i18n.js?v=1';
+import { encodePathSegment } from './utils.js?v=13';
 
 let _fullHistory = [];
 let _chatGroups = [];
 let _historySearchRequestSeq = 0;
-
-function encodeRouteSegment(value) {
-    return encodeURIComponent(String(value ?? ''));
-}
 
 export function getCachedHistory() {
     return _fullHistory;
@@ -220,7 +217,7 @@ function createHistoryItem(chat, currentSessionId, callbacks) {
         '<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>',
         (e) => {
             e.stopPropagation();
-            const url = `${window.location.origin}/c/${encodeRouteSegment(chat.id)}`;
+            const url = `${window.location.origin}/c/${encodePathSegment(chat.id)}`;
             navigator.clipboard.writeText(url).then(() => {
                 showToast(t('history.linkCopied'), 'success');
             }).catch(() => {
@@ -237,7 +234,7 @@ function createHistoryItem(chat, currentSessionId, callbacks) {
         (e) => {
             e.stopPropagation();
             window.open(
-                buildAuthenticatedUrl(`/api/history/${encodeRouteSegment(chat.id)}/export`),
+                buildAuthenticatedUrl(`/api/history/${encodePathSegment(chat.id)}/export`),
                 '_blank',
                 'noopener,noreferrer',
             );

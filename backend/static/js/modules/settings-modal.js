@@ -495,24 +495,15 @@ async function importHistoryFile(file, historyCallbacks, importHistoryBtn) {
 }
 
 async function updateVersionDisplay() {
-    const versionEl = document.getElementById('version-display');
     const aboutVersionEl = document.getElementById('about-version');
-    if (!versionEl && !aboutVersionEl) return;
+    if (!aboutVersionEl) return;
 
     try {
         const healthRes = await authFetch('/api/health');
         if (healthRes.ok) {
             const health = await healthRes.json();
             const versionText = formatVersionText(health.version);
-            if (versionEl) {
-                versionEl.textContent = versionText;
-            }
-            if (aboutVersionEl) {
-                aboutVersionEl.textContent = versionText;
-            }
-            if (versionEl && health.memory_mb) {
-                versionEl.title = `Memory: ${health.memory_mb} MB`;
-            }
+            aboutVersionEl.textContent = versionText;
         }
     } catch (e) {
         // Version metadata is non-critical.

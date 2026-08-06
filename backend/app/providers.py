@@ -12,14 +12,6 @@ from fastapi import HTTPException
 from .database import mask_api_key
 
 
-DEFAULT_PROVIDER_ID = "deepseek"
-DEFAULT_PROVIDER = {
-    "id": DEFAULT_PROVIDER_ID,
-    "name": "DeepSeek",
-    "api_key": "",
-    "base_url": "https://api.deepseek.com/v1",
-    "model_id": "deepseek-v4-pro",
-}
 WORKFLOW_MODEL_STEPS = [
     {"id": "analysis", "name": "问题分析"},
     {"id": "relevance", "name": "相关性评估"},

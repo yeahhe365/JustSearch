@@ -1,11 +1,8 @@
 // RPC 方法实现:JustSearch 后端通过 JSON-RPC 调用这些方法驱动真实 Chrome。
 // 注册到 JsonRpcBridge。
 
-import { attachTab, detachTab, executeCdp, detachAll, isTabAttached } from "./debugger-api.js";
+import { detachTab, executeCdp } from "./debugger-api.js";
 import { TabGroupStore } from "./tab-groups.js";
-
-// 保存 navigate 等待完成的 listener。
-const _navCompletes = new Map(); // tabId -> { resolve, timer }
 
 // 光标到达等待器:moveSequence -> { resolve, timer }。
 // moveMouse(waitForArrival=true) 注册一个,AGENT_CURSOR_ARRIVED 到达时 resolve。
@@ -119,29 +116,6 @@ export function registerHandlers(bridge) {
     return { ok: true };
   });
 
-  bridge.registerRequestHandler("nameSession", async ({ name, session_id } = {}) => {
-    // 命名统一作用于全局 agent 分组(只有一个组)。
-    try {
-      await tabGroups.setSessionGroupTitle(AGENT_GROUP_SESSION, name, [..._allAgentTabs]);
-    } catch {}
-    return { ok: true };
-  });
-
-  // 显式把一个已存在的 tab 纳入全局 agent 分组 + 跟踪光标。
-  // createTab 已带 session_id 时无需调用;用于后续 claimUserTab 类场景。
-  bridge.registerRequestHandler("attachTabToSession", async ({ tabId, session_id } = {}) => {
-    requireInt(tabId, "tabId");
-    const sessionId = typeof session_id === "string" && session_id ? session_id : "default";
-    try {
-      await serializeGroupOp(async () => {
-        _allAgentTabs.add(tabId);
-        await tabGroups.ensureAgentTabGroup(AGENT_GROUP_SESSION, tabId, [..._allAgentTabs]);
-      });
-    } catch {}
-    try { await _cursorOverlays?.trackTab(sessionId, tabId, { publish: true }); } catch {}
-    return { ok: true };
-  });
-
   bridge.registerRequestHandler("navigate", async ({ tabId, url, timeoutMs = 20000 } = {}) => {
     requireInt(tabId, "tabId");
     requireStr(url, "url");
@@ -155,12 +129,6 @@ export function registerHandlers(bridge) {
     requireInt(tabId, "tabId");
     const t = await chrome.tabs.get(tabId);
     return { url: t.url ?? "" };
-  });
-
-  bridge.registerRequestHandler("getTabTitle", async ({ tabId } = {}) => {
-    requireInt(tabId, "tabId");
-    const t = await chrome.tabs.get(tabId);
-    return { title: t.title ?? "" };
   });
 
   // 核心:在 tab 里跑任意 JS,返回 Runtime.evaluate 的 value。
@@ -189,35 +157,6 @@ export function registerHandlers(bridge) {
     requireInt(tabId, "tabId");
     const ms = typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 45000;
     return withTimeout(extractWithDefuddle(tabId), ms, "extractContent");
-  });
-
-  bridge.registerRequestHandler("screenshot", async ({ tabId, fullPage = false, format = "jpeg", quality = 80 } = {}) => {
-    requireInt(tabId, "tabId");
-    if (fullPage) {
-      // 对 fullPage,先取 metrics 再 clip。
-      try {
-        const metrics = await executeCdp({ tabId, method: "Page.getLayoutMetrics", params: {}, timeoutMs: 5000 });
-        const m = metrics?.cssLayoutViewport ?? metrics?.layoutViewport;
-        const contentSize = metrics?.cssContentSize ?? metrics?.contentSize;
-        if (m && contentSize) {
-          const clip = { x: 0, y: 0, width: contentSize.width, height: contentSize.height, scale: 1 };
-          const r = await executeCdp({
-            tabId,
-            method: "Page.captureScreenshot",
-            params: { format, quality, clip },
-            timeoutMs: 30000,
-          });
-          return { data: r?.data ?? null };
-        }
-      } catch {}
-    }
-    const r = await executeCdp({
-      tabId,
-      method: "Page.captureScreenshot",
-      params: { format, quality },
-      timeoutMs: 30000,
-    });
-    return { data: r?.data ?? null };
   });
 
   bridge.registerRequestHandler("clickAt", async ({ tabId, x, y, button = "left", clickCount = 1 } = {}) => {
@@ -255,37 +194,6 @@ export function registerHandlers(bridge) {
       timeoutMs: 5000,
     });
     return { ok: true };
-  });
-
-  bridge.registerRequestHandler("typeText", async ({ tabId, text } = {}) => {
-    requireInt(tabId, "tabId");
-    requireStr(text, "text");
-    // Input.insertText 不经过输入法,适合直接插文本。
-    await executeCdp({
-      tabId,
-      method: "Input.insertText",
-      params: { text },
-      timeoutMs: 10000,
-    });
-    return { ok: true };
-  });
-
-  bridge.registerRequestHandler("pressKey", async ({ tabId, key } = {}) => {
-    requireInt(tabId, "tabId");
-    requireStr(key, "key");
-    // 简化:key 直接作为 keyCode 文本,常见键用 dispatchKeyEvent。
-    const keyDown = { type: "keyDown", key, text: key.length === 1 ? key : undefined };
-    const keyUp = { type: "keyUp", key };
-    await executeCdp({ tabId, method: "Input.dispatchKeyEvent", params: keyDown, timeoutMs: 5000 });
-    await executeCdp({ tabId, method: "Input.dispatchKeyEvent", params: keyUp, timeoutMs: 5000 });
-    return { ok: true };
-  });
-
-  // 提取可见可点击元素:跑 page_crawler 那段 JS,返回 {id,text,tag,x,y}[]。
-  bridge.registerRequestHandler("getVisibleElements", async ({ tabId } = {}) => {
-    requireInt(tabId, "tabId");
-    const { value } = await evaluateJs(tabId, GET_VISIBLE_ELEMENTS_JS, 15000);
-    return { elements: Array.isArray(value) ? value : [] };
   });
 
   // 虚拟光标:驱动 content script 把光标动画移到 (x,y),到达后返回。
@@ -359,10 +267,6 @@ export function registerHandlers(bridge) {
     await detachTab(tabId);
     return { ok: true };
   });
-
-  bridge.registerRequestHandler("getStatus", async () => {
-    return { attachedTabs: [...(await getAttachedTabIds())] };
-  });
 }
 
 // --- helpers ---
@@ -411,30 +315,6 @@ async function extractWithDefuddle(tabId) {
   return payload;
 }
 
-async function evaluateJs(tabId, expression, timeoutMs) {
-  const result = await executeCdp({
-    tabId,
-    method: "Runtime.evaluate",
-    params: { expression, awaitPromise: true, returnByValue: true, allowUnsafeEvalBlocking: false },
-    timeoutMs,
-  });
-  if (!result) return { value: null };
-  if (result.exceptionDetails) {
-    const ex = result.exceptionDetails;
-    throw new Error(`Runtime.evaluate failed: ${ex.exception?.description ?? ex.text ?? "eval error"}`);
-  }
-  return { value: result.result?.value ?? null };
-}
-
-async function getAttachedTabIds() {
-  try {
-    const targets = await chrome.debugger.getTargets();
-    return targets.filter((t) => typeof t.tabId === "number" && t.attached).map((t) => t.tabId);
-  } catch {
-    return [];
-  }
-}
-
 // 等待 tab 加载到 complete 状态。
 // 只在 info.status === "complete" 时 resolve,不在 URL 变化时提前返回。
 // 旧版在 info.url 变化时就 resolve,导致 navigate() 在页面 DOM 还没就绪时返回,
@@ -481,48 +361,3 @@ function createCursorArrivalWaiter({ sessionId, turnId, moveSequence }) {
   _cursorArrivalWaiters.set(key, waiter);
   return waiter;
 }
-
-// 与 page_crawler.py INTERACTIVE_ELEMENTS_JS 保持一致。
-const GET_VISIBLE_ELEMENTS_JS = `(() => {
-  const items = [];
-  let idCounter = 0;
-  function isVisible(elem) {
-    if (!elem.getBoundingClientRect || !elem.checkVisibility) return false;
-    const rect = elem.getBoundingClientRect();
-    // Reject 1x1 skip-links and other near-invisible hit targets
-    if (rect.width < 8 || rect.height < 8) return false;
-    if (rect.bottom <= 0 || rect.right <= 0) return false;
-    if (rect.top >= (window.innerHeight || 0) && rect.height < 20) return false;
-    return elem.checkVisibility();
-  }
-  const candidates = document.querySelectorAll('button, a[href], [role="button"]');
-  const blacklist = /^(home|login|sign in|sign up|menu|privacy|terms|登录|注册|分享|首页|关闭|评论|like|share|follow|subscribe|cookie|accept|dismiss|下载 app|open in app|get app|feedback|举报|投诉|more actions)$/i;
-  const navPatterns = /^(back|next|previous|prev|1|2|3|4|5|6|7|8|9|10|first|last|<|>|<<|>>)$/i;
-  const skipNoise = /^(skip to (main )?content|skip navigation|跳转到?内容|跳至(主)?内容|skip to main|跳过导航)$/i;
-  for (const el of candidates) {
-    if (!isVisible(el)) continue;
-    const text = (el.innerText || el.textContent || '').trim().replace(/\\s+/g, ' ');
-    if (text.length < 2 || text.length > 50) continue;
-    if (blacklist.test(text)) continue;
-    if (navPatterns.test(text)) continue;
-    if (skipNoise.test(text)) continue;
-    const href = (el.getAttribute && el.getAttribute('href')) || '';
-    if (href === '#' || href === '#content' || href === '#bodyContent' || href === '#main') continue;
-    const parent = el.closest('header, footer, nav, .navbar, .footer, .header, .sidebar, .nav-bar, #header, #footer, #nav');
-    if (parent) continue;
-    const rect = el.getBoundingClientRect();
-    // Near origin with tiny box is almost always a11y skip chrome
-    if (rect.x + rect.width / 2 < 4 && rect.y + rect.height / 2 < 4) continue;
-    items.push({
-      id: "js-interact-" + (idCounter++),
-      text: text,
-      tag: el.tagName.toLowerCase(),
-      x: rect.x + rect.width / 2,
-      y: rect.y + rect.height / 2,
-      w: rect.width,
-      h: rect.height
-    });
-    if (items.length >= 30) break;
-  }
-  return items;
-})()`;

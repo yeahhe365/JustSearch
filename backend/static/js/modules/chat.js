@@ -13,9 +13,9 @@ import {
     setIsProcessing,
     setLiveArtifactsMode,
 } from './state.js?v=5';
-import { createCopyButton, createMessageActionRail, createRegenerateButton } from './utils.js?v=13';
+import { createCopyButton, createMessageActionRail, createRegenerateButton, encodePathSegment } from './utils.js?v=13';
 import { updateActiveHistoryItem } from './history-view.js?v=28';
-import { createDynamicLogContainer, createLogEntry, scrollToBottom, appendMessage, renderMessages, showConfirm, createMessageShell } from './ui.js?v=43';
+import { createDynamicLogContainer, createLogEntry, scrollToBottom, appendMessage, renderMessages, createMessageShell } from './ui.js?v=43';
 import { extractSources, hasCitationSources, linkCitationsInElement, renderWithCitations } from './source-renderer.js?v=12';
 import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=53';
 import { bindCitationEvidenceClicks } from './evidence-panel.js?v=5';
@@ -58,7 +58,7 @@ const activeStreams = new Map(); // provisionalKey -> live stream record
 let currentViewStream = null;    // the stream currently owning the visible view
 
 function chatRoute(sessionId) {
-    return `/c/${encodeURIComponent(String(sessionId ?? ''))}`;
+    return `/c/${encodePathSegment(sessionId)}`;
 }
 
 function resetComposerChrome(uiElements = {}) {

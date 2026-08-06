@@ -83,13 +83,6 @@ def is_loopback_host(host: str | None) -> bool:
     return _is_docker_bridge_gateway(ip)
 
 
-def get_request_host(request: Request) -> str:
-    host = request.headers.get("host", "").strip()
-    if not host:
-        return ""
-    return urlparse(f"//{host}").hostname or ""
-
-
 def get_auth_token() -> str:
     global _AUTH_TOKEN_CACHE
 

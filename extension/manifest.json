@@ -23,7 +23,6 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content/cursor-overlay.js"],
-      "css": ["content/content.css"],
       "run_at": "document_start",
       "all_frames": false
     }

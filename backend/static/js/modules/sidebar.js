@@ -3,14 +3,11 @@ import { elements } from './ui.js?v=43';
 import { updateActiveHistoryItem, getCachedHistory, openHistorySearch } from './history-view.js?v=28';
 import { detachCurrentStream } from './chat.js?v=56';
 import { t } from './i18n.js?v=1';
+import { encodePathSegment } from './utils.js?v=13';
 
 let popoverEl = null;
 let popoverTimeout = null;
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'sidebarCollapsed';
-
-function encodeRouteSegment(value) {
-    return encodeURIComponent(String(value ?? ''));
-}
 
 function safeGetLocalStorageItem(key, fallback = '') {
     try {
@@ -66,7 +63,7 @@ function setupHistoryPopover(miniHistoryBtn, loadChat) {
             recentChats.forEach(chat => {
                 const item = document.createElement('a');
                 item.className = 'popover-item';
-                item.href = `/c/${encodeRouteSegment(chat.id)}`;
+                item.href = `/c/${encodePathSegment(chat.id)}`;
                 item.textContent = chat.title || t('history.newChat');
                 item.title = chat.title || t('history.newChat');
                 item.addEventListener('click', (e) => {

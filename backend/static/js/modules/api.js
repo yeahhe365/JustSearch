@@ -1,11 +1,7 @@
 import { state, setSettings } from './state.js?v=5';
 import { authFetch } from './auth.js?v=1';
-import { applyFontSizes, applyTheme } from './utils.js?v=13';
+import { applyFontSizes, applyTheme, encodePathSegment } from './utils.js?v=13';
 import { t } from './i18n.js?v=1';
-
-function encodePathSegment(value) {
-    return encodeURIComponent(String(value ?? ''));
-}
 
 async function readResponseJson(response) {
     try {

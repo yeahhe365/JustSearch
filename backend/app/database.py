@@ -865,49 +865,6 @@ async def delete_message(
         return True
 
 
-async def truncate_messages_from(session_id: str, from_index: int) -> bool:
-    """Delete the message at from_index and every message after it (AMC resend).
-
-    Used when editing/resending a user turn or retrying an assistant answer:
-    history is sliced to keep only messages before the anchor, then a new turn
-    is appended. Returns True when the session exists (even if already shorter).
-
-    Deprecated: prefer :func:`replace_messages_from`, which deletes the tail
-    and inserts the new turn in one transaction so a workflow failure cannot
-    permanently discard the truncated tail.
-    """
-    if from_index is None:
-        return False
-    try:
-        from_index = int(from_index)
-    except (TypeError, ValueError):
-        return False
-    if from_index < 0:
-        return False
-
-    async with await get_session() as session:
-        sess = (await session.execute(
-            select(ChatSession).where(ChatSession.id == session_id)
-        )).scalar_one_or_none()
-        if sess is None:
-            return False
-
-        msgs = (await session.execute(
-            select(ChatMessage).where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at, ChatMessage.id)
-        )).scalars().all()
-
-        if from_index >= len(msgs):
-            # Already truncated past end — treat as success so resend can append.
-            return True
-
-        for msg in msgs[from_index:]:
-            await session.delete(msg)
-        sess.updated_at = _utc_now()
-        await session.commit()
-        return True
-
-
 async def replace_messages_from(
     session_id: str,
     from_index: int,

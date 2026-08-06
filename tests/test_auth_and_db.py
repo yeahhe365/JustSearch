@@ -3148,54 +3148,6 @@ def test_delete_message_refreshes_chat_timestamp(tmp_path):
     asyncio.run(run())
 
 
-def test_truncate_messages_from_drops_anchor_and_tail(tmp_path):
-    """AMC resend: truncate at user message index removes that turn and everything after."""
-    from backend.app import database
-
-    async def run():
-        if database._engine is not None:
-            await database._engine.dispose()
-
-        db_path = tmp_path / "justsearch-truncate.db"
-        database._engine = None
-        database._async_session_factory = None
-        database._DB_PATH = str(db_path)
-        database._DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
-        database._CHATS_DIR = str(tmp_path / "legacy_chats")
-        database._SETTINGS_FILE = str(tmp_path / "settings.json")
-        await database.init_db()
-        await database.save_chat_history(
-            "truncate-session",
-            [
-                {"role": "user", "content": "q1"},
-                {"role": "assistant", "content": "a1"},
-                {"role": "user", "content": "q2"},
-                {"role": "assistant", "content": "a2"},
-                {"role": "user", "content": "q3"},
-                {"role": "assistant", "content": "a3"},
-            ],
-            title="Truncate Session",
-        )
-
-        assert await database.truncate_messages_from("truncate-session", 2) is True
-        after = await database.load_chat_history("truncate-session")
-        assert [m["content"] for m in after["messages"]] == ["q1", "a1"]
-
-        # Truncating past the end is a no-op success (allows resend on short sessions).
-        assert await database.truncate_messages_from("truncate-session", 99) is True
-        after2 = await database.load_chat_history("truncate-session")
-        assert [m["content"] for m in after2["messages"]] == ["q1", "a1"]
-
-        assert await database.truncate_messages_from("missing-session", 0) is False
-
-        if database._engine is not None:
-            await database._engine.dispose()
-            database._engine = None
-            database._async_session_factory = None
-
-    asyncio.run(run())
-
-
 def test_replace_messages_from_swaps_tail_atomically(tmp_path):
     """AMC resend on success path: delete from_index onward + insert new turn
     in one transaction. q1/a1 survive, q2/a2/q3/a3 are replaced by new_u/new_a."""

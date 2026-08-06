@@ -85,6 +85,14 @@ export const LIVE_ARTIFACTS_FONT_SIZE_MIN = 10;
 export const LIVE_ARTIFACTS_FONT_SIZE_MAX = 32;
 export const DEFAULT_LIVE_ARTIFACTS_FONT_SIZE = 16;
 
+/**
+ * URL-encode a single path segment. Shared by api/history/sidebar route builders.
+ * (AMC-style route ids may contain slashes, spaces, or unicode.)
+ */
+export function encodePathSegment(value) {
+    return encodeURIComponent(String(value ?? ''));
+}
+
 export function clampBaseFontSize(value) {
     return clampFontSize(value, DEFAULT_BASE_FONT_SIZE, BASE_FONT_SIZE_MIN, BASE_FONT_SIZE_MAX);
 }

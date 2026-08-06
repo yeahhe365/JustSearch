@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 import shutil
-import time
 
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel

@@ -44,11 +44,6 @@ export class WebSocketTransport {
 
   getStatus() { return { ...this._status }; }
 
-  refreshStatus() {
-    this._updateStatus(this._isConnected() ? "connected" : this._status.state, { error: this._status.error });
-    return this.getStatus();
-  }
-
   // -------------------------------------------------------------------------
 
   _connect(failureState = "disconnected") {

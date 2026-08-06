@@ -44,6 +44,24 @@ def test_resolve_redirect_url_ignores_sogou_lookalike_domain(monkeypatch):
     assert called == []
 
 
+def test_decode_bing_redirect_url_shared_helper():
+    """Shared helper decodes bing /ck/a redirects and rejects non-bing/lookalike URLs."""
+    target_url = "https://example.com/docs?a=1&b=2"
+    encoded = base64.urlsafe_b64encode(target_url.encode("utf-8")).decode("ascii").rstrip("=")
+    bing_url = f"https://www.bing.com/ck/a?u=a1{encoded}&ntb=1"
+
+    assert redirects.decode_bing_redirect_url(bing_url) == target_url
+    # Non-bing host: unchanged.
+    assert redirects.decode_bing_redirect_url(f"https://evil-bing.com/ck/a?u=a1{encoded}") == ""
+    # Wrong path: unchanged.
+    assert redirects.decode_bing_redirect_url(f"https://www.bing.com/other?u=a1{encoded}") == ""
+    # Missing u=a1 prefix: unchanged.
+    assert redirects.decode_bing_redirect_url("https://www.bing.com/ck/a?u=plain") == ""
+    # Decoded non-http target: unchanged.
+    decoded_non_http = base64.urlsafe_b64encode(b"ftp://example.com/x").decode("ascii").rstrip("=")
+    assert redirects.decode_bing_redirect_url(f"https://www.bing.com/ck/a?u=a1{decoded_non_http}") == ""
+
+
 def test_resolve_redirect_url_ignores_redirect_markers_on_non_engine_domains():
     target = "https://example.com/article"
     encoded_target = base64.urlsafe_b64encode(target.encode("utf-8")).decode("ascii").rstrip("=")

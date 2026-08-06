@@ -1,13 +1,12 @@
 import asyncio
-import base64
 import json
 import logging
 import os
 import time
-import uuid
 from typing import List, Dict, Callable, Any, Optional
 from .llm_client import LLMClient, ensure_live_artifact_answer
 from .browser_manager import BrowserManager
+from .crawler.redirects import decode_bing_redirect_url
 
 logger = logging.getLogger(__name__)
 _WORKFLOW_LLM_STEPS = ("analysis", "relevance", "interaction", "answer")
@@ -15,7 +14,6 @@ _WORKFLOW_LLM_STEPS = ("analysis", "relevance", "interaction", "answer")
 class SearchWorkflow:
     def __init__(self, api_key: str, base_url: str, model: str, search_engine: str = "google", max_results: int = 50, max_iterations: int = 5, interactive_search: bool = True, session_id: str = None, step_model_configs: Optional[dict] = None, live_artifacts_mode: bool = False, canvas_mode: Optional[bool] = None, history_options: Optional[dict] = None):
         self.llm = LLMClient(api_key, base_url, model, **(history_options or {}))
-        self._initial_default_llm = self.llm
         self.step_llms = self._build_step_llms(
             step_model_configs or {},
             api_key,
@@ -74,33 +72,7 @@ class SearchWorkflow:
 
     def _llm_for_step(self, step_id: str):
         client = self.step_llms.get(step_id)
-        if client is self._initial_default_llm and self.llm is not self._initial_default_llm:
-            return self.llm
         return client or self.llm
-
-    def _decode_bing_redirect_url(self, url: str) -> str:
-        try:
-            from urllib.parse import parse_qs, urlparse
-
-            parsed = urlparse(url)
-            hostname = (parsed.hostname or "").lower().rstrip(".")
-            if hostname != "bing.com" and not hostname.endswith(".bing.com"):
-                return ""
-            if not parsed.path.startswith("/ck/a"):
-                return ""
-
-            u_val = parse_qs(parsed.query).get("u", [""])[0]
-            if not u_val.startswith("a1"):
-                return ""
-
-            encoded = u_val[2:]
-            padded = encoded + "=" * ((4 - len(encoded) % 4) % 4)
-            decoded = base64.urlsafe_b64decode(padded).decode("utf-8", errors="ignore")
-            if decoded.startswith(("http://", "https://")):
-                return decoded
-        except Exception:
-            pass
-        return ""
 
     def _usage_totals(self) -> tuple[int, int]:
         seen = set()
@@ -120,7 +92,7 @@ class SearchWorkflow:
         if not url:
             return ''
         # 提取 Bing redirect URL 中的真实目标
-        decoded_bing_url = self._decode_bing_redirect_url(url)
+        decoded_bing_url = decode_bing_redirect_url(url)
         if decoded_bing_url:
             return decoded_bing_url.lower().rstrip('/')
         # Strip common tracking parameters
@@ -152,7 +124,7 @@ class SearchWorkflow:
         """将 Bing redirect URL 解析为真实目标 URL（用于显示）。"""
         if not url:
             return url
-        decoded_bing_url = self._decode_bing_redirect_url(url)
+        decoded_bing_url = decode_bing_redirect_url(url)
         if decoded_bing_url:
             return decoded_bing_url
         return url
@@ -535,8 +507,7 @@ class SearchWorkflow:
                 new_sources = []
 
                 if analysis.get("type") == "direct":
-                    raw_url = analysis.get("url")
-                    url = raw_url
+                    url = analysis.get("url")
                     new_sources, source_id_counter = await self._handle_direct_url(
                         url, visited_urls, progress_callback, resolved_query or user_input, source_id_counter
                     )

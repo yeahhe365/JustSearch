@@ -42,22 +42,15 @@ async def resolve_redirect_url(url: str, log_func=None) -> str:
                 log_func(f"浏览器: 提取 DuckDuckGo 重定向 URL 失败: {e}")
 
     elif is_bing:
-        parsed = urllib.parse.urlparse(url)
-        params = urllib.parse.parse_qs(parsed.query)
-        if "u" in params:
-            u_val = params["u"][0]
-            if u_val.startswith("a1"):
-                try:
-                    b64_part = u_val[2:]
-                    b64_part += "=" * ((4 - len(b64_part) % 4) % 4)
-                    decoded_url = base64.urlsafe_b64decode(b64_part).decode("utf-8")
-                    if _is_http_url(decoded_url):
-                        final_url = decoded_url
-                        if log_func:
-                            log_func(f"浏览器: 提取 Bing 重定向 URL 成功: {final_url}")
-                except Exception as e:
-                    if log_func:
-                        log_func(f"浏览器: 提取 Bing 重定向 URL 失败: {e}")
+        try:
+            decoded_url = decode_bing_redirect_url(url)
+            if decoded_url:
+                final_url = decoded_url
+                if log_func:
+                    log_func(f"浏览器: 提取 Bing 重定向 URL 成功: {final_url}")
+        except Exception as e:
+            if log_func:
+                log_func(f"浏览器: 提取 Bing 重定向 URL 失败: {e}")
 
     elif is_google:
         try:
@@ -93,6 +86,32 @@ def _hostname_matches(hostname: str, domain: str) -> bool:
     hostname = (hostname or "").lower().rstrip(".")
     domain = domain.lower()
     return hostname == domain or hostname.endswith(f".{domain}")
+
+
+def decode_bing_redirect_url(url: str) -> str:
+    """Decode a Bing /ck/a redirect's `u=a1<base64>` parameter to its target URL.
+
+    Returns the decoded http(s) URL, or '' when the input is not a Bing redirect
+    wrapper or cannot be decoded. Shared by redirects.resolve_redirect_url and
+    workflow's URL-normalization (which applies its own lower/trim post-processing).
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if not _hostname_matches(parsed.hostname or "", "bing.com"):
+            return ""
+        if not parsed.path.startswith("/ck/a"):
+            return ""
+        u_val = urllib.parse.parse_qs(parsed.query).get("u", [""])[0]
+        if not u_val.startswith("a1"):
+            return ""
+        b64_part = u_val[2:]
+        b64_part += "=" * ((4 - len(b64_part) % 4) % 4)
+        decoded = base64.urlsafe_b64decode(b64_part).decode("utf-8", errors="ignore")
+        if _is_http_url(decoded):
+            return decoded
+    except Exception:
+        pass
+    return ""
 
 
 def _is_http_url(url: str) -> bool:

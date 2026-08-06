@@ -2,9 +2,7 @@ import asyncio
 import json
 import logging
 import os
-import random
 import re
-from typing import Any
 
 from .crawler.content import (
     extract_og_metadata,

@@ -5,7 +5,6 @@ Provides request ID tracking for correlating logs across a single search flow.
 
 import logging
 import contextvars
-from typing import Optional
 
 # Request-scoped correlation ID
 _request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")

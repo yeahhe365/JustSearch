@@ -53,14 +53,6 @@ async def _periodic_cleanup():
                 del _search_cache[k]
             if expired:
                 logger.debug("Cleaned %d expired search cache entries", len(expired))
-            # 关闭桥接中残留的临时 tab。
-            from .extension_bridge import get_bridge_client
-            try:
-                client = get_bridge_client()
-                # 无需操作,TabPool 是每任务建;这里只是确认连接。
-                _ = client
-            except Exception:
-                pass
         except asyncio.CancelledError:
             break
         except Exception as e:

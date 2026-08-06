@@ -430,8 +430,6 @@ Artifacts must look like carefully designed modern SaaS UI (Linear / Stripe / Gi
 # Backward-compatible alias used by imports and hygiene checks.
 LIVE_ARTIFACTS_PROMPT = LIVE_ARTIFACTS_PROMPT_ZH
 
-CANVAS_ARTIFACT_PROMPT = LIVE_ARTIFACTS_PROMPT
-
 
 def select_live_artifacts_protocol(query: str = "") -> str:
     """Return the ZH protocol for Chinese questions; otherwise the EN protocol."""
