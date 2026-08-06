@@ -62,7 +62,7 @@ function applyAppearanceSettings(settings) {
     applyTheme(settings.theme);
     applyFontSizes(settings);
     // Rebuild open Live Artifact previews when LA base size or theme changes.
-    import('./live-artifacts.js?v=49')
+    import('./live-artifacts.js?v=50')
         .then((mod) => {
             if (typeof mod.refreshLiveArtifactPreviews === 'function') {
                 mod.refreshLiveArtifactPreviews(settings);

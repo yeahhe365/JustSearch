@@ -942,7 +942,7 @@ test('quick Live Artifacts button toggles AMC-style active prompt state', async 
             </body>
         `);
         const { state, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
         const button = document.getElementById('quick-live-artifacts-btn');
 
         state.settings = { search_engine: 'google', interactive_search: true };
@@ -1701,7 +1701,7 @@ test('streaming chat re-renders citations when sources arrive after answer chunk
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
         const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
         const encoder = new TextEncoder();
         const events = [
             { type: 'meta', session_id: 'late-sources-session' },
@@ -1799,7 +1799,7 @@ test('streaming chat marks SSE error events as failed instead of completed', asy
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
         const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
         const encoder = new TextEncoder();
         const events = [
             { type: 'meta', session_id: 'error-status-session' },
@@ -1899,7 +1899,7 @@ test('final baked srcdoc is not overwritten by a delayed streaming render (race 
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
         const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
         const encoder = new TextEncoder();
         // chunk and final answer in the same macrotask so rAF is still pending.
         const finalHtml = '<div style="display:block;width:100%"><h2>Final</h2><p>done</p></div>';
@@ -2000,7 +2000,7 @@ test('streaming raw HTML answer exits inline artifact mode when sources arrive',
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
         const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
         const encoder = new TextEncoder();
         const htmlAnswer = '<div style="display:block;width:100%"><h2>LinuxDo 是什么？</h2><p>来源给出的官网是 linux.do/。[2]</p></div>';
         const events = [
@@ -2101,7 +2101,7 @@ test('streaming raw HTML answer links citations from final answer sources', asyn
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
         const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=53');
         const encoder = new TextEncoder();
         const htmlAnswer = '<div style="display:block;width:100%"><h2>LinuxDo 是什么？</h2><p>来源给出的官网是 linux.do/。[2]</p></div>';
         const events = [
@@ -2453,4 +2453,60 @@ test('pingAndRebuildDeadArtifactFrames rebuilds only frames that do not answer p
 
     assert.equal(aliveStillPresent, true, 'healthy frame must not be replaced');
     assert.equal(deadStillPresent, false, 'dead frame must be replaced');
+});
+
+test('bridge stream-render patches incrementally, preserving DOM node identity', () => {
+    // Extract the injected preview bridge from a streaming shell srcdoc and run
+    // it against an iframe-like jsdom document, then feed it two stream-render
+    // payloads. The second must patch in place (same <section> element) rather
+    // than replaceChildren — the old all-or-nothing rebuild dropped focus /
+    // scroll / expanded-details state on every chunk.
+    const shellSrcDoc = buildSrcdoc('<div data-amc-stream-preview-root="true"></div>', 'html', [], {
+        frameId: 'patch-identity',
+    });
+    const bridgeScript = [...shellSrcDoc.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map((match) => match[1])
+        .find((script) => script.includes('renderStreamHtml'));
+    assert.ok(bridgeScript, 'bridge should define renderStreamHtml');
+
+    const { JSDOM } = require('jsdom');
+    const dom = new JSDOM(
+        '<!doctype html><html><head></head><body><div data-amc-stream-preview-root="true"></div></body></html>',
+        { url: 'about:blank', runScripts: 'outside-only' },
+    );
+    const { window } = dom;
+    window.requestAnimationFrame = (cb) => setTimeout(() => cb(Date.now()), 0);
+    window.matchMedia = () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} });
+    window.parent = { postMessage: () => {} };
+
+    const execInWindowScope = new window.Function('window', `with (window) { ${bridgeScript} }`);
+    execInWindowScope(window);
+
+    const root = window.document.querySelector('[data-amc-stream-preview-root]');
+    assert.ok(root, 'stream root should exist');
+
+    // First stream-render: empty root → wholesale replace.
+    window.dispatchEvent(new window.MessageEvent('message', {
+        data: { channel: 'justsearch-live-artifacts', event: 'stream-render', html: '<section data-state="keep"><p>First chunk</p></section>' },
+    }));
+    const firstParagraph = root.querySelector('p');
+    assert.equal(firstParagraph?.textContent, 'First chunk', 'first render populates content');
+
+    // Second stream-render: structurally identical → incremental patch keeps the
+    // <section> element (only the text inside <p> changes in place).
+    const section = root.querySelector('section');
+    window.dispatchEvent(new window.MessageEvent('message', {
+        data: { channel: 'justsearch-live-artifacts', event: 'stream-render', html: '<section data-state="keep"><p>Second chunk more text</p></section>' },
+    }));
+    const section2 = root.querySelector('section');
+    assert.equal(section2, section, 'section element identity preserved (incremental patch, not replaceChildren)');
+    assert.equal(section2.getAttribute('data-state'), 'keep', 'matching attribute preserved');
+    assert.equal(section2.querySelector('p').textContent, 'Second chunk more text', 'text updated in place');
+
+    // Third: node removed in the payload → removed from the live DOM.
+    window.dispatchEvent(new window.MessageEvent('message', {
+        data: { channel: 'justsearch-live-artifacts', event: 'stream-render', html: '<section data-state="keep"></section>' },
+    }));
+    assert.equal(root.querySelector('p'), null, 'removed node is removed');
+    assert.equal(root.querySelector('section'), section, 'section survives when only children change');
 });

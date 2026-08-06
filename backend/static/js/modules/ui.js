@@ -8,7 +8,7 @@ import {
     createRegenerateButton
 } from './utils.js?v=13';
 import { extractSources, hasCitationSources, linkCitationsInElement, normalizeCitationSources, renderWithCitations } from './source-renderer.js?v=12';
-import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=49';
+import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=50';
 import { bindCitationEvidenceClicks } from './evidence-panel.js?v=5';
 import { state } from './state.js?v=5';
 import { t } from './i18n.js?v=1';

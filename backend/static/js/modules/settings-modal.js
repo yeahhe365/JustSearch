@@ -1,6 +1,6 @@
 import { authFetch } from './auth.js?v=1';
 import { coerceBooleanSetting, setCurrentSessionId, state } from './state.js?v=5';
-import { abandonActiveChatWork } from './chat.js?v=52';
+import { abandonActiveChatWork } from './chat.js?v=53';
 import { showToast } from './toast.js';
 import { elements, showConfirm } from './ui.js?v=40';
 import { t, getLanguage, setLanguage } from './i18n.js?v=1';

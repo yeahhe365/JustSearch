@@ -17,7 +17,7 @@ import { createCopyButton, createMessageActionRail, createRegenerateButton } fro
 import { updateActiveHistoryItem } from './history-view.js?v=25';
 import { createDynamicLogContainer, createLogEntry, scrollToBottom, appendMessage, renderMessages, showConfirm, createMessageShell } from './ui.js?v=40';
 import { extractSources, hasCitationSources, linkCitationsInElement, renderWithCitations } from './source-renderer.js?v=12';
-import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=49';
+import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=50';
 import { bindCitationEvidenceClicks } from './evidence-panel.js?v=5';
 import {
     applyIntensityPresetToSettings,
@@ -573,10 +573,14 @@ export function setupChatHandler(elements, renderHistory) {
         let searchStartTime = Date.now();
         let streamOutcome = 'completed';
         // 流式渲染节流：避免每个 chunk 都全量 md.render+DOMPurify（O(n²)）。
-        // 用 rAF 合并到下一帧；完成时强制立即渲染保证最终态正确。
+        // AMC 对齐：用 setTimeout 节流而非 rAF —— rAF 在后台标签页被冻结，
+        // 会导致流式内容在后台从不推送到 Live Artifact iframe（白屏）。
+        // setTimeout 在后台照常运行（浏览器至少按节流间隔触发），内容始终可达。
         let pendingRender = false;
         let pendingRenderIsStreaming = false;
-        // Render generation counter: a scheduled streaming render whose rAF
+        let renderTimer = null;
+        const STREAM_RENDER_THROTTLE_MS = 120;
+        // Render generation counter: a scheduled streaming render whose timer
         // fires after the final answer was baked must NOT overwrite the just-
         // baked srcdoc with the streaming shell (STREAM_PREVIEW_ROOT). Bumping
         // this on bake invalidates any in-flight scheduled streaming render.
@@ -589,16 +593,19 @@ export function setupChatHandler(elements, renderHistory) {
             if (pendingRender) return;
             pendingRender = true;
             const seqAtSchedule = streamRenderSeq;
-            // rAF 批处理；reduced-motion 下仍需渲染但不做 smooth 滚动
-            requestAnimationFrame(() => {
+            // AMC 对齐：setTimeout 节流（120ms）。rAF 在后台标签页被冻结，
+            // 会让流式内容在后台从不 push 到 Live Artifact iframe；setTimeout
+            // 在后台照常触发，前台则因 120ms > 帧间隔而等效于合并到下一帧。
+            renderTimer = setTimeout(() => {
                 pendingRender = false;
+                renderTimer = null;
                 if (!ownsView()) return;
                 // 若排队期间已完成终态烘焙,跳过这次流式渲染,
                 // 避免用流式壳(STREAM_PREVIEW_ROOT)覆盖刚烘焙好的最终内容
                 if (seqAtSchedule !== streamRenderSeq) return;
                 renderCurrentAssistantAnswer(pendingRenderIsStreaming);
                 if (!userScrolled) scrollToBottom();
-            });
+            }, STREAM_RENDER_THROTTLE_MS);
         }
 
         function renderCurrentAssistantAnswer(isStreaming) {
@@ -755,7 +762,13 @@ export function setupChatHandler(elements, renderHistory) {
                     ];
                     s.lastUserMessage = text;
                     if (viewOwned) {
-                        // 取消任何挂起的节流渲染，立即用最终态渲染一次
+                        // 取消任何挂起的节流渲染，立即用最终态渲染一次。
+                        // clearTimeout 避免排期的 timer 稍后把 renderTimer 置 null，
+                        // 误清掉 bake 后新 chunk 启动的 timer 引用。
+                        if (renderTimer !== null) {
+                            clearTimeout(renderTimer);
+                            renderTimer = null;
+                        }
                         pendingRender = false;
                         streamRenderSeq += 1; // 标记终态烘焙,作废已排期的流式渲染
                         renderCurrentAssistantAnswer(false);

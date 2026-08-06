@@ -1169,10 +1169,10 @@ def test_sidebar_stylesheet_changes_are_cache_busted():
     assert "from './modules/auth.js?v=1'" in main_source
     assert "from './modules/state.js?v=5'" in main_source
     assert "from './modules/ui.js?v=40'" in main_source
-    assert "from './modules/chat.js?v=52'" in main_source
+    assert "from './modules/chat.js?v=53'" in main_source
     assert "from './modules/history-view.js?v=25'" in main_source
-    assert "from './modules/settings-modal.js?v=56'" in main_source
-    assert "from './modules/sidebar.js?v=21'" in main_source
+    assert "from './modules/settings-modal.js?v=57'" in main_source
+    assert "from './modules/sidebar.js?v=22'" in main_source
     assert "from './modules/model-selector.js?v=16'" in main_source
     assert "from './modules/api.js?v=14'" in main_source
     assert "import('./modules/utils.js?v=13')" in main_source

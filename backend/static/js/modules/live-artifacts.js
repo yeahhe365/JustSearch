@@ -1968,12 +1968,67 @@ function injectPreviewBridge(code, frameId = '') {
       });
     });
   };
-  const renderStreamHtml = (html) => {
-    const root = document.querySelector('[data-amc-stream-preview-root]');
-    if (!root || typeof html !== 'string') return;
-    const parser = new DOMParser();
-    const parsedDocument = parser.parseFromString(html, 'text/html');
-    sanitizeStreamDocument(parsedDocument);
+  // AMC-WebUI streamingPreviewRunnerScript: incremental patch. First render
+  // replaces the root wholesale; later stream updates patch node-by-node so
+  // existing DOM state (focus, scroll, expanded <details>) survives. The prior
+  // replaceChildren rebuild destroyed that state on every chunk and could flash
+  // on fast updates.
+  const syncAttributes = (currentElement, nextElement) => {
+    Array.from(currentElement.attributes).forEach((attribute) => {
+      if (!nextElement.hasAttribute(attribute.name)) {
+        currentElement.removeAttribute(attribute.name);
+      }
+    });
+    Array.from(nextElement.attributes).forEach((attribute) => {
+      if (currentElement.getAttribute(attribute.name) !== attribute.value) {
+        currentElement.setAttribute(attribute.name, attribute.value);
+      }
+    });
+  };
+  const canPatchNode = (currentNode, nextNode) => {
+    if (currentNode.nodeType !== nextNode.nodeType) return false;
+    if (currentNode.nodeType === Node.ELEMENT_NODE) {
+      return currentNode.nodeName === nextNode.nodeName;
+    }
+    return true;
+  };
+  const patchNode = (currentNode, nextNode) => {
+    if (!canPatchNode(currentNode, nextNode)) {
+      currentNode.replaceWith(nextNode);
+      return;
+    }
+    if (currentNode.nodeType === Node.TEXT_NODE) {
+      if (currentNode.nodeValue !== nextNode.nodeValue) {
+        currentNode.nodeValue = nextNode.nodeValue;
+      }
+      return;
+    }
+    if (currentNode.nodeType !== Node.ELEMENT_NODE) {
+      currentNode.replaceWith(nextNode);
+      return;
+    }
+    syncAttributes(currentNode, nextNode);
+    patchChildren(currentNode, nextNode);
+  };
+  const patchChildren = (currentParent, nextParent) => {
+    const currentChildren = Array.from(currentParent.childNodes);
+    const nextChildren = Array.from(nextParent.childNodes);
+    const maxLength = Math.max(currentChildren.length, nextChildren.length);
+    for (let index = 0; index < maxLength; index += 1) {
+      const currentChild = currentChildren[index];
+      const nextChild = nextChildren[index];
+      if (!nextChild) {
+        currentChild.remove();
+        continue;
+      }
+      if (!currentChild) {
+        currentParent.appendChild(nextChild);
+        continue;
+      }
+      patchNode(currentChild, nextChild);
+    }
+  };
+  const buildRenderableFragment = (parsedDocument) => {
     const fragment = document.createDocumentFragment();
     parsedDocument.head.querySelectorAll('style, link[rel="stylesheet"]').forEach((node) => {
       fragment.appendChild(document.importNode(node, true));
@@ -1981,7 +2036,20 @@ function injectPreviewBridge(code, frameId = '') {
     Array.from(parsedDocument.body.childNodes).forEach((node) => {
       fragment.appendChild(document.importNode(node, true));
     });
-    root.replaceChildren(fragment);
+    return fragment;
+  };
+  const renderStreamHtml = (html) => {
+    const root = document.querySelector('[data-amc-stream-preview-root]');
+    if (!root || typeof html !== 'string') return;
+    const parser = new DOMParser();
+    const parsedDocument = parser.parseFromString(html, 'text/html');
+    sanitizeStreamDocument(parsedDocument);
+    const fragment = buildRenderableFragment(parsedDocument);
+    if (!root.hasChildNodes()) {
+      root.replaceChildren(fragment);
+    } else {
+      patchChildren(root, fragment);
+    }
     scheduleResize();
   };
   window.addEventListener('message', (event) => {
