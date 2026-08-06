@@ -1,0 +1,10 @@
+docs/
+.github/
+*.svg
+*.png
+*.ico
+*.bat
+*.sh
+Dockerfile
+docker-compose.yml
+package-lock.json

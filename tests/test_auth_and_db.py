@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -46,6 +47,80 @@ def test_access_control_allows_loopback_without_token():
         assert response.json() == {"ok": True}
 
     asyncio.run(run())
+
+
+def test_access_control_allows_docker_bridge_gateway_without_token():
+    """Host → published port appears as bridge gateway (typically *.*.*.1)."""
+    from backend.app.auth import AccessControlMiddleware
+
+    app = FastAPI()
+    app.add_middleware(AccessControlMiddleware, token_provider=lambda: "secret-token")
+
+    @app.get("/api/ping")
+    async def ping():
+        return JSONResponse({"ok": True})
+
+    async def run():
+        transport = httpx.ASGITransport(app=app, client=("172.17.0.1", 4321))
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get("/api/ping")
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+
+    asyncio.run(run())
+
+
+def test_access_control_rejects_docker_peer_container_without_token():
+    """Same Docker network peers (not the gateway) must present a Bearer token."""
+    from backend.app.auth import AccessControlMiddleware
+
+    app = FastAPI()
+    app.add_middleware(AccessControlMiddleware, token_provider=lambda: "secret-token")
+
+    @app.get("/api/ping")
+    async def ping():
+        return JSONResponse({"ok": True})
+
+    async def run():
+        transport = httpx.ASGITransport(app=app, client=("172.17.0.5", 4321))
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get("/api/ping")
+        assert response.status_code == 401
+
+    asyncio.run(run())
+
+
+def test_access_control_rejects_arbitrary_172_prefix_without_token():
+    """Broad 172.x trust is unsafe (RFC1918 / cloud VPCs); only gateway heuristic applies."""
+    from backend.app.auth import AccessControlMiddleware
+
+    app = FastAPI()
+    app.add_middleware(AccessControlMiddleware, token_provider=lambda: "secret-token")
+
+    @app.get("/api/ping")
+    async def ping():
+        return JSONResponse({"ok": True})
+
+    async def run():
+        transport = httpx.ASGITransport(app=app, client=("172.31.100.50", 4321))
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get("/api/ping")
+        assert response.status_code == 401
+
+    asyncio.run(run())
+
+
+def test_is_loopback_host_docker_gateway_only():
+    from backend.app.auth import is_loopback_host
+
+    assert is_loopback_host("127.0.0.1") is True
+    assert is_loopback_host("172.17.0.1") is True
+    assert is_loopback_host("172.18.0.1") is True
+    assert is_loopback_host("10.0.0.1") is True
+    assert is_loopback_host("172.17.0.2") is False
+    assert is_loopback_host("172.31.100.50") is False
+    assert is_loopback_host("10.0.0.42") is False
+    assert is_loopback_host("203.0.113.10") is False
 
 
 def test_access_control_allows_remote_api_with_bearer_token():
@@ -140,6 +215,59 @@ def test_html_bootstrap_includes_token_for_loopback_client(monkeypatch):
     asyncio.run(run())
 
 
+def test_html_bootstrap_includes_token_for_docker_gateway_client(monkeypatch):
+    from backend.app import auth
+
+    monkeypatch.setenv("JUSTSEARCH_AUTH_ENABLED", "true")
+    monkeypatch.setattr(auth, "get_auth_token", lambda: "secret-token")
+
+    app = FastAPI()
+
+    @app.get("/")
+    async def index(request: Request):
+        return JSONResponse(auth.build_html_bootstrap_payload(request))
+
+    async def run():
+        transport = httpx.ASGITransport(app=app, client=("172.17.0.1", 4321))
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8001") as client:
+            response = await client.get("/")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "authEnabled": True,
+            "clientIsLoopback": True,
+            "authToken": "secret-token",
+        }
+
+    asyncio.run(run())
+
+
+def test_html_bootstrap_omits_token_for_docker_peer_container(monkeypatch):
+    from backend.app import auth
+
+    monkeypatch.setenv("JUSTSEARCH_AUTH_ENABLED", "true")
+    monkeypatch.setattr(auth, "get_auth_token", lambda: "secret-token")
+
+    app = FastAPI()
+
+    @app.get("/")
+    async def index(request: Request):
+        return JSONResponse(auth.build_html_bootstrap_payload(request))
+
+    async def run():
+        transport = httpx.ASGITransport(app=app, client=("172.17.0.9", 4321))
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8001") as client:
+            response = await client.get("/")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "authEnabled": True,
+            "clientIsLoopback": False,
+        }
+
+    asyncio.run(run())
+
+
 def test_html_bootstrap_omits_token_when_remote_client_spoofs_localhost_host(monkeypatch):
     from backend.app import auth
 
@@ -212,6 +340,139 @@ def test_spa_index_does_not_cache_html_and_allows_static_cache():
     asyncio.run(run())
 
 
+def test_authorize_websocket_allows_loopback_and_chrome_extension_origin(monkeypatch):
+    from backend.app import auth
+
+    monkeypatch.setenv("JUSTSEARCH_AUTH_ENABLED", "true")
+
+    class _Client:
+        host = "127.0.0.1"
+
+    class _WS:
+        def __init__(self):
+            self.client = _Client()
+            self.headers = {"origin": "chrome-extension://abcdefghijklmnopqrstuvwxyz012345"}
+            self.query_params = {}
+            self.closed = None
+
+        async def close(self, code=1000, reason=""):
+            self.closed = (code, reason)
+
+    async def run():
+        ws = _WS()
+        ok = await auth.authorize_websocket(ws, token_provider=lambda: "secret-token")
+        assert ok is True
+        assert ws.closed is None
+
+    asyncio.run(run())
+
+
+def test_authorize_websocket_rejects_remote_without_token(monkeypatch):
+    from backend.app import auth
+
+    monkeypatch.setenv("JUSTSEARCH_AUTH_ENABLED", "true")
+
+    class _Client:
+        host = "203.0.113.10"
+
+    class _WS:
+        def __init__(self):
+            self.client = _Client()
+            self.headers = {}
+            self.query_params = {}
+            self.closed = None
+
+        async def close(self, code=1000, reason=""):
+            self.closed = (code, reason)
+
+    async def run():
+        ws = _WS()
+        ok = await auth.authorize_websocket(ws, token_provider=lambda: "secret-token")
+        assert ok is False
+        assert ws.closed == (4401, "Unauthorized")
+
+    asyncio.run(run())
+
+
+def test_authorize_websocket_allows_remote_with_query_token(monkeypatch):
+    from backend.app import auth
+
+    monkeypatch.setenv("JUSTSEARCH_AUTH_ENABLED", "true")
+
+    class _Client:
+        host = "203.0.113.10"
+
+    class _WS:
+        def __init__(self):
+            self.client = _Client()
+            self.headers = {}
+            self.query_params = {"token": "secret-token"}
+            self.closed = None
+
+        async def close(self, code=1000, reason=""):
+            self.closed = (code, reason)
+
+    async def run():
+        ws = _WS()
+        ok = await auth.authorize_websocket(ws, token_provider=lambda: "secret-token")
+        assert ok is True
+        assert ws.closed is None
+
+    asyncio.run(run())
+
+
+def test_handle_extension_websocket_calls_authorize(monkeypatch):
+    """Bridge entry must refuse unauthorized sockets before accept."""
+    from backend.app import extension_bridge
+
+    calls = []
+
+    class _Client:
+        host = "203.0.113.10"
+
+    class _WS:
+        def __init__(self):
+            self.client = _Client()
+            self.headers = {}
+            self.query_params = {}
+            self.accepted = False
+            self.closed = None
+
+        async def accept(self):
+            self.accepted = True
+
+        async def close(self, code=1000, reason=""):
+            self.closed = (code, reason)
+
+    async def fake_authorize(websocket, token_provider=None):
+        calls.append("authorize")
+        await websocket.close(code=4401, reason="Unauthorized")
+        return False
+
+    monkeypatch.setattr(extension_bridge, "authorize_websocket", fake_authorize)
+    # Force non-loopback bind path so only auth gate should reject.
+    monkeypatch.setattr(extension_bridge, "_REQUIRE_LOOPBACK", False)
+
+    async def run():
+        ws = _WS()
+        await extension_bridge.handle_extension_websocket(ws)
+        assert calls == ["authorize"]
+        assert ws.accepted is False
+        assert ws.closed == (4401, "Unauthorized")
+
+    asyncio.run(run())
+
+
+def test_search_cache_key_includes_engine_query_and_max_results():
+    from backend.app.browser_manager import BrowserManager
+
+    mgr = BrowserManager(engine="google", max_results=5)
+    assert mgr._search_cache_key("hello") == "google:hello:5"
+    mgr2 = BrowserManager(engine="google", max_results=50)
+    assert mgr2._search_cache_key("hello") == "google:hello:50"
+    assert mgr._search_cache_key("hello") != mgr2._search_cache_key("hello")
+
+
 def test_default_model_settings_use_deepseek_defaults():
     from backend.app.database import DEFAULT_SETTINGS
 
@@ -223,6 +484,7 @@ def test_default_model_settings_use_deepseek_defaults():
     assert DEFAULT_SETTINGS["providers"][0]["id"] == "deepseek"
     assert DEFAULT_SETTINGS["providers"][0]["base_url"] == "https://api.deepseek.com/v1"
     assert DEFAULT_SETTINGS["providers"][0]["model_id"] == "deepseek-v4-pro"
+    assert DEFAULT_SETTINGS["providers"][0]["enabled"] is True
     assert set(DEFAULT_SETTINGS["workflow_step_models"]) == {
         "analysis",
         "relevance",
@@ -233,10 +495,13 @@ def test_default_model_settings_use_deepseek_defaults():
     assert DEFAULT_SETTINGS["live_artifacts_mode"] is False
     assert DEFAULT_SETTINGS["base_font_size"] == 16
     assert DEFAULT_SETTINGS["live_artifacts_font_size"] == 16
+    assert DEFAULT_SETTINGS["completion_notification_enabled"] is False
+    assert DEFAULT_SETTINGS["completion_sound_enabled"] is False
     assert example_settings["default_provider_id"] == "deepseek"
     assert example_settings["providers"][0]["id"] == "deepseek"
     assert example_settings["providers"][0]["base_url"] == "https://api.deepseek.com/v1"
     assert example_settings["providers"][0]["model_id"] == "deepseek-v4-pro"
+    assert example_settings["providers"][0]["enabled"] is True
     assert set(example_settings["workflow_step_models"]) == {
         "analysis",
         "relevance",
@@ -442,6 +707,74 @@ def test_save_chat_history_populates_fts_table(tmp_path):
             ).scalar_one()
 
         assert total == 2
+        assert matched == 1
+
+        if database._engine is not None:
+            await database._engine.dispose()
+            database._engine = None
+            database._async_session_factory = None
+
+    asyncio.run(run())
+
+
+def test_init_db_skips_full_fts_rebuild_when_index_nonempty(tmp_path):
+    """Restart must not wipe+rebuild FTS when rows already exist (triggers keep it in sync)."""
+    from backend.app import database
+
+    async def run():
+        if database._engine is not None:
+            await database._engine.dispose()
+
+        db_path = tmp_path / "justsearch.db"
+        database._engine = None
+        database._async_session_factory = None
+        database._DB_PATH = str(db_path)
+        database._DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
+        database._CHATS_DIR = str(tmp_path / "legacy_chats")
+        database._SETTINGS_FILE = str(tmp_path / "settings.json")
+
+        await database.init_db()
+        await database.save_chat_history(
+            "session-fts-keep",
+            [{"role": "user", "content": "unique_fts_marker_xyz"}],
+            title="FTS Keep",
+        )
+
+        # Sentinel row: only survives if startup skips DELETE FROM chat_messages_fts.
+        async with database._engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO chat_messages_fts(rowid, session_id, content) "
+                    "VALUES (999999001, 'sentinel-session', 'fts_rebuild_sentinel_token')"
+                )
+            )
+
+        if database._engine is not None:
+            await database._engine.dispose()
+        database._engine = None
+        database._async_session_factory = None
+
+        await database.init_db()
+
+        async with await database.get_session() as session:
+            sentinel = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM chat_messages_fts "
+                        "WHERE chat_messages_fts MATCH 'fts_rebuild_sentinel_token'"
+                    )
+                )
+            ).scalar_one()
+            matched = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM chat_messages_fts "
+                        "WHERE chat_messages_fts MATCH 'unique_fts_marker_xyz'"
+                    )
+                )
+            ).scalar_one()
+
+        assert sentinel == 1, "startup wiped FTS; expected skip when index already non-empty"
         assert matched == 1
 
         if database._engine is not None:
@@ -884,8 +1217,8 @@ def test_history_routes_reject_route_unsafe_ids_before_db_operations(tmp_path):
         async with await database.get_session() as session:
             await session.execute(
                 text(
-                    "INSERT INTO chat_sessions (id, title, created_at, updated_at) "
-                    "VALUES ('bad\\session', 'Dirty Session', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                    "INSERT INTO chat_sessions (id, title, is_pinned, created_at, updated_at) "
+                    "VALUES ('bad\\session', 'Dirty Session', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
                 )
             )
             await session.execute(
@@ -1835,6 +2168,62 @@ def test_settings_api_partial_update_preserves_existing_values(tmp_path):
     asyncio.run(run())
 
 
+def test_settings_completion_feedback_flags_round_trip(tmp_path):
+    from backend.app import database
+    from backend.app.routers.settings import router
+
+    async def run():
+        if database._engine is not None:
+            await database._engine.dispose()
+
+        db_path = tmp_path / "justsearch.db"
+        database._engine = None
+        database._async_session_factory = None
+        database._DB_PATH = str(db_path)
+        database._DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
+        database._CHATS_DIR = str(tmp_path / "legacy_chats")
+        database._SETTINGS_FILE = str(tmp_path / "settings.json")
+        await database.init_db()
+
+        app = FastAPI()
+        app.include_router(router)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            # Defaults are off.
+            loaded = (await client.get("/api/settings")).json()
+            assert loaded["completion_notification_enabled"] is False
+            assert loaded["completion_sound_enabled"] is False
+
+            # Turning both on persists and reloads.
+            response = await client.post(
+                "/api/settings",
+                json={
+                    "completion_notification_enabled": True,
+                    "completion_sound_enabled": True,
+                },
+            )
+            assert response.status_code == 200
+            saved = response.json()["settings"]
+            assert saved["completion_notification_enabled"] is True
+            assert saved["completion_sound_enabled"] is True
+
+            loaded = (await client.get("/api/settings")).json()
+            assert loaded["completion_notification_enabled"] is True
+            assert loaded["completion_sound_enabled"] is True
+
+            raw_settings = await database.load_settings()
+            assert raw_settings["completion_notification_enabled"] is True
+            assert raw_settings["completion_sound_enabled"] is True
+
+        if database._engine is not None:
+            await database._engine.dispose()
+            database._engine = None
+            database._async_session_factory = None
+
+    asyncio.run(run())
+
+
 def test_settings_api_uses_configured_search_engines(tmp_path, monkeypatch):
     from backend.app import database
     from backend.app.routers.settings import router
@@ -2078,6 +2467,69 @@ def test_provider_normalization_strips_gemini_25_models():
     assert first_model_id("foo::") == "foo::"
 
 
+def test_provider_enabled_semantics():
+    from fastapi import HTTPException
+
+    from backend.app.providers import (
+        ensure_default_provider_id,
+        is_provider_enabled,
+        normalize_provider,
+        normalize_providers,
+        normalize_workflow_step_models,
+    )
+
+    assert is_provider_enabled({"id": "a"}) is True
+    assert is_provider_enabled({"id": "a", "enabled": True}) is True
+    assert is_provider_enabled({"id": "a", "enabled": False}) is False
+
+    # normalize_provider preserves the enabled flag.
+    disabled = normalize_provider(
+        {"id": "qwen", "api_key": "", "base_url": "", "model_id": "", "enabled": False}
+    )
+    assert disabled["enabled"] is False
+    assert disabled["base_url"] == ""
+    assert disabled["model_id"] == ""
+
+    # A disabled provider may stay unconfigured, but an enabled one needs base/model.
+    enabled_default = normalize_provider(
+        {"id": "deepseek", "api_key": "sk-1", "base_url": "https://api.deepseek.com/v1", "model_id": "deepseek-v4-flash"}
+    )
+    assert enabled_default["enabled"] is True
+    with pytest.raises(HTTPException):
+        normalize_provider({"id": "openai", "base_url": "", "model_id": "gpt-4.1"})
+
+    # normalize_providers keeps enabled on every row (defaults to True).
+    providers = normalize_providers(
+        [
+            {"id": "deepseek", "base_url": "https://api.deepseek.com/v1", "model_id": "deepseek-v4-flash", "enabled": True},
+            {"id": "qwen", "base_url": "", "model_id": "", "enabled": False},
+        ]
+    )
+    by_id = {p["id"]: p for p in providers}
+    assert by_id["deepseek"]["enabled"] is True
+    assert by_id["qwen"]["enabled"] is False
+
+    # ensure_default_provider_id rejects a disabled default.
+    assert ensure_default_provider_id(providers, "deepseek") == "deepseek"
+    with pytest.raises(HTTPException):
+        ensure_default_provider_id(providers, "qwen")
+
+    # Step models referencing a disabled provider are dropped on the non-strict
+    # path and rejected on the strict path.
+    non_strict = normalize_workflow_step_models(
+        {"analysis": {"provider_id": "qwen", "model_id": "qwen3-max"}},
+        providers,
+        strict=False,
+    )
+    assert non_strict["analysis"] == {"provider_id": "", "model_id": ""}
+    with pytest.raises(HTTPException):
+        normalize_workflow_step_models(
+            {"analysis": {"provider_id": "qwen", "model_id": "qwen3-max"}},
+            providers,
+            strict=True,
+        )
+
+
 def test_loaded_settings_backfills_legacy_api_into_default_provider():
     from backend.app.database import _normalize_loaded_settings
     from backend.app.providers import mask_provider_secrets
@@ -2180,6 +2632,7 @@ def test_loaded_settings_filters_invalid_provider_entries():
             "api_key": "secret",
             "base_url": "https://api.openai.com/v1",
             "model_id": "gpt-4.1",
+            "enabled": True,
         }
     ]
 
@@ -2743,6 +3196,363 @@ def test_truncate_messages_from_drops_anchor_and_tail(tmp_path):
     asyncio.run(run())
 
 
+def test_replace_messages_from_swaps_tail_atomically(tmp_path):
+    """AMC resend on success path: delete from_index onward + insert new turn
+    in one transaction. q1/a1 survive, q2/a2/q3/a3 are replaced by new_u/new_a."""
+    from backend.app import database
+
+    async def run():
+        if database._engine is not None:
+            await database._engine.dispose()
+
+        db_path = tmp_path / "justsearch-replace.db"
+        database._engine = None
+        database._async_session_factory = None
+        database._DB_PATH = str(db_path)
+        database._DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
+        database._CHATS_DIR = str(tmp_path / "legacy_chats")
+        database._SETTINGS_FILE = str(tmp_path / "settings.json")
+        await database.init_db()
+        await database.save_chat_history(
+            "replace-session",
+            [
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "q2"},
+                {"role": "assistant", "content": "a2"},
+                {"role": "user", "content": "q3"},
+                {"role": "assistant", "content": "a3"},
+            ],
+            title="Replace Session",
+        )
+
+        replaced = await database.replace_messages_from(
+            "replace-session",
+            2,
+            [
+                {"role": "user", "content": "new_u"},
+                {"role": "assistant", "content": "new_a"},
+            ],
+            title="New Title",
+        )
+        assert replaced is True
+        after = await database.load_chat_history("replace-session")
+        assert [m["content"] for m in after["messages"]] == ["q1", "a1", "new_u", "new_a"]
+        assert after["title"] == "New Title"
+
+        # from_index past end clamps to len and appends.
+        replaced2 = await database.replace_messages_from(
+            "replace-session",
+            99,
+            [{"role": "user", "content": "tail_u"}, {"role": "assistant", "content": "tail_a"}],
+        )
+        assert replaced2 is True
+        after2 = await database.load_chat_history("replace-session")
+        assert [m["content"] for m in after2["messages"]] == [
+            "q1", "a1", "new_u", "new_a", "tail_u", "tail_a",
+        ]
+
+        # Missing session + empty messages both return False.
+        assert await database.replace_messages_from("missing", 0, [{"role": "user", "content": "x"}]) is False
+        assert await database.replace_messages_from("replace-session", 0, []) is False
+
+        if database._engine is not None:
+            await database._engine.dispose()
+            database._engine = None
+            database._async_session_factory = None
+
+    asyncio.run(run())
+
+
+def test_set_chat_pinned_orders_first_and_preserves_timestamp(tmp_path):
+    """Pinning reorders a chat ahead of unpinned peers but does NOT bump its
+    updated_at (it must stay in its original date bucket, not jump to 'today')."""
+    from backend.app import database
+    import time
+
+    async def run():
+        if database._engine is not None:
+            await database._engine.dispose()
+
+        db_path = tmp_path / "justsearch-pin.db"
+        database._engine = None
+        database._async_session_factory = None
+        database._DB_PATH = str(db_path)
+        database._DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
+        database._CHATS_DIR = str(tmp_path / "legacy_chats")
+        database._SETTINGS_FILE = str(tmp_path / "settings.json")
+        await database.init_db()
+
+        # Three sessions with strictly increasing timestamps (real wall-clock
+        # gaps so ordering by updated_at is deterministic regardless of DB
+        # microsecond rounding).
+        for label in ["alpha", "beta", "gamma"]:
+            await database.save_chat_history(
+                f"pin-{label}",
+                [{"role": "user", "content": label}],
+                title=label,
+            )
+            time.sleep(0.02)  # 20ms > SQLite microsecond rounding granularity
+
+        before = await database.list_chats(limit=10)
+        before_ids = [c["id"] for c in before]
+        assert before_ids == ["pin-gamma", "pin-beta", "pin-alpha"], before_ids
+        beta_before = next(c for c in before if c["id"] == "pin-beta")
+        assert beta_before["is_pinned"] is False
+
+        pinned = await database.set_chat_pinned("pin-beta", True)
+        assert pinned is not None
+        assert pinned["is_pinned"] is True
+
+        after = await database.list_chats(limit=10)
+        after_ids = [c["id"] for c in after]
+        # Pinned session jumps to the front; the rest keep updated_at order.
+        assert after_ids == ["pin-beta", "pin-gamma", "pin-alpha"], after_ids
+        beta_after = next(c for c in after if c["id"] == "pin-beta")
+        # Pinning must not change the timestamp (no date-bucket jump). Compare
+        # at second precision — the stored datetime may round on read.
+        assert beta_after["timestamp"][:19] == beta_before["timestamp"][:19]
+
+        # Unpin restores order.
+        await database.set_chat_pinned("pin-beta", False)
+        restored = await database.list_chats(limit=10)
+        assert [c["id"] for c in restored] == ["pin-gamma", "pin-beta", "pin-alpha"]
+
+        # Missing session returns None.
+        assert await database.set_chat_pinned("missing", True) is None
+
+        if database._engine is not None:
+            await database._engine.dispose()
+            database._engine = None
+            database._async_session_factory = None
+
+    asyncio.run(run())
+
+
+def test_duplicate_chat_creates_independent_copy(tmp_path):
+    """A duplicate is a fully independent copy: new id, same messages, title
+    suffixed with （副本）, source's group inherited, starts unpinned, and
+    mutating the copy never touches the source."""
+    from backend.app import database
+
+    async def run():
+        if database._engine is not None:
+            await database._engine.dispose()
+
+        db_path = tmp_path / "justsearch-dup.db"
+        database._engine = None
+        database._async_session_factory = None
+        database._DB_PATH = str(db_path)
+        database._DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
+        database._CHATS_DIR = str(tmp_path / "legacy_chats")
+        database._SETTINGS_FILE = str(tmp_path / "settings.json")
+        await database.init_db()
+
+        await database.save_chat_history(
+            "dup-source",
+            [
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "q2"},
+            ],
+            title="Source Chat",
+        )
+
+        dup = await database.duplicate_chat("dup-source")
+        assert dup is not None
+        assert dup["id"] != "dup-source"
+        assert dup["title"] == "Source Chat（副本）"
+        assert dup["is_pinned"] is False
+
+        # Copy carries the full message set, independently.
+        dup_full = await database.load_chat_history(dup["id"])
+        assert [m["content"] for m in dup_full["messages"]] == ["q1", "a1", "q2"]
+
+        # Mutating the copy does not affect the source.
+        await database.delete_message(dup["id"], 2)
+        source_full = await database.load_chat_history("dup-source")
+        assert [m["content"] for m in source_full["messages"]] == ["q1", "a1", "q2"]
+        dup_after = await database.load_chat_history(dup["id"])
+        assert [m["content"] for m in dup_after["messages"]] == ["q1", "a1"]
+
+        # Missing source returns None.
+        assert await database.duplicate_chat("missing") is None
+
+        if database._engine is not None:
+            await database._engine.dispose()
+            database._engine = None
+            database._async_session_factory = None
+
+    asyncio.run(run())
+
+
+def test_fork_chat_from_keeps_prefix(tmp_path):
+    """Forking at a message index creates a new session containing only the
+    prefix up to and including that index; the source is untouched."""
+    from backend.app import database
+
+    async def run():
+        if database._engine is not None:
+            await database._engine.dispose()
+
+        db_path = tmp_path / "justsearch-fork.db"
+        database._engine = None
+        database._async_session_factory = None
+        database._DB_PATH = str(db_path)
+        database._DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
+        database._CHATS_DIR = str(tmp_path / "legacy_chats")
+        database._SETTINGS_FILE = str(tmp_path / "settings.json")
+        await database.init_db()
+
+        await database.save_chat_history(
+            "fork-source",
+            [
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "q2"},
+                {"role": "assistant", "content": "a2"},
+            ],
+            title="Source Chat",
+        )
+
+        # Fork at index 2 (the second user message): keeps q1,a1,q2.
+        forked = await database.fork_chat_from("fork-source", 2)
+        assert forked is not None
+        assert forked["id"] != "fork-source"
+        assert forked["title"] == "Source Chat（分叉）"
+        forked_full = await database.load_chat_history(forked["id"])
+        assert [m["content"] for m in forked_full["messages"]] == ["q1", "a1", "q2"]
+
+        # Source is untouched.
+        source_full = await database.load_chat_history("fork-source")
+        assert [m["content"] for m in source_full["messages"]] == ["q1", "a1", "q2", "a2"]
+
+        # Index past end clamps to the last message.
+        forked_last = await database.fork_chat_from("fork-source", 99)
+        last_full = await database.load_chat_history(forked_last["id"])
+        assert [m["content"] for m in last_full["messages"]] == ["q1", "a1", "q2", "a2"]
+
+        # Missing source returns None.
+        assert await database.fork_chat_from("missing", 0) is None
+
+        if database._engine is not None:
+            await database._engine.dispose()
+            database._engine = None
+            database._async_session_factory = None
+
+    asyncio.run(run())
+
+
+def test_chat_endpoint_workflow_failure_keeps_truncated_tail(tmp_path, monkeypatch):
+    """Resend with truncate_from_index set, but the workflow throws: the
+    persisted tail (q2/a2/q3/a3) must still be intact — we only truncated
+    in memory, never on disk before the answer succeeded."""
+    from backend.app import database
+    from backend.app.routers.chat import router
+
+    class FailingWorkflow:
+        def __init__(
+            self,
+            api_key,
+            base_url,
+            model,
+            search_engine,
+            max_results,
+            max_iterations,
+            interactive_search,
+            session_id=None,
+            step_model_configs=None,
+            canvas_mode=False,
+            live_artifacts_mode=False,
+            **_kwargs,
+        ):
+            self.session_id = session_id
+
+        async def run(
+            self,
+            query,
+            progress_callback,
+            stream_callback,
+            context_messages,
+            source_callback,
+            stats_callback,
+        ):
+            # Context was sliced in memory to the first 2 messages.
+            assert len(context_messages) == 2
+            raise RuntimeError("simulated upstream failure")
+
+    async def run():
+        if database._engine is not None:
+            await database._engine.dispose()
+
+        db_path = tmp_path / "justsearch-tail.db"
+        database._engine = None
+        database._async_session_factory = None
+        database._DB_PATH = str(db_path)
+        database._DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
+        database._CHATS_DIR = str(tmp_path / "legacy_chats")
+        database._SETTINGS_FILE = str(tmp_path / "settings.json")
+        await database.init_db()
+        await database.save_chat_history(
+            "tail-session",
+            [
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "q2"},
+                {"role": "assistant", "content": "a2"},
+                {"role": "user", "content": "q3"},
+                {"role": "assistant", "content": "a3"},
+            ],
+            title="Tail Session",
+        )
+        await database.save_settings({
+            "default_provider_id": "deepseek",
+            "providers": [{
+                "id": "deepseek", "name": "DeepSeek", "api_key": "k",
+                "base_url": "https://api.deepseek.com/v1", "model_id": "deepseek-chat",
+            }],
+            "search_engine": "google", "max_results": "5", "max_iterations": "1",
+            "interactive_search": "false",
+        })
+
+        monkeypatch.setattr("backend.app.routers.chat.SearchWorkflow", FailingWorkflow)
+        monkeypatch.setattr(
+            "backend.app.routers.chat.is_extension_connected", lambda: True
+        )
+
+        app = FastAPI()
+        app.include_router(router)
+        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 1234))
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.post(
+                "/api/chat",
+                json={
+                    "query": "edited question",
+                    "session_id": "tail-session",
+                    "provider_id": "deepseek",
+                    "truncate_from_index": 2,
+                },
+            )
+
+        assert response.status_code == 200
+        # The failure surfaced as an SSE error, not a thrown 500.
+        assert "simulated upstream failure" in response.text
+
+        # The tail was NEVER deleted on disk — workflow failed before the
+        # success-path replace_messages_from call.
+        after = await database.load_chat_history("tail-session")
+        assert [m["content"] for m in after["messages"]] == [
+            "q1", "a1", "q2", "a2", "q3", "a3",
+        ]
+
+        if database._engine is not None:
+            await database._engine.dispose()
+            database._engine = None
+            database._async_session_factory = None
+
+    asyncio.run(run())
+
+
 def test_chat_endpoint_uses_selected_provider_id(tmp_path, monkeypatch):
     from backend.app import database
     from backend.app.routers.chat import router
@@ -2763,6 +3573,7 @@ def test_chat_endpoint_uses_selected_provider_id(tmp_path, monkeypatch):
             step_model_configs=None,
             canvas_mode=False,
             live_artifacts_mode=False,
+            history_options=None,
         ):
             captured.update(
                 {
@@ -2900,6 +3711,7 @@ def test_chat_endpoint_coerces_string_interactive_search_default(tmp_path, monke
             step_model_configs=None,
             canvas_mode=False,
             live_artifacts_mode=False,
+            history_options=None,
         ):
             captured["interactive_search"] = interactive_search
 
@@ -3075,6 +3887,7 @@ def test_chat_endpoint_clamps_request_search_limits(tmp_path, monkeypatch):
             step_model_configs=None,
             canvas_mode=False,
             live_artifacts_mode=False,
+            history_options=None,
         ):
             captured.update(
                 {
@@ -3175,6 +3988,7 @@ def test_chat_endpoint_defaults_to_google_when_no_engine_is_saved(tmp_path, monk
             step_model_configs=None,
             canvas_mode=False,
             live_artifacts_mode=False,
+            history_options=None,
         ):
             captured["search_engine"] = search_engine
             captured["live_artifacts_mode"] = live_artifacts_mode
@@ -3327,6 +4141,7 @@ def test_chat_endpoint_falls_back_when_saved_search_engine_is_unknown(tmp_path, 
             step_model_configs=None,
             canvas_mode=False,
             live_artifacts_mode=False,
+            history_options=None,
         ):
             captured["search_engine"] = search_engine
 
@@ -3416,6 +4231,7 @@ def test_chat_endpoint_falls_back_when_saved_search_engine_is_not_string(tmp_pat
             step_model_configs=None,
             canvas_mode=False,
             live_artifacts_mode=False,
+            history_options=None,
         ):
             captured["search_engine"] = search_engine
 
@@ -3590,6 +4406,7 @@ def test_chat_endpoint_allows_local_provider_without_api_key(tmp_path, monkeypat
             step_model_configs=None,
             canvas_mode=False,
             live_artifacts_mode=False,
+            history_options=None,
         ):
             captured.update(
                 {

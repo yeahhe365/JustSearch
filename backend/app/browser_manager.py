@@ -53,6 +53,10 @@ class BrowserManager:
         """No-op: 浏览器由桥接扩展管理,后端只持客户端单例。"""
         return None
 
+    def _search_cache_key(self, query: str) -> str:
+        """Include max_results so different result limits do not share a cache entry."""
+        return f"{self.engine}:{query}:{self.max_results}"
+
     async def search_web(
         self,
         query: str,
@@ -64,7 +68,7 @@ class BrowserManager:
         """
         Concurrent Web Search - scrapes search results for the query.
         """
-        cache_key = f"{self.engine}:{query}"
+        cache_key = self._search_cache_key(query)
         cached = _search_cache.get(cache_key) if use_cache else None
         if cached and time.time() - cached[1] < _SEARCH_CACHE_TTL:
             if log_func:
@@ -137,7 +141,7 @@ class BrowserManager:
                     if log_func:
                         log_func(f"浏览器: 成功解析 {len(results)} 个结果。")
                     if use_cache:
-                        _search_cache[f"{self.engine}:{query}"] = (_clone_search_results(results), time.time())
+                        _search_cache[cache_key] = (_clone_search_results(results), time.time())
                     return results
                 return []
 
@@ -259,7 +263,7 @@ class BrowserManager:
                 log_func(f"浏览器: 成功解析 {len(results)} 个结果。")
             if results:
                 if use_cache:
-                    _search_cache[f"{self.engine}:{query}"] = (_clone_search_results(results), time.time())
+                    _search_cache[cache_key] = (_clone_search_results(results), time.time())
             else:
                 logger.warning(f"搜索 '{query}' 无结果")
             return results

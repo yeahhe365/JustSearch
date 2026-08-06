@@ -2,16 +2,19 @@ import { buildAuthenticatedUrl } from './auth.js?v=1';
 import {
     createChatGroupAPI,
     deleteChatGroupAPI,
+    duplicateChatAPI,
     fetchChatGroups,
     fetchHistory,
     moveChatToGroupAPI,
+    pinChatAPI,
     renameChatAPI,
     searchHistory,
     updateChatGroupAPI
-} from './api.js?v=11';
+} from './api.js?v=14';
 import { state } from './state.js?v=5';
 import { showToast } from './toast.js';
-import { elements, showConfirm } from './ui.js?v=31';
+import { elements, showConfirm } from './ui.js?v=40';
+import { t } from './i18n.js?v=1';
 
 let _fullHistory = [];
 let _chatGroups = [];
@@ -39,6 +42,23 @@ function updateCachedChatGroup(groupId, changes) {
     _chatGroups = _chatGroups.map(group => (
         group.id === groupId ? { ...group, ...changes } : group
     ));
+}
+
+function updateCachedChatPinned(chatId, isPinned) {
+    _fullHistory = _fullHistory.map(chat => (
+        chat.id === chatId ? { ...chat, is_pinned: Boolean(isPinned) } : chat
+    ));
+}
+
+function sortHistoryByPinnedThenTimestamp(history) {
+    return [...history].sort((a, b) => {
+        const pa = a.is_pinned ? 1 : 0;
+        const pb = b.is_pinned ? 1 : 0;
+        if (pa !== pb) return pb - pa;
+        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return tb - ta;
+    });
 }
 
 function groupChatsByDate(history) {
@@ -115,6 +135,7 @@ function createHistoryItem(chat, currentSessionId, callbacks) {
     const { onSelect, onDelete } = callbacks;
     const item = document.createElement('div');
     item.className = 'history-item';
+    if (chat.is_pinned) item.classList.add('is-pinned');
     item.draggable = true;
     item.dataset.id = chat.id;
     if (chat.id === currentSessionId) item.classList.add('active');
@@ -131,7 +152,7 @@ function createHistoryItem(chat, currentSessionId, callbacks) {
 
     const titleSpan = document.createElement('span');
     titleSpan.className = 'history-title';
-    titleSpan.textContent = chat.title || '新对话';
+    titleSpan.textContent = chat.title || t('history.newChat');
     item.appendChild(titleSpan);
 
     titleSpan.addEventListener('dblclick', (e) => {
@@ -142,10 +163,31 @@ function createHistoryItem(chat, currentSessionId, callbacks) {
     const actionsContainer = document.createElement('div');
     actionsContainer.className = 'history-item-actions';
 
+    const pinned = Boolean(chat.is_pinned);
+    const pinTitle = pinned ? t('history.unpin') : t('history.pin');
+    actionsContainer.appendChild(createIconButton(
+        `history-action-btn history-pin-btn${pinned ? ' is-pinned' : ''}`,
+        pinTitle,
+        pinTitle,
+        '<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path></svg>',
+        async (e) => {
+            e.stopPropagation();
+            const nextPinned = !pinned;
+            const summary = await pinChatAPI(chat.id, nextPinned);
+            if (summary) {
+                updateCachedChatPinned(chat.id, nextPinned);
+                renderHistory(_fullHistory, state.currentSessionId, callbacks, _chatGroups);
+                showToast(nextPinned ? t('history.pinnedToast') : t('history.unpinnedToast'), 'success');
+            } else {
+                showToast(t('history.pinFailed'), 'error');
+            }
+        }
+    ));
+
     actionsContainer.appendChild(createIconButton(
         'history-action-btn history-rename-btn',
-        '重命名',
-        '重命名对话',
+        t('history.rename'),
+        t('history.renameChat'),
         '<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>',
         (e) => {
             e.stopPropagation();
@@ -154,25 +196,43 @@ function createHistoryItem(chat, currentSessionId, callbacks) {
     ));
 
     actionsContainer.appendChild(createIconButton(
+        'history-action-btn history-duplicate-btn',
+        t('history.duplicate'),
+        t('history.duplicateChat'),
+        '<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>',
+        async (e) => {
+            e.stopPropagation();
+            const summary = await duplicateChatAPI(chat.id);
+            if (summary && summary.id) {
+                _fullHistory = [{ ...summary }, ..._fullHistory.filter(c => c.id !== summary.id)];
+                renderHistory(_fullHistory, state.currentSessionId, callbacks, _chatGroups);
+                showToast(t('history.duplicated'), 'success');
+            } else {
+                showToast(t('history.duplicateFailed'), 'error');
+            }
+        }
+    ));
+
+    actionsContainer.appendChild(createIconButton(
         'history-action-btn history-share-btn',
-        '复制链接',
-        '复制对话链接',
+        t('history.copyLink'),
+        t('history.copyChatLink'),
         '<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>',
         (e) => {
             e.stopPropagation();
             const url = `${window.location.origin}/c/${encodeRouteSegment(chat.id)}`;
             navigator.clipboard.writeText(url).then(() => {
-                showToast('对话链接已复制', 'success');
+                showToast(t('history.linkCopied'), 'success');
             }).catch(() => {
-                showToast('复制失败', 'error');
+                showToast(t('history.copyFailed'), 'error');
             });
         }
     ));
 
     actionsContainer.appendChild(createIconButton(
         'history-action-btn history-export-btn',
-        '导出',
-        '导出对话',
+        t('common.export'),
+        t('history.exportChat'),
         '<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" x2="12" y1="15" y2="3"></line></svg>',
         (e) => {
             e.stopPropagation();
@@ -186,8 +246,8 @@ function createHistoryItem(chat, currentSessionId, callbacks) {
 
     actionsContainer.appendChild(createIconButton(
         'history-action-btn history-delete-btn',
-        '删除',
-        '删除对话',
+        t('common.delete'),
+        t('history.deleteChat'),
         '<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path><line x1="10" x2="10" y1="11" y2="17"></line><line x1="14" x2="14" y1="11" y2="17"></line></svg>',
         (e) => {
             e.stopPropagation();
@@ -233,12 +293,12 @@ function renderChatGroups(groups, groupedSessions, currentSessionId, callbacks, 
 
         const toggleBtn = document.createElement('button');
         toggleBtn.className = 'chat-group-toggle';
-        toggleBtn.setAttribute('aria-label', group.is_expanded === false ? '展开分组' : '折叠分组');
+        toggleBtn.setAttribute('aria-label', group.is_expanded === false ? t('history.expandGroup') : t('history.collapseGroup'));
         toggleBtn.innerHTML = '<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
 
         const title = document.createElement('span');
         title.className = 'chat-group-title';
-        title.textContent = group.title || '新分组';
+        title.textContent = group.title || t('history.newGroup');
         title.addEventListener('click', (event) => {
             event.stopPropagation();
         });
@@ -255,8 +315,8 @@ function renderChatGroups(groups, groupedSessions, currentSessionId, callbacks, 
         actions.className = 'chat-group-actions';
         actions.appendChild(createIconButton(
             'chat-group-action-btn',
-            '重命名分组',
-            '重命名分组',
+            t('history.renameGroup'),
+            t('history.renameGroup'),
             '<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>',
             (event) => {
                 event.stopPropagation();
@@ -265,21 +325,21 @@ function renderChatGroups(groups, groupedSessions, currentSessionId, callbacks, 
         ));
         actions.appendChild(createIconButton(
             'chat-group-action-btn chat-group-delete-btn',
-            '删除分组',
-            '删除分组',
+            t('history.deleteGroup'),
+            t('history.deleteGroup'),
             '<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>',
             async (event) => {
                 event.stopPropagation();
-                if (!(await showConfirm('删除分组后，其中的对话会回到未分组。确定继续吗？', '删除分组'))) return;
+                if (!(await showConfirm(t('history.confirmDeleteGroup'), t('history.deleteGroup')))) return;
                 if (await deleteChatGroupAPI(group.id)) {
                     _chatGroups = _chatGroups.filter(item => item.id !== group.id);
                     _fullHistory = _fullHistory.map(chat => (
                         (chat.group_id || chat.groupId) === group.id ? { ...chat, group_id: null } : chat
                     ));
                     renderHistory(_fullHistory, state.currentSessionId, callbacks, _chatGroups);
-                    showToast('分组已删除', 'success');
+                    showToast(t('history.groupDeleted'), 'success');
                 } else {
-                    showToast('删除分组失败', 'error');
+                    showToast(t('history.groupDeleteFailed'), 'error');
                 }
             }
         ));
@@ -308,10 +368,11 @@ function renderChatGroups(groups, groupedSessions, currentSessionId, callbacks, 
         if (sessions.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'chat-group-empty';
-            empty.textContent = '拖入对话到此分组';
+            empty.textContent = t('history.dragIntoGroup');
             list.appendChild(empty);
         } else {
-            renderDateGroups(sessions, currentSessionId, callbacks, list);
+            const ordered = sortHistoryByPinnedThenTimestamp(sessions);
+            renderDateGroups(ordered, currentSessionId, callbacks, list);
         }
 
         groupEl.appendChild(list);
@@ -332,7 +393,7 @@ function renderDateGroups(history, currentSessionId, callbacks, target = element
 
         const header = document.createElement('div');
         header.className = 'history-group-header';
-        header.textContent = groupName;
+        header.textContent = t(`history.date.${groupName}`);
         group.appendChild(header);
 
         items.forEach(chat => {
@@ -352,18 +413,37 @@ function renderUngroupedDropTarget(hasGroups, isEmpty = false) {
     if (hasGroups) {
         const label = document.createElement('div');
         label.className = 'history-group-header ungrouped-group-header';
-        label.textContent = '未分组';
+        label.textContent = t('history.ungrouped');
         dropTarget.appendChild(label);
     }
 
     if (isEmpty) {
         const empty = document.createElement('div');
         empty.className = 'chat-group-empty';
-        empty.textContent = '拖到这里移出分组';
+        empty.textContent = t('history.dragOut');
         dropTarget.appendChild(empty);
     }
 
     elements.historyList.appendChild(dropTarget);
+}
+
+function renderPinnedGroup(pinnedChats, currentSessionId, callbacks) {
+    const ordered = sortHistoryByPinnedThenTimestamp(pinnedChats);
+    const groupEl = document.createElement('div');
+    groupEl.className = 'history-pinned-group';
+
+    const header = document.createElement('div');
+    header.className = 'history-group-header pinned-group-header';
+    header.innerHTML = `<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path></svg><span>${t('common.pinned')}</span>`;
+    groupEl.appendChild(header);
+
+    const list = document.createElement('div');
+    list.className = 'history-pinned-list';
+    ordered.forEach(chat => {
+        list.appendChild(createHistoryItem(chat, currentSessionId, callbacks));
+    });
+    groupEl.appendChild(list);
+    elements.historyList.appendChild(groupEl);
 }
 
 export function renderHistory(history, currentSessionId, callbacks, groups = _chatGroups, options = {}) {
@@ -385,33 +465,39 @@ export function renderHistory(history, currentSessionId, callbacks, groups = _ch
     if (searchTerm && !options.skipLocalFilter) {
         const terms = searchTerm.split(/\s+/).filter(t => t);
         filtered = visibleHistory.filter(chat => {
-            const title = (chat.title || '新对话').toLowerCase();
+            const title = (chat.title || t('history.newChat')).toLowerCase();
             return terms.every(term => title.includes(term));
         });
     }
 
     const { map: groupedSessions, ungrouped } = getGroupSessionMap(filtered, _chatGroups);
+    const pinnedUngrouped = ungrouped.filter(chat => chat.is_pinned);
+    const restUngrouped = ungrouped.filter(chat => !chat.is_pinned);
     const hasGroups = _chatGroups.length > 0;
     const hasHistory = filtered.length > 0;
 
     if (!hasGroups && !hasHistory) {
         if (searchTerm) {
-            renderEmptyHistory('search_off', '未找到匹配的对话');
+            renderEmptyHistory('search_off', t('history.noResults'));
         } else {
-            renderEmptyHistory('chat_bubble_outline', '暂无对话记录');
+            renderEmptyHistory('chat_bubble_outline', t('history.noHistory'));
         }
         return;
     }
 
     renderChatGroups(_chatGroups, groupedSessions, currentSessionId, callbacks, searchTerm);
 
-    if (ungrouped.length > 0) {
-        renderUngroupedDropTarget(hasGroups);
-        renderDateGroups(ungrouped, currentSessionId, callbacks);
-    } else if (searchTerm && hasGroups && !hasHistory) {
+    if (pinnedUngrouped.length > 0) {
+        renderPinnedGroup(pinnedUngrouped, currentSessionId, callbacks);
+    }
+
+    if (restUngrouped.length > 0) {
+        renderUngroupedDropTarget(hasGroups || pinnedUngrouped.length > 0);
+        renderDateGroups(restUngrouped, currentSessionId, callbacks);
+    } else if (searchTerm && _chatGroups.length === 0 && pinnedUngrouped.length === 0) {
         renderEmptyHistory('search_off', '未找到匹配的对话');
-    } else if (hasGroups && hasHistory) {
-        renderUngroupedDropTarget(hasGroups, true);
+    } else if (hasGroups && hasHistory && pinnedUngrouped.length === 0) {
+        renderUngroupedDropTarget(true, true);
     }
 
     setupHistoryDragAndDrop(callbacks);
@@ -448,10 +534,10 @@ function startRename(titleSpan, chatId, callbacks) {
             const ok = await renameChatAPI(chatId, newTitle);
             if (ok) {
                 updateCachedHistoryTitle(chatId, newTitle);
-                showToast('已重命名', 'success');
+                showToast(t('history.renamed'), 'success');
             } else {
                 newSpan.textContent = currentTitle;
-                showToast('重命名失败，服务端可能不支持', 'warning');
+                showToast(t('history.renameFailed'), 'warning');
             }
         }
     }
@@ -497,10 +583,10 @@ function startGroupRename(titleSpan, groupId) {
             const updated = await updateChatGroupAPI(groupId, { title: newTitle });
             if (updated) {
                 updateCachedChatGroup(groupId, { title: updated.title });
-                showToast('分组已重命名', 'success');
+                showToast(t('history.groupRenamed'), 'success');
             } else {
                 newSpan.textContent = currentTitle;
-                showToast('分组重命名失败', 'error');
+                showToast(t('history.groupRenameFailed'), 'error');
             }
         }
     }
@@ -543,9 +629,9 @@ export function setupHistoryDragAndDrop(callbacks) {
             const groupId = target.dataset.groupId || null;
             if (await moveChatToGroupAPI(sessionId, groupId)) {
                 await refreshHistoryView(callbacks);
-                showToast(groupId ? '已移动到分组' : '已移回未分组', 'success');
+                showToast(groupId ? t('history.movedToGroup') : t('history.movedUngrouped'), 'success');
             } else {
-                showToast('移动对话失败', 'error');
+                showToast(t('history.moveFailed'), 'error');
             }
         });
     });
@@ -554,13 +640,13 @@ export function setupHistoryDragAndDrop(callbacks) {
 export function setupHistoryGroups(callbacks) {
     const newGroupBtn = document.getElementById('new-group-btn');
     newGroupBtn?.addEventListener('click', async () => {
-        const group = await createChatGroupAPI('新分组');
+        const group = await createChatGroupAPI(t('history.newGroup'));
         if (group) {
             _chatGroups = [group, ..._chatGroups];
             renderHistory(_fullHistory, state.currentSessionId, callbacks, _chatGroups);
-            showToast('已创建分组', 'success');
+            showToast(t('history.groupCreated'), 'success');
         } else {
-            showToast('创建分组失败', 'error');
+            showToast(t('history.groupCreateFailed'), 'error');
         }
     });
 }

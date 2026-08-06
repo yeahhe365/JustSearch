@@ -16,6 +16,7 @@ An autonomous AI deep-search agent powered by a self-hosted Chrome extension bri
 - Drives your real Chrome via the browser bridge for deeper web access (login state reused, far fewer captchas than headless browsers).
 - Synthesizes multi-source findings with citation traces.
 - Provides Docker, helper scripts, and manual developer workflows.
+- Multilingual UI: Chinese / English / follow-system, switchable in Settings → General without a reload.
 
 ## Quick Start
 

@@ -46,6 +46,7 @@ class ProviderModel(BaseModel):
     api_key: Optional[str] = ""
     base_url: str
     model_id: str
+    enabled: Optional[bool] = True
 
 
 class WorkflowStepModel(BaseModel):
@@ -65,6 +66,8 @@ class SettingsModel(BaseModel):
     live_artifacts_mode: Optional[bool] = False
     base_font_size: Optional[int] = 16
     live_artifacts_font_size: Optional[int] = 16
+    completion_notification_enabled: Optional[bool] = False
+    completion_sound_enabled: Optional[bool] = False
 
 
 BASE_FONT_SIZE_MIN = 12
@@ -205,6 +208,12 @@ async def update_settings_endpoint(settings: SettingsModel):
             min_size=LIVE_ARTIFACTS_FONT_SIZE_MIN,
             max_size=LIVE_ARTIFACTS_FONT_SIZE_MAX,
         )
+    if "history_window" in update:
+        update["history_window"] = max(2, min(30, int(update["history_window"])))
+    if "history_char_budget" in update:
+        update["history_char_budget"] = max(2000, min(60000, int(update["history_char_budget"])))
+    if "assistant_turn_char_budget" in update:
+        update["assistant_turn_char_budget"] = max(200, min(5000, int(update["assistant_turn_char_budget"])))
 
     # Validate search engine
     valid_engines = set(get_all_engines())

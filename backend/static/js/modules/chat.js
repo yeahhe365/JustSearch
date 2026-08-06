@@ -2,7 +2,6 @@ import {
     abortActiveStream,
     bumpChatEpoch,
     clearEditingMessage,
-    coerceBooleanSetting,
     isChatEpochCurrent,
     isEditingMessage,
     setEditingMessage,
@@ -14,49 +13,68 @@ import {
     setIsProcessing,
     setLiveArtifactsMode,
 } from './state.js?v=5';
-import { createCopyButton, createMessageActionRail, createRegenerateButton } from './utils.js?v=6';
-import { updateActiveHistoryItem } from './history-view.js?v=23';
-import { createDynamicLogContainer, createLogEntry, scrollToBottom, appendMessage, renderMessages, showConfirm, createMessageShell } from './ui.js?v=31';
-import { extractSources, hasCitationSources, linkCitationsInElement, renderWithCitations } from './source-renderer.js?v=10';
-import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=27';
-import { bindCitationEvidenceClicks, setEvidenceContext } from './evidence-panel.js?v=2';
+import { createCopyButton, createMessageActionRail, createRegenerateButton } from './utils.js?v=13';
+import { updateActiveHistoryItem } from './history-view.js?v=25';
+import { createDynamicLogContainer, createLogEntry, scrollToBottom, appendMessage, renderMessages, showConfirm, createMessageShell } from './ui.js?v=40';
+import { extractSources, hasCitationSources, linkCitationsInElement, renderWithCitations } from './source-renderer.js?v=12';
+import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=49';
+import { bindCitationEvidenceClicks } from './evidence-panel.js?v=5';
 import {
     applyIntensityPresetToSettings,
     getIntensityPreset,
+    getIntensityPresetHint,
+    getIntensityPresetLabel,
+    matchIntensityPreset,
     updateIntensityUI,
-} from './search-intensity.js?v=1';
+} from './search-intensity.js?v=3';
 import { showToast } from './toast.js';
-import * as API from './api.js?v=11';
-import { ensureBridgeConnected, warnIfBridgeDisconnected } from './bridge.js?v=7';
+import * as API from './api.js?v=14';
+import { ensureBridgeConnected, warnIfBridgeDisconnected } from './bridge.js?v=9';
+import { setupComposerExtras } from './composer-extras.js?v=2';
+import { setupTextSelectionToolbar } from './text-selection.js?v=1';
+import { playCompletionSound, showCompletionNotification } from './completion-feedback.js?v=1';
+import { t } from './i18n.js?v=1';
+
+// ---------------------------------------------------------------------------
+// Per-session chat state & live-stream registry (concurrent conversations)
+// ---------------------------------------------------------------------------
+// A deep search takes a minute or two; switching sessions / starting a new chat
+// must NOT abort it. Each stream owns a record here, its DOM subtree is detached
+// (kept referenced) when the user navigates away, and it keeps running in the
+// background writing to its own session's state. Returning to the session
+// re-attaches the live bubbles.
+const sessionStore = new Map(); // sessionId -> { mirror, count, lastUserIndex, lastUserMessage }
+
+function ensureSessionState(sessionId) {
+    let s = sessionStore.get(sessionId);
+    if (!s) {
+        s = { mirror: [], count: 0, lastUserIndex: null, lastUserMessage: '' };
+        sessionStore.set(sessionId, s);
+    }
+    return s;
+}
+
+const activeStreams = new Map(); // provisionalKey -> live stream record
+let currentViewStream = null;    // the stream currently owning the visible view
 
 function chatRoute(sessionId) {
     return `/c/${encodeURIComponent(String(sessionId ?? ''))}`;
 }
 
-/**
- * Leave the current chat view cleanly: abort any stream so its late SSE
- * events cannot re-bind state.currentSessionId, bump epoch so stale
- * callbacks become no-ops, and restore the send button.
- */
-export function abandonActiveChatWork(uiElements = elements) {
-    abortActiveStream();
-    bumpChatEpoch();
-    clearEditingMessage();
-    setLastUserMessageIndex(null);
-    setSessionMessageCount(0);
+function resetComposerChrome(uiElements = {}) {
     const banner = uiElements?.editMessageBanner || document.getElementById('edit-message-banner');
     const inputArea = uiElements?.inputArea || document.getElementById('input-area');
     if (banner) banner.hidden = true;
     if (inputArea) inputArea.classList.remove('is-editing-message');
     if (uiElements?.userInput) {
-        uiElements.userInput.placeholder = '提出问题...';
+        uiElements.userInput.placeholder = t('inputArea.placeholder');
     }
     if (!uiElements?.sendBtn) return;
     const sendBtnIcon = uiElements.sendBtn.querySelector('.material-symbols-rounded');
     if (sendBtnIcon) sendBtnIcon.textContent = 'send';
     uiElements.sendBtn.classList.remove('processing');
-    uiElements.sendBtn.setAttribute('aria-label', '发送消息');
-    uiElements.sendBtn.title = '发送';
+    uiElements.sendBtn.setAttribute('aria-label', t('inputArea.send'));
+    uiElements.sendBtn.title = t('inputArea.send');
     const hasText = Boolean(uiElements.userInput?.value?.trim());
     uiElements.sendBtn.disabled = !hasText;
     uiElements.sendBtn.setAttribute('aria-disabled', hasText ? 'false' : 'true');
@@ -68,18 +86,70 @@ export function abandonActiveChatWork(uiElements = elements) {
 }
 
 /**
+ * Hard-abort path (destructive reset / session deleted / tests): stop the current
+ * stream, drop its record, bump epoch so stale SSE cannot re-bind the session,
+ * and restore the send button. Does NOT keep the stream running in the background.
+ */
+export function abandonActiveChatWork(uiElements = {}) {
+    abortActiveStream();
+    if (currentViewStream) {
+        activeStreams.delete(currentViewStream.provisionalKey);
+        currentViewStream = null;
+    }
+    bumpChatEpoch();
+    clearEditingMessage();
+    setLastUserMessageIndex(null);
+    setSessionMessageCount(0);
+    resetComposerChrome(uiElements);
+}
+
+/**
+ * Switch-away path: keep the current stream running in the background instead of
+ * aborting it. Its DOM subtree is detached (but kept referenced) so the stream
+ * keeps rendering into it invisibly; returning to the session re-attaches it (see
+ * loadChat). The composer is reset because this view no longer owns a stream —
+ * a background stream never mutates the visible send button or isProcessing.
+ */
+export function detachCurrentStream(uiElements = {}) {
+    const rec = currentViewStream;
+    if (rec && rec.attached) {
+        rec.attached = false;
+        if (rec.userNode) rec.userNode.remove();
+        if (rec.msgDiv) rec.msgDiv.remove();
+    }
+    currentViewStream = null;
+    bumpChatEpoch();
+    setAbortController(null);
+    setIsProcessing(false);
+    clearEditingMessage();
+    setLastUserMessageIndex(null);
+    setSessionMessageCount(0);
+    resetComposerChrome(uiElements);
+}
+
+/**
  * 设置聊天处理器：发送消息、加载/删除对话、输入框自动调整等。
  */
 export function setupChatHandler(elements, renderHistory) {
     // 记录最后一条用户消息，用于重新生成
     let lastUserMessage = '';
 
+    // 客户端所见的完整消息镜像({role, content} 序列)。服务端截断/删除操作
+    // 携带该前缀做并发校验，避免下标漂移时静默删错/追加错位。仅在与服务端
+    // 同步后(loadChat/发送成功)更新。
+    let messagesMirror = [];
+
     // 全局滚动状态跟踪（只注册一次，避免内存泄漏）
     let userScrolled = false;
-    elements.chatContainer.addEventListener('scroll', () => {
+    const scrollHandler = () => {
         const { scrollTop, scrollHeight, clientHeight } = elements.chatContainer;
         userScrolled = (scrollHeight - scrollTop - clientHeight) > 100;
-    });
+    };
+    elements.chatContainer.addEventListener('scroll', scrollHandler);
+
+    // Track registered listeners for cleanup
+    const _cleanupListeners = [];
+    _cleanupListeners.push(() => elements.chatContainer.removeEventListener('scroll', scrollHandler));
 
     async function refreshHistory() {
         const [history, groups] = await Promise.all([
@@ -98,17 +168,17 @@ export function setupChatHandler(elements, renderHistory) {
         if (inputArea) inputArea.classList.toggle('is-editing-message', editing);
         if (bannerText && editing) {
             bannerText.textContent = state.editMode === 'update'
-                ? '正在修改消息内容 · 发送后仅更新该条'
-                : '正在编辑消息 · 发送后将从此处截断并重新生成';
+                ? t('chat.editModeUpdateBanner')
+                : t('chat.editModeBanner');
         }
         if (elements.sendBtn && !state.isProcessing) {
-            elements.sendBtn.setAttribute(
-                'aria-label',
-                editing ? (state.editMode === 'update' ? '更新消息' : '更新并重新发送') : '发送消息',
-            );
+            const btnLabel = editing
+                ? (state.editMode === 'update' ? t('chat.editBtnUpdate') : t('chat.editBtnResend'))
+                : t('inputArea.send');
+            elements.sendBtn.setAttribute('aria-label', btnLabel);
             elements.sendBtn.title = editing
-                ? (state.editMode === 'update' ? '更新消息' : '更新并重新发送')
-                : '发送';
+                ? (state.editMode === 'update' ? t('chat.editBtnUpdate') : t('chat.editBtnResend'))
+                : t('chat.send');
         }
     }
 
@@ -116,7 +186,7 @@ export function setupChatHandler(elements, renderHistory) {
         clearEditingMessage();
         syncEditChrome();
         if (elements.userInput) {
-            elements.userInput.placeholder = '提出问题...';
+            elements.userInput.placeholder = t('inputArea.placeholder');
         }
     }
 
@@ -150,14 +220,14 @@ export function setupChatHandler(elements, renderHistory) {
         }
 
         elements.userInput.value = content;
-        elements.userInput.placeholder = mode === 'update' ? '修改消息内容...' : '编辑后发送将重新生成...';
+        elements.userInput.placeholder = mode === 'update' ? t('chat.editPlaceholderUpdate') : t('chat.editPlaceholderResend');
         elements.userInput.dispatchEvent(new Event('input', { bubbles: true }));
         resetInputHeight();
         elements.userInput.focus({ preventScroll: true });
         scrollToBottom();
         syncEditChrome();
         showToast(
-            mode === 'update' ? '已进入修改模式，发送后仅更新该条' : '已进入编辑模式，发送后将从此处重新生成',
+            mode === 'update' ? t('chat.editToastUpdate') : t('chat.editToastResend'),
             'info',
         );
     }
@@ -216,14 +286,13 @@ export function setupChatHandler(elements, renderHistory) {
         }
         if (truncateIndex === null || truncateIndex === undefined) {
             // Fallback: resend without truncate (legacy live bubble).
-            await handleSendMessage(prompt, { skipAppendUser: false });
+            await handleSendMessage(prompt);
             return;
         }
         clearEditingMessage();
         syncEditChrome();
         await handleSendMessage(prompt, {
             truncateFromIndex: Number(truncateIndex),
-            skipAppendUser: false,
         });
     }
 
@@ -233,12 +302,14 @@ export function setupChatHandler(elements, renderHistory) {
             await loadChat(state.currentSessionId);
         }
         await refreshHistory();
-        showToast('消息已删除', 'success');
+        showToast(t('chat.messageDeleted'), 'success');
     }
 
     async function loadChat(sessionId) {
-        // Drop any in-flight stream so its answer cannot land on another chat.
-        abandonActiveChatWork(elements);
+        // Detach (do NOT abort) any in-flight stream so it keeps running in the
+        // background under its own session record. Then render the target session,
+        // re-attaching its live bubbles when it has a stream of its own.
+        detachCurrentStream(elements);
         cancelEdit();
         const loadEpoch = state.chatEpoch;
         setCurrentSessionId(sessionId);
@@ -253,9 +324,14 @@ export function setupChatHandler(elements, renderHistory) {
         if (!isChatEpochCurrent(loadEpoch) || state.currentSessionId !== sessionId) {
             return;
         }
+        const s = ensureSessionState(sessionId);
         if (data) {
             const messages = Array.isArray(data.messages) ? data.messages : [];
-            setSessionMessageCount(messages.length);
+            s.mirror = messages.map((m) => ({
+                role: m?.role || '',
+                content: m?.content || '',
+            }));
+            s.count = messages.length;
             let lastUserIdx = null;
             let lastUserContent = '';
             messages.forEach((msg, idx) => {
@@ -264,37 +340,83 @@ export function setupChatHandler(elements, renderHistory) {
                     lastUserContent = msg.content;
                 }
             });
-            setLastUserMessageIndex(lastUserIdx);
-            lastUserMessage = lastUserContent || '';
+            s.lastUserIndex = lastUserIdx;
+            s.lastUserMessage = lastUserContent || '';
+            messagesMirror = s.mirror;
+            lastUserMessage = s.lastUserMessage;
+            setSessionMessageCount(s.count);
+            setLastUserMessageIndex(s.lastUserIndex);
             renderMessages(messages, {
                 onEdit: beginEditMessage,
                 onRegenerate: regenerateFromPrompt,
                 onMessageDeleted: refreshAfterMessageDeleted,
+                onForked: refreshHistory,
             });
+        } else {
+            elements.chatContainer.innerHTML = '';
+            elements.heroSection.style.display = 'block';
+            elements.chatContainer.appendChild(elements.heroSection);
+        }
+
+        // Re-attach a background stream belonging to this session (live, or a
+        // failed/cancelled turn kept so its DOM can be shown once).
+        const rec = activeStreams.get(sessionId);
+        if (rec) {
+            if (rec.userNode) elements.chatContainer.appendChild(rec.userNode);
+            if (rec.msgDiv) elements.chatContainer.appendChild(rec.msgDiv);
+            elements.heroSection.style.display = 'none';
+            if (rec.phase === 'streaming') {
+                rec.attached = true;
+                currentViewStream = rec;
+                setIsProcessing(true);
+                setAbortController(rec.abortController);
+                setSessionMessageCount(rec.count);
+                setLastUserMessageIndex(rec.lastUserIndex);
+            } else {
+                // Completed turns are dropped on finalize (DB holds them); failed /
+                // cancelled turns are shown via their DOM once, then released.
+                activeStreams.delete(sessionId);
+                if (currentViewStream === rec) currentViewStream = null;
+                setIsProcessing(false);
+            }
+            scrollToBottom();
         }
     }
 
     async function deleteChat(sessionId) {
+        // If a stream is still running for the session being deleted, stop it —
+        // its target no longer exists and persisting would fail.
+        const rec = activeStreams.get(sessionId);
+        if (rec) {
+            try { rec.abortController?.abort(); } catch { /* ignore */ }
+            rec.attached = false;
+            if (currentViewStream === rec) currentViewStream = null;
+            activeStreams.delete(sessionId);
+        }
         if (await API.deleteChatAPI(sessionId)) {
             if (state.currentSessionId === sessionId) {
                 elements.newChatBtn.click();
             }
             await refreshHistory();
-            showToast('对话已删除', 'success');
+            showToast(t('chat.sessionDeleted'), 'success');
         } else {
-            showToast('删除对话失败', 'error');
+            showToast(t('chat.deleteFailed'), 'error');
         }
     }
 
     /**
      * @param {string} [overrideText]
-     * @param {{ truncateFromIndex?: number|null, skipAppendUser?: boolean }} [options]
+     * @param {{ truncateFromIndex?: number|null }} [options]
      */
     async function handleSendMessage(overrideText, options = {}) {
+        // Guard against concurrent sends in the same visible session: if it is
+        // already processing, this is the "stop" action — abort and return.
         if (state.isProcessing) {
-            if (state.abortController) {
-                state.abortController.abort();
-                setAbortController(null);
+            const controllerToAbort = state.abortController;
+            if (controllerToAbort) {
+                controllerToAbort.abort();
+                // Don't clear the global controller here - let the finally block handle it
+                // to avoid racing with the stream's own cleanup.
             }
             return;
         }
@@ -302,12 +424,13 @@ export function setupChatHandler(elements, renderHistory) {
         const text = (overrideText !== undefined ? overrideText : elements.userInput.value).trim();
         if (!text) return;
 
-        // Capture session + view epoch BEFORE any await. New-chat / history
-        // switch during bridge check must not let us attach to another session,
-        // and late SSE from a previous stream must not reclaim session_id.
+        // Capture the session BEFORE any await. A new-chat / history switch during
+        // the bridge check must not let us attach to another session. The send is
+        // always bound to its own session record (see activeStreams), so switching
+        // away later keeps it running in the background instead of aborting it.
         const requestSessionId = state.currentSessionId;
-        const streamEpoch = state.chatEpoch;
-        const isStreamActive = () => isChatEpochCurrent(streamEpoch);
+        const provisionalKey = requestSessionId
+            ?? `new-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
         // AMC resend: prefer explicit truncate option, else active edit state.
         let truncateFromIndex = options.truncateFromIndex;
@@ -332,16 +455,38 @@ export function setupChatHandler(elements, renderHistory) {
         // Fail fast before clearing the input: all engines need the Chrome bridge.
         const bridgeReady = await ensureBridgeConnected({ forceRefresh: true });
         if (!bridgeReady) {
-            showToast('请先连接 JustSearch Bridge 扩展后再搜索', 'warning', 4000);
+            showToast(t('chat.requireBridge'), 'warning', 4000);
             return;
         }
-        if (!isStreamActive()) {
+        if (state.currentSessionId !== requestSessionId) {
             // User already left this view (new chat / switched history) while
             // we were waiting on the bridge. Do not start a stray request.
             return;
         }
 
         lastUserMessage = text;
+
+        // Stream record: the stream owns its DOM subtree; switching away only
+        // sets attached=false and detaches the bubbles — the stream keeps running
+        // and finalizing into its own session's state (see activeStreams).
+        const rec = {
+            provisionalKey,
+            sessionId: requestSessionId,
+            abortController: null,
+            attached: true,
+            phase: 'streaming',
+            userNode: null,
+            msgDiv: null,
+            count: 0,
+            lastUserIndex: null,
+        };
+        activeStreams.set(provisionalKey, rec);
+        const ownsView = () => rec.attached && state.currentSessionId === (rec.sessionId ?? requestSessionId);
+
+        // 记录发送前状态(在乐观截断之前)：失败/取消时回滚，避免 stale 下标
+        // 让后续 regenerate 的服务端截断静默退化为纯追加。
+        const prevSessionMessageCount = state.sessionMessageCount;
+        const prevLastUserMessageIndex = state.lastUserMessageIndex;
 
         // Optimistic DOM truncate (AMC slice) before appending the new turn.
         if (truncateFromIndex !== null) {
@@ -354,12 +499,14 @@ export function setupChatHandler(elements, renderHistory) {
             : state.sessionMessageCount;
         const assistantMessageIndex = userMessageIndex + 1;
         setLastUserMessageIndex(userMessageIndex);
+        rec.count = userMessageIndex;
+        rec.lastUserIndex = userMessageIndex;
 
         // Clear edit chrome once send starts.
         clearEditingMessage();
         syncEditChrome();
         if (elements.userInput) {
-            elements.userInput.placeholder = '提出问题...';
+            elements.userInput.placeholder = t('inputArea.placeholder');
         }
 
         const modelSelect = document.getElementById('model-select');
@@ -380,11 +527,10 @@ export function setupChatHandler(elements, renderHistory) {
         }
         elements.sendBtn.classList.add('processing');
 
-        if (!options.skipAppendUser) {
-            appendMessage('user', text, null, null, null, userMessageIndex, null, {
-                onEdit: beginEditMessage,
-            });
-        }
+        const userMsgResult = appendMessage('user', text, null, null, null, userMessageIndex, null, {
+            onEdit: beginEditMessage,
+        });
+        rec.userNode = userMsgResult?.msgDiv || null;
         scrollToBottom();
 
         // Assistant Message Placeholder
@@ -403,9 +549,11 @@ export function setupChatHandler(elements, renderHistory) {
         contentWrapper.innerHTML = '<span class="blinking-cursor"></span>';
         answerDiv.appendChild(contentWrapper);
         elements.chatContainer.appendChild(msgDiv);
+        rec.msgDiv = msgDiv;
         scrollToBottom();
 
         const controller = new AbortController();
+        rec.abortController = controller;
         setAbortController(controller);
 
         let currentAnswerBuffer = '';
@@ -416,7 +564,7 @@ export function setupChatHandler(elements, renderHistory) {
                 previousUserIndex: userMessageIndex,
             });
         });
-        sideColumn.appendChild(createMessageActionRail([copyBtn, regenBtn], '助手消息操作'));
+        sideColumn.appendChild(createMessageActionRail([copyBtn, regenBtn], t('ui.assistantActions')));
 
         let currentSources = [];
         let hasReceivedChunk = false;
@@ -428,17 +576,26 @@ export function setupChatHandler(elements, renderHistory) {
         // 用 rAF 合并到下一帧；完成时强制立即渲染保证最终态正确。
         let pendingRender = false;
         let pendingRenderIsStreaming = false;
+        // Render generation counter: a scheduled streaming render whose rAF
+        // fires after the final answer was baked must NOT overwrite the just-
+        // baked srcdoc with the streaming shell (STREAM_PREVIEW_ROOT). Bumping
+        // this on bake invalidates any in-flight scheduled streaming render.
+        let streamRenderSeq = 0;
         let reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
         function scheduleStreamRender(isStreaming) {
-            if (!isStreamActive()) return;
+            if (!ownsView()) return;
             pendingRenderIsStreaming = isStreaming;
             if (pendingRender) return;
             pendingRender = true;
+            const seqAtSchedule = streamRenderSeq;
             // rAF 批处理；reduced-motion 下仍需渲染但不做 smooth 滚动
             requestAnimationFrame(() => {
                 pendingRender = false;
-                if (!isStreamActive()) return;
+                if (!ownsView()) return;
+                // 若排队期间已完成终态烘焙,跳过这次流式渲染,
+                // 避免用流式壳(STREAM_PREVIEW_ROOT)覆盖刚烘焙好的最终内容
+                if (seqAtSchedule !== streamRenderSeq) return;
                 renderCurrentAssistantAnswer(pendingRenderIsStreaming);
                 if (!userScrolled) scrollToBottom();
             });
@@ -456,17 +613,25 @@ export function setupChatHandler(elements, renderHistory) {
                 suppressUnfencedInlineArtifact,
                 liveArtifactsMode: Boolean(state.liveArtifactsMode),
             };
-            if (!getInlineLiveArtifact(currentAnswerBuffer, liveArtifactMessageId, isStreaming, liveArtifactOptions)) {
+            // Probe once and reuse — avoids double extract/buildSrcdoc every stream frame.
+            const inlineArtifact = getInlineLiveArtifact(
+                currentAnswerBuffer,
+                liveArtifactMessageId,
+                isStreaming,
+                liveArtifactOptions,
+            );
+            if (!inlineArtifact) {
                 contentWrapper.innerHTML = renderWithCitations(currentAnswerBuffer, resolvedSources);
             }
             renderLiveArtifactsForMessage(contentWrapper, currentAnswerBuffer, {
                 messageId: liveArtifactMessageId,
                 isStreaming,
                 sources: resolvedSources,
+                citations: currentCitations,
+                inlineArtifact,
                 ...liveArtifactOptions,
             });
             linkCitationsInElement(contentWrapper, resolvedSources);
-            setEvidenceContext({ sources: resolvedSources, citations: currentCitations });
             bindCitationEvidenceClicks(contentWrapper, {
                 sources: resolvedSources,
                 citations: currentCitations,
@@ -476,11 +641,10 @@ export function setupChatHandler(elements, renderHistory) {
         // 重置滚动跟踪（新一轮对话）
         userScrolled = false;
 
-        // 实时耗时更新器
+        // 实时耗时更新器（后台流照常更新其节点，重挂回视图时可见）
         const elapsedTimer = setInterval(() => {
-            if (!isStreamActive()) return;
             const elapsed = ((Date.now() - searchStartTime) / 1000).toFixed(1);
-            if (statusText.textContent.includes('正在')) {
+            if (statusText.textContent.includes(t('chat.runningPrefix'))) {
                 statusText.textContent = statusText.textContent.replace(/ \([\d.]+s\)$/, '') + ` (${elapsed}s)`;
             }
         }, 500);
@@ -493,12 +657,30 @@ export function setupChatHandler(elements, renderHistory) {
                 // cannot redirect this request into another conversation.
                 sessionId: requestSessionId,
                 truncateFromIndex,
+                // 并发校验：截断锚点之前的消息前缀（服务端比对，不一致时拒绝
+                // 截断而不是按漂移下标误删）。
+                expectedPrefix: truncateFromIndex !== null
+                    ? messagesMirror.slice(0, truncateFromIndex)
+                    : null,
                 liveArtifactsMode: state.liveArtifactsMode,
                 signal: controller.signal,
                 onMeta: (meta) => {
-                    if (!isStreamActive()) return;
                     const sessionId = typeof meta === 'string' ? meta : meta.session_id;
-                    if (sessionId) {
+                    if (!sessionId) return;
+                    // A stream owns the view if it is attached and the view still
+                    // shows the session it started under — evaluate BEFORE migrating
+                    // rec.sessionId (which flips null → real for new chats).
+                    const viewOwned = rec.attached && state.currentSessionId === (rec.sessionId ?? requestSessionId);
+                    // Migrate the record to its real session id (new chats start under
+                    // a provisional key). Always done so background streams can be
+                    // located by session id for re-attach / finalize.
+                    if (rec.sessionId !== sessionId) {
+                        activeStreams.delete(rec.provisionalKey);
+                        rec.sessionId = sessionId;
+                        rec.provisionalKey = sessionId;
+                        activeStreams.set(sessionId, rec);
+                    }
+                    if (viewOwned) {
                         setCurrentSessionId(sessionId);
                         const route = chatRoute(sessionId);
                         if (window.location.pathname !== route) {
@@ -507,11 +689,11 @@ export function setupChatHandler(elements, renderHistory) {
                     }
                 },
                 onLog: (msg) => {
-                    if (!isStreamActive()) return;
-                    // Detect engine fallback notification
+                    // Background streams keep logging into their (detached) log panel
+                    // so re-attaching shows the full progress.
                     if (msg.includes('自动切换到')) {
                         const match = msg.match(/切换到\s*(\S+)/);
-                        if (match) showToast(`搜索引擎已切换到 ${match[1]}`, 'warning');
+                        if (match) showToast(t('chat.engineSwitched', { engine: match[1] }), 'warning');
                     }
                     statusText.textContent = msg;
 
@@ -525,30 +707,25 @@ export function setupChatHandler(elements, renderHistory) {
                     logDetails.scrollTop = logDetails.scrollHeight;
                 },
                 onSources: (sources) => {
-                    if (!isStreamActive()) return;
                     currentSources = sources;
-                    setEvidenceContext({ sources: currentSources, citations: currentCitations });
-                    if (currentAnswerBuffer) {
+                    if (currentAnswerBuffer && ownsView()) {
                         renderCurrentAssistantAnswer(true);
                         if (!userScrolled) scrollToBottom();
                     }
                 },
                 onStats: (stats) => {
-                    if (!isStreamActive()) return;
                     searchStats = stats;
                 },
                 onAnswerChunk: (chunk) => {
-                    if (!isStreamActive()) return;
                     if (!hasReceivedChunk) {
                         hasReceivedChunk = true;
                         contentWrapper.innerHTML = '';
                     }
                     currentAnswerBuffer += chunk;
-                    // 节流到下一帧，避免逐 token 全量重渲染
-                    scheduleStreamRender(true);
+                    // 节流到下一帧，避免逐 token 全量重渲染；后台流跳过 DOM 只攒数据
+                    if (ownsView()) scheduleStreamRender(true);
                 },
                 onAnswer: (finalAnswer, sessionId, finalSources, finalCitations) => {
-                    if (!isStreamActive()) return;
                     if (hasCitationSources(finalSources)) {
                         currentSources = finalSources;
                     }
@@ -556,17 +733,44 @@ export function setupChatHandler(elements, renderHistory) {
                         currentCitations = finalCitations;
                     }
                     currentAnswerBuffer = finalAnswer;
-                    // 取消任何挂起的节流渲染，立即用最终态渲染一次
-                    pendingRender = false;
-                    renderCurrentAssistantAnswer(false);
-                    setCurrentSessionId(sessionId);
-                    // user + assistant persisted → count is assistantIndex + 1
-                    setSessionMessageCount(assistantMessageIndex + 1);
-                    setLastUserMessageIndex(userMessageIndex);
+                    const sid = sessionId || rec.sessionId || requestSessionId;
+                    // Capture before migration — same reason as onMeta.
+                    const viewOwned = rec.attached && state.currentSessionId === (rec.sessionId ?? requestSessionId);
+                    if (rec.sessionId !== sid) {
+                        activeStreams.delete(rec.provisionalKey);
+                        rec.sessionId = sid;
+                        rec.provisionalKey = sid;
+                        activeStreams.set(sid, rec);
+                    }
+                    // 写入该会话自己的状态（与当前可见会话无关，后台流同样生效）。
+                    const s = ensureSessionState(sid);
+                    s.count = assistantMessageIndex + 1;
+                    s.lastUserIndex = userMessageIndex;
+                    // 与服务端已同步：按截断锚点重建镜像（成功路径写入恰好是
+                    // 该轮 user+assistant 两条）。
+                    s.mirror = [
+                        ...s.mirror.slice(0, userMessageIndex),
+                        { role: 'user', content: text },
+                        { role: 'assistant', content: finalAnswer },
+                    ];
+                    s.lastUserMessage = text;
+                    if (viewOwned) {
+                        // 取消任何挂起的节流渲染，立即用最终态渲染一次
+                        pendingRender = false;
+                        streamRenderSeq += 1; // 标记终态烘焙,作废已排期的流式渲染
+                        renderCurrentAssistantAnswer(false);
+                        setCurrentSessionId(sid);
+                        // user + assistant persisted → count is assistantIndex + 1
+                        setSessionMessageCount(s.count);
+                        setLastUserMessageIndex(s.lastUserIndex);
+                        messagesMirror = s.mirror;
+                        lastUserMessage = s.lastUserMessage;
+                    }
                     refreshHistory();
                 },
                 onError: (err) => {
-                    if (!isStreamActive()) return;
+                    // Record the failure in the stream's own bubble so it is visible
+                    // whether the stream is attached or re-attached later.
                     streamOutcome = 'failed';
                     if (!hasReceivedChunk) {
                         contentWrapper.innerHTML = '';
@@ -577,18 +781,18 @@ export function setupChatHandler(elements, renderHistory) {
                     let errMsg = err;
                     if (typeof err === 'string') {
                         if (err.includes('请先在设置中配置 API 密钥')) {
-                            errMsg = '请先在设置中配置 API 密钥。点击左上角设置按钮，填入 API Key 后会自动保存。';
+                            errMsg = t('chat.errNoApiKey');
                         } else if (err.includes('请求失败 (429)') || err.includes('rate limit')) {
-                            errMsg = 'API 请求过于频繁，请稍后重试。';
+                            errMsg = t('chat.errRateLimited');
                         } else if (err.includes('请求失败 (401)') || err.includes('Unauthorized')) {
-                            errMsg = 'API 密钥无效或已过期，请检查设置中的 API Key。';
+                            errMsg = t('chat.errUnauthorized');
                         } else if (err.includes('请求失败 (402)')) {
-                            errMsg = 'API 额度已用完，请检查账户余额。';
+                            errMsg = t('chat.errQuotaExceeded');
                         } else if (err.includes('请求失败 (500)') || err.includes('502') || err.includes('503')) {
-                            errMsg = 'API 服务暂时不可用，请稍后重试。';
+                            errMsg = t('chat.errServerUnavailable');
                         }
                     }
-                    errDiv.textContent = `错误: ${errMsg}`;
+                    errDiv.textContent = t('chat.errorPrefix', { message: errMsg });
                     contentWrapper.appendChild(errDiv);
                 },
                 onDone: () => {}
@@ -596,17 +800,14 @@ export function setupChatHandler(elements, renderHistory) {
         } catch (e) {
             if (e.name === 'AbortError') {
                 streamOutcome = 'cancelled';
-                // Only annotate the bubble if this stream still owns the view.
-                if (isStreamActive()) {
-                    if (!hasReceivedChunk) {
-                        contentWrapper.innerHTML = '';
-                    }
-                    const warnDiv = document.createElement('div');
-                    warnDiv.className = 'warning-box';
-                    warnDiv.textContent = '[已由用户停止]';
-                    contentWrapper.appendChild(warnDiv);
+                if (!hasReceivedChunk) {
+                    contentWrapper.innerHTML = '';
                 }
-            } else if (isStreamActive()) {
+                const warnDiv = document.createElement('div');
+                warnDiv.className = 'warning-box';
+                warnDiv.textContent = t('chat.userStopped');
+                contentWrapper.appendChild(warnDiv);
+            } else {
                 streamOutcome = 'failed';
                 console.error(e);
                 if (!hasReceivedChunk) {
@@ -614,10 +815,8 @@ export function setupChatHandler(elements, renderHistory) {
                 }
                 const errDiv = document.createElement('div');
                 errDiv.className = 'error-box';
-                errDiv.textContent = `网络错误: ${e.message}`;
+                errDiv.textContent = t('chat.networkError', { message: e.message });
                 contentWrapper.appendChild(errDiv);
-            } else {
-                streamOutcome = 'cancelled';
             }
         } finally {
             clearInterval(elapsedTimer);
@@ -625,9 +824,47 @@ export function setupChatHandler(elements, renderHistory) {
             if (state.abortController === controller) {
                 setAbortController(null);
             }
-            // Only mutate shared UI / processing flags when this stream still owns the view.
-            // Otherwise a newer send (or new-chat abandon) already took over.
-            if (!isStreamActive()) {
+            rec.phase = streamOutcome === 'completed'
+                ? 'finalized'
+                : streamOutcome === 'cancelled'
+                    ? 'cancelled'
+                    : 'failed';
+
+            // 失败/取消时回滚乐观状态（作用于该流自己的会话，而非当前可见会话）：
+            // 该轮 user+assistant 未入库，DOM 里的气泡(或截断后的空位)与 DB 不一致；
+            // 恢复发送前计数，让后续 regenerate/截断拿到真实下标，同时保留错误提示。
+            // 仅当 prevSessionMessageCount 有效（增量追加而非新会话）且镜像长度确实
+            // 大于它时才回滚，避免截断其他会话的镜像。
+            if (streamOutcome !== 'completed' && prevSessionMessageCount >= 0) {
+                const rollbackState = ensureSessionState(rec.sessionId ?? requestSessionId);
+                if (rollbackState.mirror.length > prevSessionMessageCount) {
+                    rollbackState.count = prevSessionMessageCount;
+                    rollbackState.lastUserIndex = prevLastUserMessageIndex;
+                    rollbackState.mirror = rollbackState.mirror.slice(0, prevSessionMessageCount);
+                    if (rec.attached) {
+                        setSessionMessageCount(rollbackState.count);
+                        setLastUserMessageIndex(rollbackState.lastUserIndex);
+                        messagesMirror = rollbackState.mirror;
+                    }
+                }
+            }
+
+            if (rec.phase === 'finalized') {
+                // Completed turn is persisted server-side — drop the record; a later
+                // loadChat renders it from the DB.
+                activeStreams.delete(rec.provisionalKey);
+            }
+            // cancelled/failed records are kept so returning to the session can show
+            // their bubble once (loadChat releases them).
+
+            if (currentViewStream === rec) {
+                currentViewStream = null;
+            }
+
+            // Only mutate shared UI / processing flags when this stream still owns the
+            // visible view. A background stream's finalize must not touch the composer
+            // or the isProcessing flag of whichever session is now visible.
+            if (!rec.attached) {
                 return;
             }
             const totalElapsed = ((Date.now() - searchStartTime) / 1000).toFixed(1);
@@ -645,19 +882,19 @@ export function setupChatHandler(elements, renderHistory) {
                 spinner.textContent = 'error';
                 spinner.classList.add('failed');
                 logContainer.classList.add('failed');
-                statusText.textContent = `失败 · ${totalElapsed}s`;
+                statusText.textContent = t('chat.statusFailed', { seconds: totalElapsed });
             } else if (streamOutcome === 'cancelled') {
                 spinner.textContent = 'stop_circle';
                 spinner.classList.add('cancelled');
                 logContainer.classList.add('cancelled');
-                statusText.textContent = `已停止 · ${totalElapsed}s`;
+                statusText.textContent = t('chat.statusStopped', { seconds: totalElapsed });
             } else if (searchStats && searchStats.sites_searched > 0) {
                 spinner.textContent = 'check_circle';
                 spinner.classList.add('completed');
                 logContainer.classList.add('completed');
-                let statsText = `已完成 · 搜索 ${searchStats.sites_searched} 个结果`;
+                let statsText = t('chat.statusSearched', { count: searchStats.sites_searched });
                 if (searchStats.sites_crawled > 0) {
-                    statsText += ` · 深度阅读 ${searchStats.sites_crawled} 个页面`;
+                    statsText += t('chat.statusDeepRead', { count: searchStats.sites_crawled });
                 }
                 statsText += ` · ${totalElapsed}s`;
                 statusText.textContent = statsText;
@@ -665,7 +902,17 @@ export function setupChatHandler(elements, renderHistory) {
                 spinner.textContent = 'check_circle';
                 spinner.classList.add('completed');
                 logContainer.classList.add('completed');
-                statusText.textContent = `已完成 · ${totalElapsed}s`;
+                statusText.textContent = t('chat.statusDone', { seconds: totalElapsed });
+            }
+            // 完成反馈（AMC-aligned）：桌面通知仅在标签页位于后台时触发，避免打扰正在阅读的用户。
+            if (streamOutcome !== 'failed' && streamOutcome !== 'cancelled') {
+                const feedbackSettings = state.settings || {};
+                if (feedbackSettings.completion_sound_enabled) {
+                    playCompletionSound();
+                }
+                if (feedbackSettings.completion_notification_enabled && document.hidden) {
+                    showCompletionNotification(t('chat.searchCompletedTitle'), statusText.textContent);
+                }
             }
             // 搜索完成，自动折叠过程日志
             logDetails.classList.remove('open');
@@ -684,15 +931,15 @@ export function setupChatHandler(elements, renderHistory) {
     }
 
     function resetInputHeight() {
-        elements.userInput.style.height = '38px';
+        elements.userInput.style.height = '26px';
         elements.userInput.style.overflowY = 'hidden';
     }
 
     function autoResizeInput() {
-        const maxHeight = 200;
+        const maxHeight = 150; // AMC MAX_TEXTAREA_HEIGHT_PX
         // 先重置再读取 scrollHeight：否则空内容时 scrollHeight 会塌缩为当前
         // clientHeight（上一次撑开的高度），导致清空后高度卡在旧值无法恢复。
-        elements.userInput.style.height = '38px';
+        elements.userInput.style.height = '26px';
         const scrollHeight = elements.userInput.scrollHeight;
         if (scrollHeight > maxHeight) {
             elements.userInput.style.height = maxHeight + 'px';
@@ -769,7 +1016,7 @@ export function setupChatHandler(elements, renderHistory) {
             resetInputHeight();
             updateSendButtonState();
             elements.userInput.focus({ preventScroll: true });
-            showToast('已取消编辑', 'info');
+            showToast(t('chat.editCancelled'), 'info');
         });
     }
     syncEditChrome();
@@ -778,7 +1025,7 @@ export function setupChatHandler(elements, renderHistory) {
     updateSendButtonState();
 
     // Ctrl+Shift+R: regenerate last answer (AMC retry last turn)
-    document.addEventListener('keydown', (e) => {
+    const keydownHandler = (e) => {
         if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'R') {
             e.preventDefault();
             if (lastUserMessage && !state.isProcessing) {
@@ -787,7 +1034,9 @@ export function setupChatHandler(elements, renderHistory) {
                 });
             }
         }
-    });
+    };
+    document.addEventListener('keydown', keydownHandler);
+    _cleanupListeners.push(() => document.removeEventListener('keydown', keydownHandler));
 
     // 模型切换提示
     const modelSelect = document.getElementById('model-select');
@@ -795,7 +1044,7 @@ export function setupChatHandler(elements, renderHistory) {
         modelSelect.addEventListener('change', () => {
             const selectedOption = modelSelect.options[modelSelect.selectedIndex];
             const shortName = selectedOption ? selectedOption.textContent : modelSelect.value;
-            showToast(`已切换至 ${shortName}`, 'info');
+            showToast(t('chat.modelSwitched', { model: shortName }), 'info');
         });
     }
 
@@ -812,7 +1061,7 @@ export function setupChatHandler(elements, renderHistory) {
             if (!item.id) item.id = `quick-engine-opt-${idx}`;
         });
         quickEngineDropdown.setAttribute('role', 'listbox');
-        quickEngineDropdown.setAttribute('aria-label', '搜索引擎列表');
+        quickEngineDropdown.setAttribute('aria-label', t('chat.engineList'));
 
         quickEngineBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -828,12 +1077,14 @@ export function setupChatHandler(elements, renderHistory) {
         quickEngineBtn.setAttribute('aria-haspopup', 'listbox');
         quickEngineBtn.setAttribute('aria-expanded', 'false');
 
-        document.addEventListener('click', (e) => {
+        const clickOutsideHandler = (e) => {
             if (!quickEngineBtn.contains(e.target) && !quickEngineDropdown.contains(e.target)) {
                 quickEngineDropdown.classList.remove('active');
                 quickEngineBtn.setAttribute('aria-expanded', 'false');
             }
-        });
+        };
+        document.addEventListener('click', clickOutsideHandler);
+        _cleanupListeners.push(() => document.removeEventListener('click', clickOutsideHandler));
 
         // 键盘导航：在按钮与选项间用方向键移动焦点
         function moveHighlight(current, dir) {
@@ -888,43 +1139,10 @@ export function setupChatHandler(elements, renderHistory) {
                     
                     await API.saveSettingsAPI(state.settings);
                     syncQuickSettingsFromState();
-                    showToast(`搜索引擎已切换为 ${item.textContent}`, 'success');
+                    showToast(t('chat.engineSwitchedTo', { engine: item.textContent }), 'success');
                     warnIfBridgeDisconnected(item.textContent?.trim() || newEngine);
                 }
             });
-        });
-    }
-
-    const quickInteractiveBtn = document.getElementById('quick-interactive-btn');
-    if (quickInteractiveBtn) {
-        quickInteractiveBtn.addEventListener('click', async () => {
-            if (state.settings) {
-                const currentVal = coerceBooleanSetting(state.settings.interactive_search, true);
-                const newVal = !currentVal;
-                state.settings.interactive_search = newVal;
-                
-                const modalCheckbox = document.getElementById('interactive-search-input');
-                if (modalCheckbox) {
-                    modalCheckbox.checked = newVal;
-                }
-
-                syncQuickSettingsFromState();
-
-                const saved = await API.saveSettingsAPI(state.settings);
-                if (!saved) {
-                    state.settings.interactive_search = currentVal;
-                    if (modalCheckbox) {
-                        modalCheckbox.checked = currentVal;
-                    }
-                    syncQuickSettingsFromState();
-                    showToast('深度搜索设置保存失败，已恢复原状态', 'warning');
-                    return;
-                }
-                syncQuickSettingsFromState();
-                
-                const status = newVal ? '已开启' : '已关闭';
-                showToast(`深度搜索${status}`, 'info');
-            }
         });
     }
 
@@ -937,7 +1155,7 @@ export function setupChatHandler(elements, renderHistory) {
                 state.settings.live_artifacts_mode = nextValue;
             }
             syncQuickSettingsFromState();
-            showToast(`Live Artifacts ${nextValue ? '已开启' : '已关闭'}`, 'info');
+            showToast(nextValue ? t('chat.laOn') : t('chat.laOff'), 'info');
 
             if (state.settings) {
                 const saved = await API.saveSettingsAPI(state.settings);
@@ -945,7 +1163,7 @@ export function setupChatHandler(elements, renderHistory) {
                     setLiveArtifactsMode(!nextValue);
                     state.settings.live_artifacts_mode = !nextValue;
                     syncQuickSettingsFromState();
-                    showToast('Live Artifacts 设置保存失败，已恢复原状态', 'warning');
+                    showToast(t('chat.laSaveFailed'), 'warning');
                 }
             }
         });
@@ -955,7 +1173,67 @@ export function setupChatHandler(elements, renderHistory) {
 
     syncQuickSettingsFromState();
 
-    return { loadChat, deleteChat };
+    // AMC-style composer extras: suggestion chips, slash commands, status pill.
+    setupComposerExtras({
+        inputEl: elements.userInput,
+        sendBtn: elements.sendBtn,
+        heroEl: elements.heroSection,
+        onPickSuggestion: (text) => {
+            elements.userInput.value = text;
+            handleSendMessage(text);
+        },
+        onApplyIntensity: (presetId) => {
+            applyIntensityPreset(presetId);
+        },
+        getStatusText: () => {
+            if (!state.settings) return null;
+            const preset = matchIntensityPreset(state.settings.max_results, state.settings.max_iterations);
+            const engineNames = {
+                'duckduckgo': 'DuckDuckGo',
+                'google': 'Google',
+                'bing': 'Bing',
+                'sogou': t('engine.sogou'),
+                'brave': 'Brave',
+                'baidu': t('engine.baidu'),
+                'yandex': 'Yandex',
+            };
+            const engine = engineNames[state.settings.search_engine] || state.settings.search_engine || 'Google';
+            return { title: t('chat.searching'), subtitle: `${preset?.label || t('searchIntensity.custom')} · ${engine}` };
+        },
+    });
+
+    // AMC-style text-selection toolbar: Copy / Quote / Search selected text.
+    setupTextSelectionToolbar({
+        containerEl: elements.chatContainer,
+        inputEl: elements.userInput,
+    });
+
+    // Re-render the current visible session from its in-memory mirror. Used on
+    // language change so the transcript (action labels, collapse toggles, etc.)
+    // re-translates without a reload. No-op when no session is loaded.
+    function rerenderCurrentView() {
+        if (!state.currentSessionId) {
+            showHomeState();
+            return;
+        }
+        const s = ensureSessionState(state.currentSessionId);
+        const messages = s.mirror.map((m, idx) => ({
+            ...m,
+            id: `regen-${state.currentSessionId}-${idx}`,
+            message_index: idx,
+            role: m.role,
+            content: m.content,
+        }));
+        messagesMirror = s.mirror;
+        renderMessages(messages, {
+            onEdit: beginEditMessage,
+            onRegenerate: regenerateFromPrompt,
+            onMessageDeleted: refreshAfterMessageDeleted,
+            onForked: refreshHistory,
+        });
+    }
+
+    return { loadChat, deleteChat, rerenderCurrentView };
 }
 
 function syncSettingsFormSearchLimits(maxResults, maxIterations) {
@@ -965,35 +1243,44 @@ function syncSettingsFormSearchLimits(maxResults, maxIterations) {
     if (maxIterationsInput) maxIterationsInput.value = String(maxIterations);
 }
 
+/** Apply a search-intensity preset (chips / slash commands / settings share this). */
+async function applyIntensityPreset(presetId) {
+    if (state.isProcessing) return false;
+    if (!presetId || presetId === 'custom') return false;
+    const preset = getIntensityPreset(presetId);
+    if (!preset || !state.settings) return false;
+
+    const previousResults = state.settings.max_results;
+    const previousIterations = state.settings.max_iterations;
+    state.settings = applyIntensityPresetToSettings(state.settings, presetId);
+    syncSettingsFormSearchLimits(preset.max_results, preset.max_iterations);
+    syncQuickSettingsFromState();
+
+    const saved = await API.saveSettingsAPI(state.settings);
+    if (!saved) {
+        state.settings.max_results = previousResults;
+        state.settings.max_iterations = previousIterations;
+        syncSettingsFormSearchLimits(previousResults, previousIterations);
+        syncQuickSettingsFromState();
+        showToast(t('chat.intensitySaveFailed'), 'warning');
+        return false;
+    }
+    showToast(t('chat.intensityApplied', {
+        label: getIntensityPresetLabel(preset),
+        hint: getIntensityPresetHint(preset),
+    }), 'success');
+    return true;
+}
+
 function setupSearchIntensityControls() {
     const bar = document.getElementById('search-intensity-bar');
     if (!bar) return;
 
     const chips = Array.from(bar.querySelectorAll('.intensity-chip[data-intensity]'));
     chips.forEach((chip) => {
-        chip.addEventListener('click', async () => {
-            if (state.isProcessing) return;
+        chip.addEventListener('click', () => {
             const presetId = chip.getAttribute('data-intensity');
-            if (!presetId || presetId === 'custom') return;
-            const preset = getIntensityPreset(presetId);
-            if (!preset || !state.settings) return;
-
-            const previousResults = state.settings.max_results;
-            const previousIterations = state.settings.max_iterations;
-            state.settings = applyIntensityPresetToSettings(state.settings, presetId);
-            syncSettingsFormSearchLimits(preset.max_results, preset.max_iterations);
-            syncQuickSettingsFromState();
-
-            const saved = await API.saveSettingsAPI(state.settings);
-            if (!saved) {
-                state.settings.max_results = previousResults;
-                state.settings.max_iterations = previousIterations;
-                syncSettingsFormSearchLimits(previousResults, previousIterations);
-                syncQuickSettingsFromState();
-                showToast('搜索强度保存失败，已恢复原状态', 'warning');
-                return;
-            }
-            showToast(`搜索强度：${preset.label}（${preset.hint}）`, 'success');
+            applyIntensityPreset(presetId);
         });
 
         chip.addEventListener('keydown', (e) => {
@@ -1017,9 +1304,8 @@ function setupSearchIntensityControls() {
 export function syncQuickSettingsFromState() {
     const quickEngineName = document.getElementById('quick-engine-name');
     const quickEngineDropdown = document.getElementById('quick-engine-dropdown');
-    const quickInteractiveBtn = document.getElementById('quick-interactive-btn');
     const quickLiveArtifactsBtn = document.getElementById('quick-live-artifacts-btn');
-    
+
     if (!state.settings) return;
     
     const engine = state.settings.search_engine || 'google';
@@ -1027,9 +1313,9 @@ export function syncQuickSettingsFromState() {
         'duckduckgo': 'DuckDuckGo',
         'google': 'Google',
         'bing': 'Bing',
-        'sogou': '搜狗 (Sogou)',
+        'sogou': t('engine.sogou'),
         'brave': 'Brave Search',
-        'baidu': '百度 (Baidu)',
+        'baidu': t('engine.baidu'),
         'yandex': 'Yandex',
     };
     if (quickEngineName) {
@@ -1054,11 +1340,6 @@ export function syncQuickSettingsFromState() {
             iconContainer.appendChild(activeSvg.cloneNode(true));
         }
     }
-    
-    const interactive = coerceBooleanSetting(state.settings.interactive_search, true);
-    if (quickInteractiveBtn) {
-        quickInteractiveBtn.classList.toggle('active', interactive);
-    }
 
     if (quickLiveArtifactsBtn) {
         const active = Boolean(state.liveArtifactsMode);
@@ -1067,12 +1348,12 @@ export function syncQuickSettingsFromState() {
         quickLiveArtifactsBtn.setAttribute(
             'aria-label',
             active
-                ? 'Live Artifacts 提示已激活。点击移除。'
-                : '加载 Live Artifacts 提示并保存设置'
+                ? t('chat.laActiveHint')
+                : t('chat.laInactiveHintAria')
         );
         quickLiveArtifactsBtn.title = active
-            ? 'Live Artifacts 提示已激活。点击移除。'
-            : '加载 Live Artifacts 提示并保存';
+            ? t('chat.laActiveHint')
+            : t('chat.laInactiveHint');
     }
 
     updateIntensityUI({

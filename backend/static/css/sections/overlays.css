@@ -42,12 +42,19 @@
 .toast-warning .material-symbols-rounded { color: var(--warning); }
 
 /* ========================================
-   Scroll to Bottom Button
+   Scroll Navigation — AMC floating pill (↑ / ↓)
    ======================================== */
-#scroll-to-bottom-btn {
+#scroll-nav {
     position: absolute;
     bottom: 90px;
     right: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 50;
+}
+
+.scroll-nav-btn {
     width: 36px;
     height: 36px;
     border-radius: var(--radius-full);
@@ -59,28 +66,26 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all var(--transition-fast);
+    transition: opacity var(--transition-fast), transform var(--transition-fast), background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
     opacity: 0;
     pointer-events: none;
-    transform: translateY(10px);
-    z-index: 50;
+    transform: translateY(8px);
 }
 
-#scroll-to-bottom-btn.visible {
+.scroll-nav-btn.visible {
     opacity: 1;
     pointer-events: auto;
     transform: translateY(0);
 }
 
-#scroll-to-bottom-btn:hover {
+.scroll-nav-btn:hover {
     background-color: var(--primary-light);
     color: var(--primary);
     border-color: var(--primary);
-    transform: translateY(-2px);
     box-shadow: var(--shadow-lg);
 }
 
-#scroll-to-bottom-btn .material-symbols-rounded {
+.scroll-nav-btn .material-symbols-rounded {
     font-size: 20px;
 }
 
@@ -521,4 +526,52 @@ body.evidence-panel-open { overflow: hidden; }
 @media (max-width: 600px) {
     .evidence-panel { width: 100vw; }
     .evidence-panel-body { padding: 12px; }
+}
+
+/* ========================================
+   Text-selection toolbar — AMC floating pill
+   ======================================== */
+.text-selection-toolbar {
+    position: fixed;
+    z-index: 5000;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    border-radius: 12px;
+    background: var(--theme-bg-primary);
+    border: 1px solid var(--theme-border-secondary);
+    box-shadow: var(--shadow-lg);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(4px);
+    transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.text-selection-toolbar.is-visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+}
+.text-selection-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 9px;
+    border-radius: 8px;
+    border: 0;
+    background: transparent;
+    color: var(--theme-text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    white-space: nowrap;
+    transition: background-color 0.12s ease, color 0.12s ease;
+}
+.text-selection-btn:hover {
+    background: var(--theme-bg-tertiary);
+    color: var(--theme-text-primary);
+}
+.text-selection-btn .material-symbols-rounded {
+    font-size: 15px;
 }

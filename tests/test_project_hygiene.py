@@ -364,6 +364,8 @@ def test_frontend_uses_generated_logo_asset():
     logo_path = PROJECT_ROOT / "backend/static/assets/justsearch-logo.png"
     dark_logo_path = PROJECT_ROOT / "backend/static/assets/justsearch-logo-dark.png"
     favicon_path = PROJECT_ROOT / "backend/static/assets/justsearch-favicon.png"
+    favicon16_path = PROJECT_ROOT / "backend/static/assets/justsearch-favicon-16.png"
+    favicon32_path = PROJECT_ROOT / "backend/static/assets/justsearch-favicon-32.png"
     index_source = (PROJECT_ROOT / "backend/static/index.html").read_text(
         encoding="utf-8"
     )
@@ -377,6 +379,15 @@ def test_frontend_uses_generated_logo_asset():
     assert dark_logo_path.read_bytes()[25] in {4, 6}
     # PNG color type 6 is truecolor with alpha, 4 is grayscale with alpha.
     assert favicon_path.read_bytes()[25] in {4, 6}
+    # Tight-cropped tab favicons (16/32) fill the canvas so the mark reads
+    # clearly at browser-tab size; the 512 PWA icon keeps its safe-zone padding.
+    for small, size in ((favicon16_path, 16), (favicon32_path, 32)):
+        assert small.is_file()
+        assert small.read_bytes()[25] in {4, 6}
+        width, height, _ = _read_rgba_png(small)
+        assert (width, height) == (size, size)
+    assert "/static/assets/justsearch-favicon-16.png" in index_source
+    assert "/static/assets/justsearch-favicon-32.png" in index_source
     assert "/static/assets/justsearch-logo.png" in index_source
     assert "/static/assets/justsearch-logo-dark.png" in index_source
     assert "/static/assets/justsearch-favicon.png" in index_source
@@ -403,41 +414,54 @@ def test_frontend_tests_do_not_depend_on_local_absolute_paths():
     assert offenders == []
 
 
-def test_favicon_has_white_rounded_square_background_for_dark_browser_tabs():
-    """Favicon uses transparent corners + a light rounded plate behind the mark."""
+def test_favicon_uses_transparent_three_tier_stepped_mark():
+    """Favicon is the transparent cyan-gradient stepped-L mark (no white plate).
+
+    The mark is stroked (not filled), so the canvas is mostly transparent;
+    only the nested L-shaped paths carry colour. We assert the brand palette
+    (dark navy tier + cyan gradient tiers) is present and the whole mark sits
+    inside the canvas with a transparent border (so dark browser tabs are not
+    framed by a hard box).
+    """
     favicon_path = PROJECT_ROOT / "backend/static/assets/justsearch-favicon.png"
     width, height, pixel = _read_rgba_png(favicon_path)
 
     assert (width, height) == (512, 512)
 
-    # Outer corners stay transparent so dark browser chrome is not framed by a hard box.
+    # Outer corners and canvas border stay transparent.
     for point in [(0, 0), (511, 0), (0, 511), (511, 511)]:
         assert pixel(*point)[3] == 0
-
-    # Mid-edge samples on the rounded plate should be near-white / fully opaque.
     for point in [(256, 16), (16, 256), (496, 256), (256, 496)]:
-        red, green, blue, alpha = pixel(*point)
-        assert red >= 245
-        assert green >= 245
-        assert blue >= 245
-        assert alpha >= 245
+        assert pixel(*point)[3] <= 20
 
+    # Collect every visible (non-transparent) pixel and its colour.
+    seen_colors: dict[tuple[int, int, int], int] = {}
     icon_pixels_x = []
     icon_pixels_y = []
     for y in range(height):
         for x in range(width):
             red, green, blue, alpha = pixel(x, y)
-            is_visible_icon_pixel = alpha > 20 and not (
-                red >= 245 and green >= 245 and blue >= 245
-            )
-            if not is_visible_icon_pixel:
+            if alpha <= 20:
                 continue
-
             icon_pixels_x.append(x)
             icon_pixels_y.append(y)
+            key = (red, green, blue)
+            seen_colors[key] = seen_colors.get(key, 0) + 1
 
     assert icon_pixels_x and icon_pixels_y
-    # Colored mark is inset from the plate edge and reasonably large.
+
+    def _near(target, actual, tol=24):
+        return all(abs(t - a) <= tol for t, a in zip(target, actual))
+
+    # The dark navy tier and the cyan gradient tiers must all be present.
+    dark_present = any(_near((0x2D, 0x3B, 0x4D), c) for c in seen_colors)
+    cyan_present = any(_near((0x00, 0xB8, 0xEC), c) for c in seen_colors)
+    cyan_light_present = any(_near((0x70, 0xE0, 0xFA), c) for c in seen_colors)
+    assert dark_present, f"dark navy tier #2D3B4D missing; colors={list(seen_colors)[:8]}"
+    assert cyan_present, f"cyan tier #00B8EC missing; colors={list(seen_colors)[:8]}"
+    assert cyan_light_present, f"light cyan tier #70E0FA missing; colors={list(seen_colors)[:8]}"
+
+    # Mark is inset from the plate edge and reasonably large.
     assert min(icon_pixels_x) >= 16
     assert max(icon_pixels_x) <= 496
     assert min(icon_pixels_y) >= 16
@@ -634,25 +658,27 @@ def test_settings_modal_avoids_internal_divider_lines():
     assert "border-bottom: 1px solid rgba(255, 255, 255, 0.15);" not in settings_css
 
 
-def test_validate_api_key_button_shows_loading_state():
+def test_provider_connection_test_shows_inline_loading_and_result():
     settings_js = (
         PROJECT_ROOT / "backend/static/js/modules/settings-modal.js"
     ).read_text(encoding="utf-8")
-    settings_css = (
-        PROJECT_ROOT / "backend/static/css/sections/input-modal.css"
+    polish_css = (
+        PROJECT_ROOT / "backend/static/css/sections/polish.css"
     ).read_text(encoding="utf-8")
 
-    assert "validateBtn.classList.add('is-validating')" in settings_js
-    assert "validateBtn.classList.remove('is-validating')" in settings_js
-    assert "validateBtn.disabled = true" in settings_js
-    assert "validateBtn.disabled = false" in settings_js
-    assert "请先输入 API 密钥" not in settings_js
-    assert "API 连接验证通过" in settings_js
-    assert "Gemini 2.5 系列模型不再支持" in settings_js
+    assert "runProviderConnectionTest" in settings_js
+    assert "testBtn.classList.add('is-testing')" in settings_js
+    assert "testBtn.classList.remove('is-testing')" in settings_js
+    assert "testBtn.disabled = true" in settings_js
+    assert "testBtn.disabled = false" in settings_js
+    assert "renderConnectionTestResult(resultEl," in settings_js
+    assert "API 连接验证通过" not in settings_js
+    assert "settings.connGemini25Unsupported" in settings_js
     assert "isUnsupportedGemini25Model" in settings_js
     assert "progress_activity" in settings_js
-    assert ".password-toggle-btn.is-validating" in settings_css
-    assert ".password-toggle-btn.is-validating span" in settings_css
+    assert ".provider-test-btn.is-testing" in polish_css
+    assert ".provider-test-result.is-error" in polish_css
+    assert ".provider-test-result.is-success" in polish_css
 
 
 def test_provider_cards_are_collapsible_in_settings_modal():
@@ -671,21 +697,20 @@ def test_provider_cards_are_collapsible_in_settings_modal():
     assert ".provider-collapse-btn" in settings_css
 
 
-def test_provider_cards_show_summary_and_fold_model_list():
+def test_provider_cards_show_status_badge_and_fold_model_list():
     settings_js = (
         PROJECT_ROOT / "backend/static/js/modules/settings-modal.js"
     ).read_text(encoding="utf-8")
     settings_css = (
         PROJECT_ROOT / "backend/static/css/sections/input-modal.css"
     ).read_text(encoding="utf-8")
+    polish_css = (
+        PROJECT_ROOT / "backend/static/css/sections/polish.css"
+    ).read_text(encoding="utf-8")
 
     expected_js_tokens = [
-        "provider-summary-row",
-        "provider-summary-base-url",
-        "provider-summary-model-count",
-        "provider-summary-key-status",
-        "formatProviderSummary",
-        "updateProviderSummary",
+        "provider-status-badge",
+        "updateProviderBadge",
         "model-panel-toggle",
         "model-panel-summary",
         "setModelPanelCollapsed",
@@ -694,17 +719,18 @@ def test_provider_cards_show_summary_and_fold_model_list():
     for token in expected_js_tokens:
         assert token in settings_js
 
-    expected_css_tokens = [
-        ".provider-summary-row",
-        ".provider-summary-pill",
-        ".provider-card.collapsed .provider-summary-row",
+    expected_input_css_tokens = [
         ".model-panel-header",
         ".model-panel-toggle",
         ".model-panel-summary",
         ".model-settings-group.collapsed .model-list-container",
     ]
-    for token in expected_css_tokens:
+    for token in expected_input_css_tokens:
         assert token in settings_css
+
+    assert ".provider-status-badge" in polish_css
+    assert '.provider-status-badge[data-state="ready"]' in polish_css
+    assert ".provider-status-badge[data-state=\"missing\"]" in polish_css
 
 
 def test_api_settings_support_workflow_step_model_selection():
@@ -764,7 +790,7 @@ def test_settings_modal_auto_saves_without_manual_buttons():
     assert "row.querySelector('select').addEventListener('change'" in settings_js
     assert "设置已保存" not in settings_js
     assert "'保存设置失败'" not in settings_js
-    assert "自动保存设置失败" in settings_js
+    assert "settings.saveFailed" in settings_js
     assert "后保存" not in chat_js
 
 
@@ -778,7 +804,7 @@ def test_api_settings_panel_preserves_provider_state_during_auto_save():
     assert "getProviderCollapseStates" in settings_js
     assert "preserveCollapsed: true" in settings_js
     assert "expandedProviderId: newProvider.id" in settings_js
-    assert "createProviderCard(provider, fallbackDefault, index, { collapsed })" in settings_js
+    assert "function createProviderCard(provider, logo, defaultProviderId, index, options = {})" in settings_js
     assert "serialize({ save = true } = {})" in settings_js
     assert "requestSettingsAutoSave();" in settings_js
     assert "serialize({ save: false })" in settings_js
@@ -910,7 +936,7 @@ def test_default_max_search_results_is_fifty_across_app():
     assert '"max_results": 50' in settings_example
 
 
-def test_llm_requests_do_not_apply_context_length_limits():
+def test_llm_requests_apply_bounded_context_budgets():
     llm_source = (PROJECT_ROOT / "backend/app/llm_client.py").read_text(
         encoding="utf-8"
     )
@@ -936,16 +962,41 @@ def test_llm_requests_do_not_apply_context_length_limits():
         encoding="utf-8"
     )
 
-    assert "history[-" not in llm_source
+    # New: a bounded prompt-source budget and a bounded history budget must
+    # exist and be wired into the generation/context paths.
+    assert "_PROMPT_SOURCE_CHAR_BUDGET" in llm_source
+    assert "_budget_sources_for_prompt" in llm_source
+    assert "_HISTORY_CHAR_BUDGET" in llm_source
+    assert "（节选）" in llm_source
+    # The bounded budgets are configurable from settings/UI.
+    assert "history_window" in settings_source
+    assert "history_char_budget" in settings_source
+    assert "assistant_turn_char_budget" in settings_source
+    assert "history-window-input" in index_source
+    assert "history-char-budget-input" in index_source
+    assert "assistant-turn-char-budget-input" in index_source
+    assert "history_window" in settings_js
+    assert "history_char_budget" in settings_js
+    assert "assistant_turn_char_budget" in settings_js
+    assert "history_options" in workflow_source
+
+    # Legacy red lines stay: the old coarse-grained implementations must not
+    # come back.
     assert "_smart_truncate" not in llm_source
     assert "chars_per_source" not in llm_source
-    assert "内容已截取" not in llm_source
-    assert "答案已截断" not in llm_source
     assert "elements[:50]" not in llm_source
     assert "el['text'][:100]" not in llm_source
+    assert "max_context_turns" not in llm_source
     assert "_truncate_for_log(query)" not in llm_source
+    # ``history[-`` is a hygiene red line; the codebase must use
+    # ``list(history)[-N:]`` (which does not contain the banned substring).
+    assert "history[-" not in llm_source
+    # Crawler domain keeps its own separate cap naming; do not reuse the
+    # llm-side budget name there.
     assert "_MAX_CONTENT_LENGTH" not in crawler_source
     assert "内容过长" not in crawler_source
+    assert "内容已截取" not in llm_source
+    assert "答案已截断" not in llm_source
     assert "max_context_turns" not in chat_source
     assert "max_context_turns" not in settings_source
     assert "max_context_turns" not in workflow_source
@@ -1049,15 +1100,15 @@ def test_source_rendering_helpers_are_split_from_ui_module():
     assert "hasCitationSources" in ui_source
     assert "normalizeCitationSources" in ui_source
     assert "hasCitationSources" in chat_source
-    assert "from './source-renderer.js?v=10'" in ui_source
-    assert "from './source-renderer.js?v=10'" in chat_source
-    assert "from './ui.js?v=31'" in (
+    assert "from './source-renderer.js?v=12'" in ui_source
+    assert "from './source-renderer.js?v=12'" in chat_source
+    assert "from './ui.js?v=40'" in (
         PROJECT_ROOT / "backend/static/js/modules/history-view.js"
     ).read_text(encoding="utf-8")
-    assert "from './ui.js?v=31'" in (
+    assert "from './ui.js?v=40'" in (
         PROJECT_ROOT / "backend/static/js/modules/settings-modal.js"
     ).read_text(encoding="utf-8")
-    assert "from './ui.js?v=31'" in (
+    assert "from './ui.js?v=40'" in (
         PROJECT_ROOT / "backend/static/js/modules/sidebar.js"
     ).read_text(encoding="utf-8")
     assert "export function extractSources" not in ui_source
@@ -1104,8 +1155,8 @@ def test_sidebar_stylesheet_changes_are_cache_busted():
     ).read_text(encoding="utf-8")
 
     # style.css 现为各分片拼接（不再用 @import）；index.html 引用带缓存版本号的单文件
-    assert 'href="/static/css/style.css?v=46"' in index_source
-    assert 'src="/static/js/main.js?v=75"' in index_source
+    assert 'href="/static/css/style.css?v=50"' in index_source
+    assert 'src="/static/js/main.js?v=85"' in index_source
     assert "=== base.css (inlined) ===" in style_source
     assert "=== sidebar.css (inlined) ===" in style_source
     assert "=== chat.css (inlined) ===" in style_source
@@ -1117,19 +1168,54 @@ def test_sidebar_stylesheet_changes_are_cache_busted():
     assert "edit-message-banner" in style_source
     assert "from './modules/auth.js?v=1'" in main_source
     assert "from './modules/state.js?v=5'" in main_source
-    assert "from './modules/ui.js?v=31'" in main_source
-    assert "from './modules/chat.js?v=40'" in main_source
-    assert "from './modules/history-view.js?v=23'" in main_source
-    assert "from './modules/settings-modal.js?v=51'" in main_source
-    assert "from './modules/sidebar.js?v=19'" in main_source
-    assert "from './modules/model-selector.js?v=15'" in main_source
-    assert "from './modules/api.js?v=11'" in main_source
-    assert "import('./modules/utils.js?v=6')" in main_source
-    assert "search-intensity.js?v=1" in (PROJECT_ROOT / "backend/static/js/modules/chat.js").read_text(encoding="utf-8")
+    assert "from './modules/ui.js?v=40'" in main_source
+    assert "from './modules/chat.js?v=52'" in main_source
+    assert "from './modules/history-view.js?v=25'" in main_source
+    assert "from './modules/settings-modal.js?v=56'" in main_source
+    assert "from './modules/sidebar.js?v=21'" in main_source
+    assert "from './modules/model-selector.js?v=16'" in main_source
+    assert "from './modules/api.js?v=14'" in main_source
+    assert "import('./modules/utils.js?v=13')" in main_source
+    assert "search-intensity.js?v=3" in (PROJECT_ROOT / "backend/static/js/modules/chat.js").read_text(encoding="utf-8")
+    assert "from './modules/shortcuts-help.js?v=2'" in main_source
+    assert "from './modules/provider-catalog.js?v=2'" in main_source
+    assert "from './completion-feedback.js?v=1'" in (PROJECT_ROOT / "backend/static/js/modules/chat.js").read_text(encoding="utf-8")
+    assert 'id="shortcuts-help-modal"' in index_source
+    assert 'id="model-manager-modal"' in index_source
+    assert 'id="completion-notification-input"' in index_source
+    assert 'id="completion-sound-input"' in index_source
     assert 'id="search-intensity-bar"' in index_source
     assert "loadSelectedModelPreference" in main_source
     assert "findOptionForModelPreference" in main_source
     assert "SELECTED_MODEL_STORAGE_KEY" in (PROJECT_ROOT / "backend/static/js/modules/model-selector.js").read_text(encoding="utf-8")
+
+
+def test_module_version_strings_consistent_across_references():
+    """Same module must be referenced with the same ?v= version everywhere.
+
+    Browsers treat module URLs differing only by query string as separate module
+    instances — each with its own private module-level state — and cache them
+    independently. A per-file bump that misses one importer silently forks the
+    module (and lets users run a mixed old/new build), so this asserts
+    consistency instead of hardcoding per-module versions.
+    """
+    modules_dir = PROJECT_ROOT / "backend/static/js/modules"
+    version_re = re.compile(
+        r"(?:from|import)\s*\(?\s*['\"]\./modules/([A-Za-z0-9_\-]+\.js)\?v=(\d+)['\"]"
+    )
+    module_versions: dict[str, set[str]] = {}
+    js_dir = PROJECT_ROOT / "backend/static/js"
+    for path in [js_dir / "main.js", *modules_dir.glob("*.js")]:
+        src = path.read_text(encoding="utf-8")
+        for module, version in version_re.findall(src):
+            module_versions.setdefault(module, set()).add(version)
+
+    assert module_versions, "no versioned module references found"
+    for module, versions in sorted(module_versions.items()):
+        assert len(versions) == 1, (
+            f"module {module} referenced with inconsistent versions {sorted(versions)}; "
+            "browsers load each ?v= as a separate module instance — unify the version string"
+        )
 
 
 def test_auth_token_persists_with_data_volume_and_401_recovers():
@@ -1233,7 +1319,7 @@ def test_thinking_box_uses_amc_style_spinner():
     assert "@keyframes amcThinkingDot" not in chat_css
     assert "@keyframes amcThoughtSweep" in chat_css
     assert "animation: none;" in chat_css
-    assert "正在思考..." in ui_js
+    assert "ui.thinking" in ui_js
 
 
 def test_message_bubbles_follow_amc_visual_pattern():
@@ -1250,12 +1336,26 @@ def test_message_bubbles_follow_amc_visual_pattern():
         PROJECT_ROOT / "backend/static/css/sections/input-modal.css"
     ).read_text(encoding="utf-8")
 
+    # Canonical AMC palette tokens (Pearl light / Onyx dark) backing the
+    # message bubbles. The user bubble is a neutral tint, never the accent.
     for token in [
-        "--amc-message-user-bg: #f3f4f6;",
-        "--amc-message-user-text: #000000;",
-        "--amc-message-user-bg: #2563eb;",
-        "--amc-message-model-bg: transparent;",
-        "--amc-message-code-bg: #f7f7f8;",
+        "--theme-bg-user-message: #eef0f5;",  # Pearl user bubble (neutral)
+        "--theme-user-message-text: #1a1a1f;",
+        "--theme-bg-model-message: #fefefe;",  # Pearl model message
+        "--theme-bg-code-block: #f6f7f9;",
+        "--theme-bg-user-message: #202028;",  # Onyx user bubble (neutral, not accent blue)
+        "--theme-user-message-text: #f5f5f7;",
+        "--theme-bg-model-message: transparent;",  # Onyx model message
+        "--theme-bg-code-block: #141418;",
+    ]:
+        assert token in base_css
+
+    # Message bubbles read their colors through the AMC-style aliases.
+    for token in [
+        "--amc-message-user-bg: var(--theme-bg-user-message);",
+        "--amc-message-user-text: var(--theme-user-message-text);",
+        "--amc-message-model-bg: var(--theme-bg-model-message);",
+        "--amc-message-code-bg: var(--theme-bg-code-block);",
     ]:
         assert token in base_css
 
@@ -1296,6 +1396,78 @@ def test_message_bubbles_follow_amc_visual_pattern():
     assert ".message-content:hover .msg-delete-btn" not in input_modal_css
     assert "background-color: var(--amc-message-code-bg);" in markdown_css
     assert "border-left: 3px solid currentColor;" in markdown_css
+
+
+def test_composer_extras_follow_amc_pattern():
+    """Suggestion chips, slash-command menu and generation status pill exist and
+    are wired from chat.js (AMC ChatSuggestions / SlashCommandMenu /
+    LiveStatusBanner equivalents)."""
+    index_source = (
+        PROJECT_ROOT / "backend/static/index.html"
+    ).read_text(encoding="utf-8")
+    chat_source = (
+        PROJECT_ROOT / "backend/static/js/modules/chat.js"
+    ).read_text(encoding="utf-8")
+    extras_source = (
+        PROJECT_ROOT / "backend/static/js/modules/composer-extras.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="suggestion-chips"' in index_source
+    assert 'id="suggestion-chips-track"' in index_source
+    assert 'id="slash-command-menu"' in index_source
+    assert 'id="generation-status"' in index_source
+    assert 'id="generation-status-stop"' in index_source
+    assert "from './composer-extras.js?v=2'" in chat_source
+    assert "export const SUGGESTIONS" in extras_source
+    assert "export const SLASH_COMMANDS" in extras_source
+    assert "export function setupComposerExtras" in extras_source
+
+
+def test_message_area_extras_follow_amc_pattern():
+    """Text-selection toolbar, ↑/↓ scroll navigation and per-message markdown
+    export mirror AMC's TextSelectionToolbar / ScrollNavigation / Export."""
+    index_source = (
+        PROJECT_ROOT / "backend/static/index.html"
+    ).read_text(encoding="utf-8")
+    chat_source = (
+        PROJECT_ROOT / "backend/static/js/modules/chat.js"
+    ).read_text(encoding="utf-8")
+    ui_source = (
+        PROJECT_ROOT / "backend/static/js/modules/ui.js"
+    ).read_text(encoding="utf-8")
+    utils_source = (
+        PROJECT_ROOT / "backend/static/js/modules/utils.js"
+    ).read_text(encoding="utf-8")
+    selection_source = (
+        PROJECT_ROOT / "backend/static/js/modules/text-selection.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="text-selection-toolbar"' in index_source
+    assert 'id="scroll-to-top-btn"' in index_source
+    assert 'id="scroll-to-bottom-btn"' in index_source
+    assert "setupTextSelectionToolbar" in chat_source
+    assert "from './text-selection.js?v=1'" in chat_source
+    assert "export function setupTextSelectionToolbar" in selection_source
+    assert "createExportMessageButton" in ui_source
+    assert "export function createExportMessageButton" in utils_source
+    assert "scrollToTopBtn" in ui_source
+
+
+def test_settings_search_follows_amc_pattern():
+    index_source = (
+        PROJECT_ROOT / "backend/static/index.html"
+    ).read_text(encoding="utf-8")
+    settings_source = (
+        PROJECT_ROOT / "backend/static/js/modules/settings-modal.js"
+    ).read_text(encoding="utf-8")
+    search_source = (
+        PROJECT_ROOT / "backend/static/js/modules/settings-search.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="settings-search-input"' in index_source
+    assert 'id="settings-search-results"' in index_source
+    assert "from './settings-search.js?v=2'" in settings_source
+    assert "export function setupSettingsSearch" in search_source
 
 
 def test_message_side_actions_follow_amc_interaction_pattern():
@@ -1350,7 +1522,7 @@ def test_message_side_actions_follow_amc_interaction_pattern():
     ]:
         assert token in ui_source
 
-    assert "createMessageActionRail([copyBtn, regenBtn], '助手消息操作')" in chat_source
+    assert "createMessageActionRail([copyBtn, regenBtn], t('ui.assistantActions'))" in chat_source
     assert "createMessageShell('assistant')" in chat_source
     assert "contentWrapper.className = 'message-answer-body'" in chat_source
     assert "sideColumn.appendChild(createMessageActionRail" in chat_source
@@ -1363,9 +1535,9 @@ def test_message_side_actions_follow_amc_interaction_pattern():
     assert "edit-message-banner" in (
         PROJECT_ROOT / "backend/static/index.html"
     ).read_text(encoding="utf-8")
-    assert "from './utils.js?v=6'" in chat_source
-    assert "from './utils.js?v=6'" in ui_source
-    assert "from './utils.js?v=6'" in source_renderer
+    assert "from './utils.js?v=13'" in chat_source
+    assert "from './utils.js?v=13'" in ui_source
+    assert "from './utils.js?v=13'" in source_renderer
     assert ".message-row" in responsive_css
     assert ".message-side" in responsive_css
     assert ".message-avatar" in responsive_css
@@ -1468,7 +1640,7 @@ def test_sidebar_custom_groups_render_sessions_by_date():
 
     assert render_date_signature is not None
     assert "target = elements.historyList" in render_date_signature.group("args")
-    assert "renderDateGroups(sessions, currentSessionId, callbacks, list)" in chat_group_render
+    assert "renderDateGroups(ordered, currentSessionId, callbacks, list)" in chat_group_render
     assert "sessions.forEach(chat => list.appendChild(createHistoryItem" not in chat_group_render
     assert ".chat-group-session-list .history-group" in sidebar_css
     assert ".chat-group-session-list .history-group-header" in sidebar_css
@@ -1708,20 +1880,14 @@ def test_gemini_25_models_are_filtered_from_frontend_options():
     assert "function splitModelItem" not in settings_source
 
 
-def test_deep_search_toggle_uses_material_symbol_icon():
+def test_deep_search_config_only_in_settings():
+    """Deep search (interactive) is configured only in the settings modal, not as a
+    quick toggle inside the input box."""
     index_source = (PROJECT_ROOT / "backend/static/index.html").read_text(encoding="utf-8")
 
-    button_match = re.search(
-        r'<button id="quick-interactive-btn"[^>]*>(.*?)</button>',
-        index_source,
-        re.DOTALL,
-    )
-
-    assert button_match is not None
-    button_markup = button_match.group(1)
-    assert 'class="material-symbols-rounded toolbar-symbol"' in button_markup
-    assert "travel_explore" in button_markup
-    assert '<svg class="icon-svg"' not in button_markup
+    assert "quick-interactive-btn" not in index_source
+    assert 'id="interactive-search-input"' in index_source
+    assert "交互式深度搜索" in index_source
 
 
 def test_live_artifacts_toggle_wires_amc_live_artifacts_mode():
@@ -1772,16 +1938,30 @@ def test_live_artifacts_toggle_wires_amc_live_artifacts_mode():
     assert "Live Artifacts Designer for JustSearch" in prompts_source
     assert "AMC-WebUI" not in prompts_source
     assert "不要退回纯文本" in prompts_source
-    assert "不要放进 css、text、markdown 或 html 代码块" in prompts_source
+    # AMC-aligned fence wording (includes amc-live-artifact-html).
+    assert "不要放进 css、text、markdown、html 或 amc-live-artifact-html 代码块" in prompts_source
+    assert "Do not wrap it in css, text, markdown, html, or amc-live-artifact-html fences" in prompts_source
+    # AMC aesthetic + density tiers + golden examples.
+    assert "美学目标" in prompts_source
+    assert "丰富档黄金范例" in prompts_source
+    assert "Aesthetic goal" in prompts_source
+    assert "Rich-tier golden example" in prompts_source
+    assert "HARD CONSTRAINTS" in prompts_source
+    # JustSearch search overlay still forbids fixed viewport shells.
     assert "100vh" in prompts_source
     assert "height:100%" in prompts_source or "height:100%" in prompts_source.replace(" ", "")
     assert "never ship only a hero title" in prompts_source
     assert "var(--amc-live-artifact-font-size)" in prompts_source
-    assert "var(--amc-live-artifact-text)" in prompts_source
-    assert "var(--amc-live-artifact-surface)" in prompts_source
-    assert "var(--amc-live-artifact-accent)" in prompts_source
+    # AMC uses compact token pipes: text|muted|subtle|... and surface|surface-muted|...
+    assert "--amc-live-artifact-text" in prompts_source
+    assert "--amc-live-artifact-surface" in prompts_source
+    assert "--amc-live-artifact-accent" in prompts_source
+    assert "--amc-live-artifact-success-surface" in prompts_source
+    assert "var(--amc-live-artifact-border)" in prompts_source
     assert "The actual answer content in Markdown" not in prompts_source.split("ANSWER_GENERATION_LIVE_ARTIFACTS_PROMPT", 1)[1]
     assert "complete document with <!doctype html>" not in prompts_source
+    # AMC protocol intentionally omits details/summary fold guidance.
+    assert "details/summary" not in prompts_source.split("LIVE_ARTIFACTS_PROMPT_ZH", 1)[1].split("CITATION_VERIFICATION_PROMPT", 1)[0]
 
 
 def test_browser_modal_module_has_been_removed_in_bridge_refactor():

@@ -24,7 +24,7 @@ run_docker() {
     if [ $? -eq 0 ]; then
         echo ""
         echo "✅ Deployment successful!"
-        echo "🌍 Access JustSearch at: http://localhost:8000"
+        echo "🌍 Access JustSearch at: http://localhost:8001"
     else
         echo "❌ Docker deployment failed."
         exit 1

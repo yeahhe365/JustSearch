@@ -1,4 +1,6 @@
 // 初始化 markdown-it with highlight.js
+import { t } from './i18n.js?v=1';
+
 const mdInstance = window.markdownit({
     html: true,
     linkify: true,
@@ -30,7 +32,7 @@ export const md = {
         const withTarget = sanitized.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ');
         // 为代码块添加包装器（不含 onclick，用事件委托处理复制）
         return withTarget.replace(/<pre><code([^>]*)>/g, (match, attrs) => {
-            return `<pre class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${escapeHtml(extractLangFromAttrs(attrs))}</span><button class="code-copy-btn" data-action="copy-code" title="复制代码"><span class="material-symbols-rounded">content_copy</span><span>复制</span></button></div><code${attrs}>`;
+            return `<pre class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${escapeHtml(extractLangFromAttrs(attrs))}</span><button class="code-copy-btn" data-action="copy-code" title="${t('ui.copyCode')}"><span class="material-symbols-rounded">content_copy</span><span>${t('ui.copy')}</span></button></div><code${attrs}>`;
         });
     }
 };
@@ -62,12 +64,12 @@ document.addEventListener('click', async (e) => {
         const icon = btn.querySelector('.material-symbols-rounded');
         const textSpan = btn.querySelector('span:not(.material-symbols-rounded)');
         icon.textContent = 'check';
-        if(textSpan) textSpan.textContent = '已复制';
+        if(textSpan) textSpan.textContent = t('ui.copied');
         btn.style.color = 'var(--success)';
-        
-        setTimeout(() => { 
-            icon.textContent = 'content_copy'; 
-            if(textSpan) textSpan.textContent = '复制';
+
+        setTimeout(() => {
+            icon.textContent = 'content_copy';
+            if(textSpan) textSpan.textContent = t('ui.copy');
             btn.style.color = '';
         }, 2000);
     } catch (err) { console.error('Copy failed:', err); }
@@ -150,7 +152,7 @@ export function applyTheme(theme) {
 
     // Rebuild open Live Artifact iframes so dark/light theme tokens stay readable.
     // Mirrors AMC re-injecting --amc-live-artifact-* when themeId changes.
-    import('./live-artifacts.js?v=27')
+    import('./live-artifacts.js?v=49')
         .then((mod) => {
             if (typeof mod.refreshLiveArtifactPreviews === 'function') {
                 mod.refreshLiveArtifactPreviews({ theme: document.documentElement.getAttribute('data-theme') });
@@ -210,7 +212,7 @@ export function createMessageActionButton(className, icon, title, onClick) {
     return btn;
 }
 
-export function createMessageActionRail(buttons, label = '消息操作') {
+export function createMessageActionRail(buttons, label = t('ui.messageActions')) {
     const rail = document.createElement('div');
     rail.className = 'message-action-rail';
     rail.setAttribute('role', 'toolbar');
@@ -221,7 +223,7 @@ export function createMessageActionRail(buttons, label = '消息操作') {
 }
 
 export function createCopyButton(contentGetter) {
-    const btn = createMessageActionButton('copy-btn', 'content_copy', '复制', async (e) => {
+    const btn = createMessageActionButton('copy-btn', 'content_copy', t('ui.copy'), async (e) => {
         e.stopPropagation();
         const raw = typeof contentGetter === 'function' ? contentGetter() : contentGetter;
         if (!raw) return;
@@ -233,13 +235,13 @@ export function createCopyButton(contentGetter) {
             const icon = btn.querySelector('span');
             icon.textContent = 'check';
             btn.classList.add('is-success');
-            btn.title = '已复制';
-            btn.setAttribute('aria-label', '已复制');
+            btn.title = t('ui.copied');
+            btn.setAttribute('aria-label', t('ui.copied'));
             setTimeout(() => {
                 icon.textContent = 'content_copy';
                 btn.classList.remove('is-success');
-                btn.title = '复制';
-                btn.setAttribute('aria-label', '复制');
+                btn.title = t('ui.copy');
+                btn.setAttribute('aria-label', t('ui.copy'));
             }, 1600);
         } catch (err) {
             console.error('Failed to copy:', err);
@@ -251,7 +253,7 @@ export function createCopyButton(contentGetter) {
 }
 
 export function createEditMessageButton(contentGetter, onEdit) {
-    const btn = createMessageActionButton('edit-message-btn', 'edit', '编辑', (e) => {
+    const btn = createMessageActionButton('edit-message-btn', 'edit', t('ui.edit'), (e) => {
         e.stopPropagation();
         const raw = typeof contentGetter === 'function' ? contentGetter() : contentGetter;
         if (!raw) return;
@@ -262,7 +264,7 @@ export function createEditMessageButton(contentGetter, onEdit) {
 }
 
 export function createRegenerateButton(onRegenerate) {
-    const btn = createMessageActionButton('regenerate-btn', 'refresh', '重新生成', async (e) => {
+    const btn = createMessageActionButton('regenerate-btn', 'refresh', t('ui.regenerate'), async (e) => {
         e.stopPropagation();
         await onRegenerate();
     });
@@ -271,10 +273,42 @@ export function createRegenerateButton(onRegenerate) {
 }
 
 export function createDeleteMessageButton(onDelete) {
-    const btn = createMessageActionButton('msg-delete-btn', 'delete', '删除', async (e) => {
+    const btn = createMessageActionButton('msg-delete-btn', 'delete', t('ui.delete'), async (e) => {
         e.stopPropagation();
         await onDelete();
     });
     btn.dataset.action = 'delete-message';
+    return btn;
+}
+
+export function createForkMessageButton(onFork) {
+    const btn = createMessageActionButton('fork-message-btn', 'fork_right', t('ui.forkFromHere'), async (e) => {
+        e.stopPropagation();
+        await onFork();
+    });
+    btn.dataset.action = 'fork-message';
+    return btn;
+}
+
+function downloadTextFile(filename, text, mime = 'text/plain;charset=utf-8') {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function createExportMessageButton(contentGetter) {
+    const btn = createMessageActionButton('export-message-btn', 'file_download', t('ui.exportMarkdown'), (e) => {
+        e.stopPropagation();
+        const raw = typeof contentGetter === 'function' ? contentGetter() : contentGetter;
+        if (!raw) return;
+        downloadTextFile('justsearch-message.md', raw, 'text/markdown;charset=utf-8');
+    });
+    btn.dataset.action = 'export-message';
     return btn;
 }

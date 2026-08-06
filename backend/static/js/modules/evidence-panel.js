@@ -7,7 +7,15 @@ let panelEl = null;
 let bodyEl = null;
 let titleEl = null;
 let closeBtn = null;
-let currentContext = { sources: [], citations: [] };
+/** @type {Map<string, {sources: any[], citations: any[]}>} */
+const frameContexts = new Map();
+// Upper bound on cached per-frame evidence contexts. A long multi-message
+// session otherwise accumulates one entry per rendered Live Artifact frame
+// and never evicts them; capping at 100 keeps the map bounded while still
+// covering any realistic open-tab count (oldest entries are evicted first).
+const FRAME_CONTEXTS_MAX = 100;
+
+import { t } from './i18n.js?v=1';
 
 function ensurePanel() {
     if (panelEl) return panelEl;
@@ -22,11 +30,11 @@ function ensurePanel() {
             <div class="evidence-panel-heading">
                 <span class="material-symbols-rounded evidence-panel-icon" aria-hidden="true">menu_book</span>
                 <div>
-                    <div class="evidence-panel-title" id="evidence-panel-title">证据</div>
-                    <div class="evidence-panel-subtitle">引用原文片段</div>
+                    <div class="evidence-panel-title" id="evidence-panel-title">${t('evidence.title')}</div>
+                    <div class="evidence-panel-subtitle">${t('evidence.subtitle')}</div>
                 </div>
             </div>
-            <button type="button" class="evidence-panel-close icon-btn" aria-label="关闭证据面板" title="关闭">
+            <button type="button" class="evidence-panel-close icon-btn" aria-label="${t('evidence.closePanel')}" title="${t('common.close')}">
                 <span class="material-symbols-rounded" aria-hidden="true">close</span>
             </button>
         </div>
@@ -45,13 +53,16 @@ function ensurePanel() {
         }
     });
 
-    // Live Artifacts iframe citations
+    // Live Artifacts iframe citations — resolve by frameId when available so multi-message
+    // sessions do not open the last-rendered message's sources/citations.
     window.addEventListener('message', (event) => {
         const data = event?.data;
         if (!data || data.channel !== 'justsearch-live-artifacts') return;
         if (data.event !== 'citation-click') return;
         const sourceId = data.sourceId;
         if (sourceId === undefined || sourceId === null || sourceId === '') return;
+        const frameCtx = getFrameEvidenceContext(data.frameId);
+        if (!frameCtx) return; // 未注册 frameId:可能是过期 iframe,拒绝用错误上下文兜底
         openEvidencePanel({
             sourceId,
             occurrenceId: data.occurrenceId,
@@ -59,19 +70,45 @@ function ensurePanel() {
             markerOccurrenceIndex: data.markerOccurrenceIndex,
             groupIndex: data.groupIndex,
             markerIndex: data.markerIndex,
-            sources: currentContext.sources,
-            citations: currentContext.citations,
+            sources: frameCtx.sources,
+            citations: frameCtx.citations,
         });
     });
 
     return panelEl;
 }
 
-export function setEvidenceContext({ sources = [], citations = [] } = {}) {
-    currentContext = {
+/**
+ * Bind sources/citations to a Live Artifact iframe id (artifact.id / FRAME_ID).
+ * Required because per-message contexts are scoped to each iframe, and messages
+ * rendered later must not shadow earlier ones.
+ */
+export function setFrameEvidenceContext(frameId, { sources = [], citations = [] } = {}) {
+    const id = String(frameId ?? '').trim();
+    if (!id) return;
+    frameContexts.set(id, {
         sources: Array.isArray(sources) ? sources : [],
         citations: Array.isArray(citations) ? citations : [],
-    };
+    });
+    // Evict the oldest entries once the cache exceeds its bound, so a long
+    // multi-message session cannot grow this map without limit.
+    while (frameContexts.size > FRAME_CONTEXTS_MAX) {
+        const oldest = frameContexts.keys().next().value;
+        if (oldest === undefined) break;
+        frameContexts.delete(oldest);
+    }
+}
+
+export function getFrameEvidenceContext(frameId) {
+    const id = String(frameId ?? '').trim();
+    if (!id) return null;
+    return frameContexts.get(id) || null;
+}
+
+export function clearFrameEvidenceContext(frameId) {
+    const id = String(frameId ?? '').trim();
+    if (!id) return;
+    frameContexts.delete(id);
 }
 
 function normalizeId(id) {
@@ -133,22 +170,22 @@ function findCitationsForMarker(citations, sourceId) {
 function statusLabel(status) {
     // Map any status (legacy or new) to the honest 4-level set.
     const s = String(status || '').toLowerCase();
-    if (s === 'verified-literal') return { text: '原文直证', className: 'verified' };
-    if (s === 'likely') return { text: '高度支持', className: 'likely' };
-    if (s === 'related') return { text: '仅相关', className: 'related' };
-    if (s === 'missing') return { text: '未找到证据', className: 'missing' };
+    if (s === 'verified-literal') return { text: t('evidence.statusVerified'), className: 'verified' };
+    if (s === 'likely') return { text: t('evidence.statusLikely'), className: 'likely' };
+    if (s === 'related') return { text: t('evidence.statusRelated'), className: 'related' };
+    if (s === 'missing') return { text: t('evidence.statusMissing'), className: 'missing' };
     // Legacy compatibility.
-    if (s === 'matched') return { text: '高度支持', className: 'likely' };
-    if (s === 'weak') return { text: '仅相关', className: 'related' };
-    return { text: '相关段落', className: 'related' };
+    if (s === 'matched') return { text: t('evidence.statusLikely'), className: 'likely' };
+    if (s === 'weak') return { text: t('evidence.statusRelated'), className: 'related' };
+    return { text: t('evidence.statusRelated'), className: 'related' };
 }
 
 function verificationLabel(verification) {
     if (!verification || typeof verification !== 'object') return null;
     const verdict = String(verification.verdict || '').toUpperCase();
-    if (verdict === 'SUPPORTED') return { text: '语义复核：支持', className: 'verified' };
-    if (verdict === 'CONTRADICTED') return { text: '语义复核：矛盾', className: 'missing' };
-    if (verdict === 'NOT_ENOUGH_INFO') return { text: '语义复核：信息不足', className: 'related' };
+    if (verdict === 'SUPPORTED') return { text: t('evidence.verifySupported'), className: 'verified' };
+    if (verdict === 'CONTRADICTED') return { text: t('evidence.verifyContradicted'), className: 'missing' };
+    if (verdict === 'NOT_ENOUGH_INFO') return { text: t('evidence.verifyInsufficient'), className: 'related' };
     return null;
 }
 
@@ -211,8 +248,8 @@ export function openEvidencePanel({
     markerOccurrenceIndex,
     groupIndex,
     markerIndex,
-    sources = currentContext.sources,
-    citations = currentContext.citations,
+    sources = [],
+    citations = [],
     claim = '',
 } = {}) {
     const panel = ensurePanel();
@@ -229,9 +266,9 @@ export function openEvidencePanel({
     const primary = evidenceList[0] || occEvidence[0] || null;
 
     const marker = normalizeId(sourceId);
-    if (titleEl) titleEl.textContent = `证据 · [${marker}]`;
+    if (titleEl) titleEl.textContent = t('evidence.panelTitle', { marker });
 
-    const title = primary?.title || source?.title || `来源 ${marker}`;
+    const title = primary?.title || source?.title || t('evidence.sourceLabel', { marker });
     const url = primary?.url || source?.url || '';
     const domain = primary?.domain || source?.domain || '';
     const date = primary?.date || source?.date || '';
@@ -269,7 +306,7 @@ export function openEvidencePanel({
             ${safeOpen ? `
                 <a class="evidence-action-btn primary" href="${escapeHtml(safeOpen)}" target="_blank" rel="noopener noreferrer">
                     <span class="material-symbols-rounded" aria-hidden="true">open_in_new</span>
-                    打开原文
+                    ${t('evidence.openOriginal')}
                 </a>
             ` : ''}
         </div>
@@ -294,9 +331,9 @@ function renderClaimCard(ev) {
     const vLabel = verificationLabel(ev?.verification);
     let statusHint = '';
     if (status.className === 'missing') {
-        statusHint = '未能在原文中定位到精确句子，请打开原文核对。';
+        statusHint = t('evidence.hintMissing');
     } else if (status.className === 'related') {
-        statusHint = '仅找到相关段落或存在冲突，请谨慎采信。';
+        statusHint = t('evidence.hintRelated');
     }
     return `
         <section class="evidence-section evidence-claim-card">
@@ -305,19 +342,19 @@ function renderClaimCard(ev) {
                 ${vLabel ? `<span class="evidence-verification evidence-verification-${vLabel.className}">${vLabel.text}</span>` : ''}
             </div>
             ${claimText ? `
-                <div class="evidence-section-label">答案中的论断</div>
+                <div class="evidence-section-label">${t('evidence.claimLabel')}</div>
                 <p class="evidence-claim">${escapeHtml(claimText)}</p>
             ` : ''}
-            <div class="evidence-section-label">原文片段</div>
+            <div class="evidence-section-label">${t('evidence.quoteLabel')}</div>
             ${quote
                 ? `<blockquote class="evidence-quote">${escapeHtml(quote)}</blockquote>`
-                : `<p class="evidence-empty">暂无摘录。可打开原文查看。</p>`
+                : `<p class="evidence-empty">${t('evidence.emptyQuote')}</p>`
             }
             ${statusHint ? `<p class="evidence-hint">${escapeHtml(statusHint)}</p>` : ''}
             ${quote ? `
                 <button type="button" class="evidence-action-btn secondary evidence-copy-btn" data-quote="${escapeHtml(quote)}">
                     <span class="material-symbols-rounded" aria-hidden="true">content_copy</span>
-                    复制摘录
+                    ${t('evidence.copyQuote')}
                 </button>
             ` : ''}
         </section>
@@ -333,7 +370,7 @@ async function handleCopyQuoteClick(event) {
         await navigator.clipboard.writeText(quote);
         copyBtn.classList.add('copied');
         const previous = copyBtn.innerHTML;
-        copyBtn.innerHTML = '<span class="material-symbols-rounded" aria-hidden="true">check</span> 已复制';
+        copyBtn.innerHTML = `<span class="material-symbols-rounded" aria-hidden="true">check</span> ${t('common.copied')}`;
         setTimeout(() => {
             copyBtn.classList.remove('copied');
             copyBtn.innerHTML = previous;
@@ -370,10 +407,10 @@ export function bindCitationEvidenceClicks(root, { sources = [], citations = [] 
         event.preventDefault();
         event.stopPropagation();
 
-        // Merge context: prefer explicit args, else currentContext
-        const ctxSources = (Array.isArray(sources) && sources.length) ? sources : currentContext.sources;
-        const ctxCitations = (Array.isArray(citations) && citations.length) ? citations : currentContext.citations;
-        setEvidenceContext({ sources: ctxSources, citations: ctxCitations });
+        // Per-root closure args are authoritative; never fall back to a
+        // module-level context (the last render may have overwritten it).
+        const ctxSources = (Array.isArray(sources) && sources.length) ? sources : [];
+        const ctxCitations = (Array.isArray(citations) && citations.length) ? citations : [];
 
         openEvidencePanel({
             sourceId,

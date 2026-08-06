@@ -50,7 +50,7 @@ test('sidebar and settings storage helpers tolerate unavailable localStorage', a
     };
     replaceLocalStorage(failingStorage);
 
-    const { __sidebarTestHooks } = await import('../../backend/static/js/modules/sidebar.js?v=17&test=storage-guard');
+    const { __sidebarTestHooks } = await import('../../backend/static/js/modules/sidebar.js?v=21&test=storage-guard');
     const { __settingsModalTestHooks } = await import('../../backend/static/js/modules/settings-modal.js?test=storage-guard');
 
     assert.equal(__sidebarTestHooks.safeGetLocalStorageItem('sidebarCollapsed', 'false'), 'false');

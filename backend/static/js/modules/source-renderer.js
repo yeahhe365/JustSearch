@@ -1,4 +1,5 @@
-import { md } from './utils.js?v=6';
+import { md } from './utils.js?v=13';
+import { t } from './i18n.js?v=1';
 import {
     assignOccurrenceAttributes,
     createOccurrenceTracker,
@@ -164,9 +165,9 @@ export function linkCitationsInElement(root, sources) {
                     }
                     const statusHint = source.excerpt || source.snippet || source.title || source.url || '';
                     anchor.title = statusHint
-                        ? `${source.title || source.url || id}\n点击查看原文证据`
-                        : (source.title || source.url || `来源 ${id}`);
-                    anchor.setAttribute('aria-label', `查看来源 ${id} 的原文证据`);
+                        ? `${source.title || source.url || id}\n${t('source.viewEvidence')}`
+                        : (source.title || source.url || t('source.label', { id }));
+                    anchor.setAttribute('aria-label', t('source.viewEvidenceAria', { id }));
 
                     const faviconUrl = getFaviconUrl(safeUrl);
                     if (faviconUrl) {

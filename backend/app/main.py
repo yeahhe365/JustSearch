@@ -210,7 +210,10 @@ async def extension_websocket(websocket: WebSocket):
 
 
 def _render_index_html(request: Request) -> HTMLResponse:
-    html_path = os.path.join(STATIC_DIR, "index.html")
+    # Prefer the production build (backend/static/dist/) when present; otherwise
+    # fall back to the source index.html for development.
+    dist_html = os.path.join(STATIC_DIR, "dist", "index.html")
+    html_path = dist_html if os.path.exists(dist_html) else os.path.join(STATIC_DIR, "index.html")
     with open(html_path, "r", encoding="utf-8") as f:
         html = f.read()
     html = inject_html_bootstrap(html, build_html_bootstrap_payload(request))

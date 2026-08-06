@@ -1,6 +1,7 @@
 import { state, setSettings } from './state.js?v=5';
 import { authFetch } from './auth.js?v=1';
-import { applyFontSizes, applyTheme } from './utils.js?v=6';
+import { applyFontSizes, applyTheme } from './utils.js?v=13';
+import { t } from './i18n.js?v=1';
 
 function encodePathSegment(value) {
     return encodeURIComponent(String(value ?? ''));
@@ -61,7 +62,7 @@ function applyAppearanceSettings(settings) {
     applyTheme(settings.theme);
     applyFontSizes(settings);
     // Rebuild open Live Artifact previews when LA base size or theme changes.
-    import('./live-artifacts.js?v=27')
+    import('./live-artifacts.js?v=49')
         .then((mod) => {
             if (typeof mod.refreshLiveArtifactPreviews === 'function') {
                 mod.refreshLiveArtifactPreviews(settings);
@@ -166,7 +167,7 @@ export async function fetchChatGroups() {
     return [];
 }
 
-export async function createChatGroupAPI(title = '新分组') {
+export async function createChatGroupAPI(title = t('history.newGroup')) {
     try {
         const res = await authFetch('/api/history/groups', {
             method: 'POST',
@@ -250,6 +251,52 @@ export async function renameChatAPI(sessionId, newTitle) {
     }
 }
 
+export async function pinChatAPI(sessionId, isPinned) {
+    try {
+        const res = await authFetch(`/api/history/${encodePathSegment(sessionId)}/pin`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_pinned: Boolean(isPinned) })
+        });
+        if (res.ok) {
+            return await res.json();
+        }
+    } catch (e) {
+        console.error("Failed to toggle pin", e);
+    }
+    return null;
+}
+
+export async function duplicateChatAPI(sessionId) {
+    try {
+        const res = await authFetch(`/api/history/${encodePathSegment(sessionId)}/duplicate`, {
+            method: 'POST'
+        });
+        if (res.ok) {
+            return await res.json();
+        }
+    } catch (e) {
+        console.error("Failed to duplicate chat", e);
+    }
+    return null;
+}
+
+export async function forkChatAPI(sessionId, uptoMessageIndex) {
+    try {
+        const res = await authFetch(`/api/history/${encodePathSegment(sessionId)}/fork`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ upto_message_index: Number(uptoMessageIndex) })
+        });
+        if (res.ok) {
+            return await res.json();
+        }
+    } catch (e) {
+        console.error("Failed to fork chat", e);
+    }
+    return null;
+}
+
 export async function clearHistoryAPI() {
     try {
         const res = await authFetch('/api/history', {
@@ -295,20 +342,26 @@ export async function importHistoryAPI(payload) {
         if (res.ok) {
             return await res.json();
         }
-        const detail = await getResponseErrorMessage(res, '导入失败');
+        const detail = await getResponseErrorMessage(res, t('api.importFailed'));
         return { status: 'error', detail };
     } catch (e) {
         console.error("Failed to import history", e);
-        return { status: 'error', detail: '导入请求失败' };
+        return { status: 'error', detail: t('api.importRequestFailed') };
     }
 }
 
-export async function deleteMessageAPI(sessionId, messageIndex) {
+export async function deleteMessageAPI(sessionId, messageIndex, expectedContent = null) {
     try {
         const res = await authFetch('/api/chat/message', {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: sessionId, message_index: messageIndex })
+            body: JSON.stringify({
+                session_id: sessionId,
+                message_index: messageIndex,
+                ...(typeof expectedContent === 'string' && expectedContent.length > 0
+                    ? { expected_content: expectedContent }
+                    : {}),
+            })
         });
         return res.ok;
     } catch (e) {
@@ -400,6 +453,9 @@ export async function streamChat(query, callbacks) {
         liveArtifactsMode,
         // AMC resend/retry: drop this message index and everything after it server-side.
         truncateFromIndex,
+        // 截断锚点之前的消息前缀({role, content})，服务端比对一致才截断，
+        // 防止并发/陈旧视图下按下标漂移误删。
+        expectedPrefix,
         // Prefer an explicit session id frozen by the caller so concurrent
         // "new chat" / history switches cannot redirect the request body.
         sessionId: explicitSessionId,
@@ -483,6 +539,9 @@ export async function streamChat(query, callbacks) {
                     ...(Number.isFinite(Number(truncateFromIndex)) && Number(truncateFromIndex) >= 0
                         ? { truncate_from_index: Math.floor(Number(truncateFromIndex)) }
                         : {}),
+                    ...(Array.isArray(expectedPrefix) && expectedPrefix.length > 0
+                        ? { expected_prefix: expectedPrefix.map((m) => ({ role: m.role || '', content: m.content || '' })) }
+                        : {}),
                 }),
                 signal: signal
             });
@@ -496,7 +555,7 @@ export async function streamChat(query, callbacks) {
                     || response.status === 503
                 ) {
                     try {
-                        const { isBridgeRequiredError, openBridgeInstallModal, fetchBridgeStatus } = await import('./bridge.js?v=7');
+                        const { isBridgeRequiredError, openBridgeInstallModal, fetchBridgeStatus } = await import('./bridge.js?v=9');
                         if (isBridgeRequiredError(bridgeDetail) || response.status === 503) {
                             await fetchBridgeStatus();
                             openBridgeInstallModal();
@@ -553,7 +612,7 @@ export async function streamChat(query, callbacks) {
                 const delay = RETRY_DELAYS[attempt] || 5000;
                 console.warn(`SSE 连接断开 (尝试 ${attempt + 1}/${MAX_RETRIES + 1})，${delay / 1000} 秒后重连...`, e);
                 if (onLog) {
-                    onLog(`网络连接中断，正在重连 (${attempt + 1}/${MAX_RETRIES + 1})...`);
+                    onLog(t('api.reconnecting', { attempt: attempt + 1, total: MAX_RETRIES + 1 }));
                 }
                 await new Promise(resolve => setTimeout(resolve, delay));
             } else {

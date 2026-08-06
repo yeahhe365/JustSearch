@@ -496,6 +496,8 @@ body.live-artifacts-open .live-artifacts-panel {
     position: relative;
     flex: 1;
     min-height: 0;
+    /* Tall iframe content must scroll inside the panel, not clip off-viewport. */
+    overflow: auto;
     background: color-mix(in srgb, var(--bg-secondary) 38%, var(--bg));
 }
 
@@ -503,7 +505,9 @@ body.live-artifacts-open .live-artifacts-panel {
 .live-artifacts-code-view {
     display: none;
     width: 100%;
-    height: 100%;
+    /* Grow with iframe content so panel-body can scroll the full artifact. */
+    min-height: 100%;
+    height: auto;
 }
 
 .live-artifacts-preview-view.is-active,
@@ -514,10 +518,14 @@ body.live-artifacts-open .live-artifacts-panel {
 .live-artifacts-preview-view {
     position: relative;
     padding: 12px;
+    box-sizing: border-box;
 }
 
 .live-artifacts-frame {
+    display: block;
     width: 100%;
+    /* Default fill; JS may set an explicit content height (up to INLINE_ARTIFACT_MAX). */
+    min-height: 100%;
     height: 100%;
     border: 1px solid var(--border);
     border-radius: 8px;

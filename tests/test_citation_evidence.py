@@ -453,3 +453,51 @@ def test_select_verification_candidates_skips_verified_and_clear_missing():
     ids = {e["occurrence_id"] for e in selected}
     # Strong positive (occ 0) and clear missing (occ 1) are not selected.
     assert "citation-0" not in ids
+
+
+def test_anchor_offset_drift_after_normalization():
+    """Normalisation changes length (。→'. ', &amp;→&, newline folding); anchor
+    offsets must be located against the ORIGINAL text or every anchor-derived
+    quote window drifts and turns verified matches into related/missing."""
+    content = (
+        "前言段落一长串。第二句也长。" * 30
+        + "&amp; 另一段。  "
+        + "Orion launched on August 7, 2025 with record results."
+    )
+    hit = find_quote_in_content(content, "Orion launched on August 7, 2025.")
+    assert "August 7, 2025" in hit["quote"]
+    assert normalize_display_status(hit["status"]) != STATUS_MISSING
+
+
+def test_anchor_candidates_use_original_text_offsets():
+    """Anchor-derived candidate windows must slice the ORIGINAL text.
+
+    ``_anchor_candidates_around`` used to search inside ``_normalize_text(text)``
+    and reuse that offset to slice ``text``. Normalisation lengthens the copy
+    (each ``。`` becomes ``". "``), so with enough preceding sentences the
+    normalised offset drifts past the real anchor and the sliced ``text``
+    no longer contains it — and the bogus start/end then corrupt the merge
+    with ``_segment_candidates`` (which uses original coordinates).
+    """
+    from backend.app.citation_evidence import (
+        _anchor_candidates_around,
+        _extract_structured_anchors,
+    )
+
+    # 120 sentence-ending 。 each become ". " (+1 char) under normalisation,
+    # so the normalised copy is ~120 chars longer than the original.
+    prefix = "前言一句。" * 120
+    anchor_sentence = "Orion launched on August 7, 2025 with record results."
+    content = prefix + anchor_sentence
+
+    anchors = _extract_structured_anchors(anchor_sentence)
+    assert anchors, "expected date/number anchors in the anchor sentence"
+
+    cands = _anchor_candidates_around(content, anchors)
+    assert cands, "at least one anchor candidate should be produced"
+    for c in cands:
+        # The candidate text must actually contain the anchor in the ORIGINAL
+        # text — the pre-fix drift sliced past it and missed it entirely.
+        assert "August 7, 2025" in c["text"], c["text"][:80]
+        # Offsets round-trip back into the original content.
+        assert content[c["start"]:c["end"]] == c["text"]

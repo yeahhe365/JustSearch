@@ -7,7 +7,8 @@
             "name": "DeepSeek",
             "api_key": "YOUR_API_KEY_HERE",
             "base_url": "https://api.deepseek.com/v1",
-            "model_id": "deepseek-v4-pro"
+            "model_id": "deepseek-v4-pro",
+            "enabled": true
         }
     ],
     "workflow_step_models": {
@@ -26,5 +27,7 @@
     "bridge_toast_on_change": true,
     "bridge_poll_interval_sec": 5,
     "base_font_size": 16,
-    "live_artifacts_font_size": 16
+    "live_artifacts_font_size": 16,
+    "completion_notification_enabled": false,
+    "completion_sound_enabled": false
 }

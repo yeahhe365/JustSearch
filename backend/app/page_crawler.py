@@ -131,9 +131,15 @@ async def extract_github_repo_stats(bridge, tab_id: int, url: str, log_func=None
     return None
 
 
-# Serialize interactive clicks across concurrent crawls — debugger/CDP does not
-# handle multi-tab Input events well under load.
-_interactive_lock = asyncio.Lock()
+# Bounded concurrency for interactive clicks across concurrent crawls —
+# debugger/CDP does not handle many tabs running Input events at once, so we cap
+# global interactive crawls (default 2) instead of fully serializing them. This
+# lets a few conversations crawl interactively in parallel while keeping CDP load
+# sane. 可用 JUSTSEARCH_INTERACTIVE_CONCURRENCY 调整。
+_INTERACTIVE_CONCURRENCY = max(
+    1, int(os.getenv("JUSTSEARCH_INTERACTIVE_CONCURRENCY", "2"))
+)
+_interactive_sem = asyncio.Semaphore(_INTERACTIVE_CONCURRENCY)
 
 # If main text is already long, skip click-to-expand (saves time + CDP stress).
 _INTERACTIVE_SKIP_MIN_CHARS = 8000
@@ -248,9 +254,10 @@ async def run_interactive_mode(bridge, tab_id: int, query: str, llm_client, log_
     """Run interactive mode: extract clickable elements and ask LLM what to click.
 
     session_id/turn_id 透传给虚拟光标,让扩展端按 turn 去重路径、归组标签。
-    全局锁保证同一时刻只有一个 tab 在做 CDP 点击,避免并行挂死。
+    全局信号量限制同一时刻最多 _INTERACTIVE_CONCURRENCY 个 tab 做 CDP 点击,
+    避免并行过多挂死;但仍允许多个对话并行交互爬取。
     """
-    async with _interactive_lock:
+    async with _interactive_sem:
         await _run_interactive_mode_locked(
             bridge, tab_id, query, llm_client, log_func, session_id, turn_id
         )

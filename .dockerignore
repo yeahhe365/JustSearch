@@ -22,6 +22,8 @@ backend/chats/
 data/
 user_data/
 node_modules/
+dist/
+backend/static/dist/
 .env
 *.log
 crawled_debug.txt

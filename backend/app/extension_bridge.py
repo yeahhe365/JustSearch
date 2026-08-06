@@ -23,6 +23,8 @@ from typing import Any, Optional
 import httpx
 from fastapi import WebSocket, WebSocketDisconnect
 
+from .auth import authorize_websocket
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -103,6 +105,11 @@ class ExtensionConnection:
         finally:
             self._reject_all("extension disconnected")
 
+    def start_serve(self) -> asyncio.Task:
+        """Start the serve loop as a background task and store reference."""
+        self._reader_task = asyncio.create_task(self.serve())
+        return self._reader_task
+
     def _on_message(self, msg: dict) -> asyncio.Task:
         return asyncio.create_task(self._handle_message(msg))
 
@@ -149,9 +156,9 @@ class ExtensionConnection:
                 result: Any = None
                 if method == "ping":
                     result = {"ok": True}
-                self._send({"jsonrpc": "2.0", "id": msg["id"], "result": result})
+                self._send_fire_and_forget({"jsonrpc": "2.0", "id": msg["id"], "result": result})
             except Exception as e:
-                self._send({
+                self._send_fire_and_forget({
                     "jsonrpc": "2.0",
                     "id": msg["id"],
                     "error": {"code": -32603, "message": str(e)},
@@ -166,7 +173,13 @@ class ExtensionConnection:
         self._next_id += 1
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[mid] = fut
-        self._send({"jsonrpc": "2.0", "id": mid, "method": method, "params": params or {}})
+        # 请求帧必须可靠送达：await 发送，避免连接在排队与 flush 之间断开时
+        # 请求静默丢失、调用方只能等满超时。
+        try:
+            await self._send({"jsonrpc": "2.0", "id": mid, "method": method, "params": params or {}})
+        except Exception as e:
+            self._pending.pop(mid, None)
+            raise RuntimeError(f"bridge request '{method}' failed to send: {e}") from e
         timeout = (timeout_ms or _REQUEST_TIMEOUT_MS) / 1000
         try:
             return await asyncio.wait_for(fut, timeout=timeout)
@@ -177,29 +190,37 @@ class ExtensionConnection:
             self._pending.pop(mid, None)
             raise
 
-    def _send(self, msg: dict) -> None:
+    async def _send(self, msg: dict) -> None:
         if self._closed:
             raise RuntimeError("extension connection closed")
-        # send_text 是 async,但 starlette 的 WebSocket.send_text 实际可同步排队;
-        # 为安全起见用 create_task。
-        async def _do():
-            try:
-                await self.websocket.send_text(json.dumps(msg))
-            except Exception as e:
-                self._closed = True
-                self._reject_all(f"send failed: {e}")
-                raise
         try:
-            asyncio.get_running_loop().create_task(_do())
+            await self.websocket.send_text(json.dumps(msg))
+        except Exception as e:
+            self._closed = True
+            self._reject_all(f"send failed: {e}")
+            raise
+
+    def _send_fire_and_forget(self, msg: dict) -> None:
+        """同步 fire-and-forget 发送，仅用于扩展主动发来的通知响应。
+
+        这些消息没有等待方，若阻塞发送会拖住接收循环；发送失败时的
+        _reject_all 与 _send 一致。
+        """
+        try:
+            asyncio.get_running_loop().create_task(self._send(msg))
         except RuntimeError:
             # 无运行循环(关闭中),忽略。
             pass
 
     def _reject_all(self, reason: str) -> None:
         self._closed = True
-        for fut in self._pending.values():
+        for fut in list(self._pending.values()):
             if not fut.done():
-                fut.set_exception(RuntimeError(reason))
+                try:
+                    fut.set_exception(RuntimeError(reason))
+                except (InvalidStateError, asyncio.InvalidStateError):
+                    # Future was already completed between the check and set_exception
+                    pass
         self._pending.clear()
 
 
@@ -210,12 +231,16 @@ _connection_event = asyncio.Event()
 
 
 async def handle_extension_websocket(websocket: WebSocket) -> None:
-    """FastAPI WebSocket 路由的处理函数。loopback-only。"""
+    """FastAPI WebSocket 路由的处理函数。需通过 auth（token 或受信 loopback/网关）。"""
     global _extension_connection
+
+    if not await authorize_websocket(websocket):
+        logger.warning("[bridge] reject unauthorized extension websocket")
+        return
 
     # loopback 校验:仅当后端绑定的就是 loopback 时才检查来源。
     # 绑 0.0.0.0（Docker）时,docker-proxy 已在宿主机用 127.0.0.1 限制暴露,
-    # 容器内看到的来源是宿主机 docker 网关地址,不再校验。
+    # 容器内看到的来源是宿主机 docker 网关地址;鉴权由 authorize_websocket 负责。
     if _REQUIRE_LOOPBACK:
         client = websocket.client
         host = getattr(client, "host", None) if client else None
@@ -230,7 +255,9 @@ async def handle_extension_websocket(websocket: WebSocket) -> None:
     async with _connection_lock:
         prev = _extension_connection
         if prev is not None:
-            # 顶掉旧连接。
+            # 顶掉旧连接：先取消旧连接的 reader task，再关闭 websocket。
+            if prev._reader_task and not prev._reader_task.done():
+                prev._reader_task.cancel()
             try:
                 await prev.websocket.close(code=4000, reason="replaced by new connection")
             except Exception:

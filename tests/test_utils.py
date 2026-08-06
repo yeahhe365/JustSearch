@@ -18,6 +18,9 @@ from backend.app.llm_client import (
     _extract_history_anchor_terms,
     _fallback_search_analysis,
     _summarize_message_content,
+    _budget_sources_for_prompt,
+    _PROMPT_SOURCE_ITEM_CAP,
+    _ASSISTANT_TURN_CHAR_BUDGET,
 )
 from backend.app.openai_client import LOCAL_PROVIDER_API_KEY, create_openai_client
 
@@ -126,6 +129,25 @@ class TestLLMResponseParsing:
         assert _is_retryable_llm_error(TimeoutError("timed out"))
         assert _is_retryable_llm_error(Exception("Error code: 503 - bad gateway"))
         assert not _is_retryable_llm_error(Exception("invalid api key unauthorized"))
+
+    def test_gateway_stream_corruption_is_retryable(self):
+        """Gateway splitting SSE chunks mid-character or returning a GBK error
+        page surfaces as UnicodeDecodeError; the retry loop must cover it."""
+        from backend.app.llm_client import _is_stream_corruption_error
+
+        decode_err = UnicodeDecodeError(
+            "utf-8", b"\xe4\xb8", 0, 2, "unexpected end of data"
+        )
+        assert _is_retryable_llm_error(decode_err)
+        assert _is_stream_corruption_error(decode_err)
+        # SDK often wraps the decode error in an APIError — still detectable.
+        wrapped = RuntimeError("'utf-8' codec can't decode bytes in position 236-237")
+        assert _is_retryable_llm_error(wrapped)
+        assert _is_stream_corruption_error(wrapped)
+        # Plain provider auth failure is neither retryable nor stream corruption.
+        plain = RuntimeError("invalid api key unauthorized")
+        assert not _is_retryable_llm_error(plain)
+        assert not _is_stream_corruption_error(plain)
 
     def test_generate_answer_retries_connection_error_before_streaming(self, monkeypatch):
         import asyncio
@@ -677,7 +699,99 @@ class TestLLMResponseParsing:
         assert msgs[1]["role"] == "assistant"
         assert "<section" not in msgs[1]["content"]
         assert "梅西下一场" in msgs[1]["content"] or "阿根廷" in msgs[1]["content"]
-        assert len(msgs[1]["content"]) <= 700
+        # Long assistant turn is bounded by the per-turn char budget.
+        assert len(msgs[1]["content"]) <= _ASSISTANT_TURN_CHAR_BUDGET
+
+
+def test_budget_sources_caps_items_and_total():
+    """Prompt-source budget: per-item cap, total budget, and tail placeholders."""
+    # With a tiny total budget and tiny per-item cap, only the first source can
+    # carry content; later sources exhaust the budget and become placeholders.
+    sources = [
+        {"id": 1, "content": "a" * 50000},
+        {"id": 2, "content": "b" * 50000},
+        {"id": 3, "content": "c" * 50000},
+    ]
+    out, orig, final = _budget_sources_for_prompt(
+        sources, total_budget=120, per_item_cap=20000
+    )
+    assert orig == 150000
+    assert final <= 120 + 100
+    # First source consumed the budget and was trimmed.
+    assert out[0]["content"].endswith("（节选）")
+    # Sources 2 and 3 hit a non-positive remaining budget → placeholders.
+    assert out[1]["content"] == "[此来源因上下文预算被省略]"
+    assert out[2]["content"] == "[此来源因上下文预算被省略]"
+
+
+def test_history_budget_keeps_latest_and_preserves_code_newlines():
+    """Char budget fills newest-first; code-block newlines survive compression."""
+    client = LLMClient(
+        api_key="k",
+        base_url="https://e.test/v1",
+        history_window=10,
+        history_char_budget=100,
+        assistant_turn_char_budget=60,
+    )
+    code_turn = {
+        "role": "assistant",
+        "content": "见下：\n```\ndef f():\n    return 1\n```",
+    }
+    history = [
+        {"role": "user", "content": "u" * 50},
+        code_turn,
+        {"role": "user", "content": "最新问题"},
+    ]
+    msgs = client._build_context_messages(history)
+    # The newest user turn is always retained.
+    assert msgs[-1]["content"] == "最新问题"
+    # A code block's newlines must not be flattened to a single line.
+    joined = "\n".join(m["content"] for m in msgs)
+    assert "\n" in joined
+
+
+def test_fallback_respects_topic_change():
+    """A genuinely new-topic follow-up must not be anchored to old history."""
+    from backend.app.llm_client import _fallback_search_analysis
+
+    history = [
+        {"role": "user", "content": "梅西的下一场比赛是什么时候？"},
+        {"role": "assistant", "content": "阿根廷对阵英格兰半决赛。"},
+    ]
+    r = _fallback_search_analysis("为什么苹果股价最近跌了？", history)
+    joined = " ".join([r["resolved_query"], *r["queries"]])
+    assert "梅西" not in joined
+    assert "阿根廷" not in joined
+    assert "英格兰" not in joined
+    assert r["topic_changed"] is True
+
+
+def test_fallback_keeps_anchors_for_same_topic_followup():
+    """Short same-topic follow-ups must still carry history entities."""
+    from backend.app.llm_client import _fallback_search_analysis
+
+    history = [
+        {"role": "user", "content": "梅西的下一场比赛是什么时候？"},
+        {"role": "assistant", "content": "阿根廷对阵英格兰半决赛。"},
+    ]
+    r = _fallback_search_analysis("具体时间？国内时间是什么时候？", history)
+    joined = " ".join([r["resolved_query"], *r["queries"]])
+    assert "梅西" in joined or "阿根廷" in joined or "英格兰" in joined
+    assert r["topic_changed"] is False
+
+
+def test_extract_history_anchor_terms_caps_cjk_run_at_subclause():
+    """A long unpunctuated CJK run no longer swallows a whole clause."""
+    from backend.app.llm_client import _extract_history_anchor_terms
+
+    history = [
+        {"role": "user", "content": "今天天气真好我们讨论一下足球比赛的结果和球员表现"},
+        {"role": "assistant", "content": "好的开始讨论"},
+    ]
+    anchors = _extract_history_anchor_terms(history)
+    # No anchor should be an entire long sentence; each should be a bounded run.
+    assert all(len(a) <= 12 for a in anchors)
+    assert not any("我们讨论一下足球比赛的结果和球员表现" in a for a in anchors)
 
 
 class TestLiveArtifactsAnswerFormatting:
@@ -698,6 +812,18 @@ class TestLiveArtifactsAnswerFormatting:
 
         assert artifact.startswith("<section")
         assert "```" not in artifact
+
+    def test_multi_root_html_is_wrapped_under_single_root(self):
+        """Greedy root regex accepts multi-root; ensure_ wraps for a single container."""
+        multi = "<div>a</div><div>b</div>"
+        artifact = ensure_live_artifact_answer(multi)
+        assert artifact.startswith("<div style=")
+        assert ">a</div><div>b</div></div>" in artifact or (
+            "<div>a</div><div>b</div>" in artifact and artifact.count("<div") >= 3
+        )
+        # Single-root fragments stay unwrapped (aside from their own root).
+        single = '<div style="display:block;width:100%">only</div>'
+        assert ensure_live_artifact_answer(single) == single
 
     def test_fenced_full_html_document_is_preserved(self):
         artifact = ensure_live_artifact_answer(

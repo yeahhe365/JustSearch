@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -14,12 +14,14 @@ from pydantic import BaseModel
 
 from ..database import (
     load_settings, save_chat_history, load_chat_history, get_chat_path, get_next_api_key,
-    delete_message, truncate_messages_from, normalize_route_safe_id,
+    delete_message, replace_messages_from, _extract_title,
+    normalize_route_safe_id,
 )
 from ..providers import (
     WORKFLOW_MODEL_STEP_IDS,
     first_model_id,
     get_provider_by_id,
+    is_provider_enabled,
     is_unsupported_model_id,
     require_provider_api_key,
 )
@@ -97,6 +99,9 @@ class ChatRequest(BaseModel):
     # AMC-style resend/edit: drop this message index and everything after it
     # before running the workflow and saving the new user+assistant turn.
     truncate_from_index: Optional[int] = None
+    # 截断锚点之前客户端所见的消息前缀({role, content})；与服务端不一致时
+    # 拒绝截断，防止并发编辑下按下标漂移误删消息。
+    expected_prefix: Optional[List[Dict[str, str]]] = None
 
 
 async def _resolve_workflow_step_models(
@@ -119,6 +124,8 @@ async def _resolve_workflow_step_models(
         provider = get_provider_by_id(settings, provider_id)
         if not provider:
             raise HTTPException(status_code=400, detail=f"步骤 {step_id} 的 provider 不存在: {provider_id}")
+        if not is_provider_enabled(provider):
+            raise HTTPException(status_code=400, detail=f"步骤 {step_id} 的 provider 已禁用: {provider_id}")
         require_provider_api_key(provider, f"步骤 {step_id} 的 provider")
 
         configured_model = raw_step.get("model_id") or raw_step.get("model") or ""
@@ -293,6 +300,8 @@ async def chat_endpoint(http_request: Request, request: ChatRequest):
     provider = get_provider_by_id(defaults, provider_id)
     if not provider:
         raise HTTPException(status_code=400, detail=f"未找到 provider: {provider_id}")
+    if not is_provider_enabled(provider):
+        raise HTTPException(status_code=400, detail=f"Provider 已禁用: {provider_id}")
     require_provider_api_key(provider)
 
     api_key = provider.get("api_key", "")
@@ -344,12 +353,18 @@ async def chat_endpoint(http_request: Request, request: ChatRequest):
                 session_id, provider_id, query_text[:80], search_engine, model)
 
     try:
+        history_options = {
+            "history_window": int(defaults.get("history_window") or 12),
+            "history_char_budget": int(defaults.get("history_char_budget") or 12000),
+            "assistant_turn_char_budget": int(defaults.get("assistant_turn_char_budget") or 900),
+        }
         workflow = SearchWorkflow(
             api_key, base_url, model, search_engine, max_results,
             max_iterations, interactive_search,
             session_id=session_id,
             step_model_configs=workflow_step_models,
             live_artifacts_mode=live_artifacts_mode,
+            history_options=history_options,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -360,7 +375,11 @@ async def chat_endpoint(http_request: Request, request: ChatRequest):
 
     # AMC resend/retry: truncate history at the edited user message (or the user
     # message preceding an assistant retry) so context and persistence match.
+    # Truncation happens in-memory only; the persisted tail is replaced on the
+    # success path via replace_messages_from so a workflow failure cannot
+    # permanently discard the truncated messages.
     truncate_from_index = request.truncate_from_index
+    pending_truncate: Optional[int] = None
     if truncate_from_index is not None:
         try:
             truncate_from_index = int(truncate_from_index)
@@ -369,11 +388,31 @@ async def chat_endpoint(http_request: Request, request: ChatRequest):
         if truncate_from_index < 0:
             raise HTTPException(status_code=400, detail="truncate_from_index 不能为负数")
         if raw_session_id:
-            truncated = await truncate_messages_from(session_id, truncate_from_index)
-            if not truncated:
+            # Verify the session exists so we still 404 cleanly when it doesn't,
+            # but do NOT delete anything yet — context_messages is sliced below.
+            existing = await load_chat_history(chat_path)
+            if not existing:
                 raise HTTPException(status_code=404, detail="会话不存在，无法截断消息")
-            chat_history_data = await load_chat_history(chat_path)
-            context_messages = chat_history_data.get("messages", []) if chat_history_data else []
+            # 并发防护：客户端前缀与 DB 前缀比对，不一致(另一窗口已编辑/追加)
+            # 时拒绝截断，避免按漂移下标静默删错消息。
+            expected_prefix = request.expected_prefix
+            if expected_prefix is not None:
+                db_prefix = existing.get("messages", [])[:truncate_from_index]
+                if len(db_prefix) != len(expected_prefix):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="会话已被其他窗口修改，请刷新后重试",
+                    )
+                for db_msg, client_msg in zip(db_prefix, expected_prefix):
+                    if str(db_msg.get("role", "")) != str(client_msg.get("role", "")) or (
+                        db_msg.get("content", "") or ""
+                    ) != str(client_msg.get("content", "") or ""):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="会话已被其他窗口修改，请刷新后重试",
+                        )
+            context_messages = context_messages[:truncate_from_index]
+            pending_truncate = truncate_from_index
         else:
             # Brand-new session has no history; ignore truncate.
             truncate_from_index = None
@@ -475,21 +514,34 @@ async def chat_endpoint(http_request: Request, request: ChatRequest):
                     },
                 ]
 
-                full_messages = existing_messages + new_messages
-                title = existing_data.get("title") if existing_data else None
-                
-                # Auto-generate title from first user message if not set
-                if not title and not existing_messages:
-                    title = query_text[:50]
-                    if len(query_text) > 50:
-                        # Try to break at a sentence boundary
-                        last_punct = max(title.rfind('。'), title.rfind('.'), title.rfind('？'), title.rfind('?'), title.rfind('！'), title.rfind('!'))
-                        if last_punct > 10:
-                            title = title[:last_punct]
-                        else:
-                            title = title + "..."
-                
-                await save_chat_history(session_id, full_messages, title)
+                # Title: keep the existing one unless this turn either opens a
+                # brand-new session or is a resend/truncate (where the stale
+                # title may no longer match the edited question).
+                existing_title = existing_data.get("title") if existing_data else None
+                if not existing_title or not existing_messages or pending_truncate is not None:
+                    title = _extract_title(query_text)
+                else:
+                    title = existing_title
+
+                if pending_truncate is not None:
+                    # Atomic delete-tail + insert new turn: a failure on the
+                    # success path cannot lose the truncated tail, and a prior
+                    # workflow failure left it fully intact (we only sliced in
+                    # memory). Falls back to a plain append if the session was
+                    # concurrently removed.
+                    replaced = await replace_messages_from(
+                        session_id,
+                        pending_truncate,
+                        new_messages,
+                        title,
+                        expected_prefix=existing_messages[:pending_truncate],
+                    )
+                    if not replaced:
+                        full_messages = existing_messages + new_messages
+                        await save_chat_history(session_id, full_messages, title)
+                else:
+                    full_messages = existing_messages + new_messages
+                    await save_chat_history(session_id, full_messages, title)
 
                 yield f"data: {json.dumps({'type': 'answer', 'content': answer_text, 'session_id': session_id, 'sources': slim_sources, 'citations': citations}, ensure_ascii=False)}\n\n"
 
@@ -515,6 +567,9 @@ async def chat_endpoint(http_request: Request, request: ChatRequest):
 class DeleteMessageRequest(BaseModel):
     session_id: str
     message_index: int  # 0-based
+    # 并发防护：客户端删除时所见的该消息内容；不一致时拒绝删除，
+    # 避免下标漂移删到另一条消息。
+    expected_content: Optional[str] = None
 
 
 @router.delete("/api/chat/message")
@@ -523,7 +578,9 @@ async def delete_message_endpoint(request: DeleteMessageRequest):
     session_id = normalize_route_safe_id(request.session_id)
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id 格式无效")
-    ok = await delete_message(session_id, request.message_index)
+    ok = await delete_message(
+        session_id, request.message_index, request.expected_content
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="Message not found")
     return {"status": "ok"}

@@ -13,14 +13,15 @@ logger = logging.getLogger(__name__)
 _WORKFLOW_LLM_STEPS = ("analysis", "relevance", "interaction", "answer")
 
 class SearchWorkflow:
-    def __init__(self, api_key: str, base_url: str, model: str, search_engine: str = "google", max_results: int = 50, max_iterations: int = 5, interactive_search: bool = True, session_id: str = None, step_model_configs: Optional[dict] = None, live_artifacts_mode: bool = False, canvas_mode: Optional[bool] = None):
-        self.llm = LLMClient(api_key, base_url, model)
+    def __init__(self, api_key: str, base_url: str, model: str, search_engine: str = "google", max_results: int = 50, max_iterations: int = 5, interactive_search: bool = True, session_id: str = None, step_model_configs: Optional[dict] = None, live_artifacts_mode: bool = False, canvas_mode: Optional[bool] = None, history_options: Optional[dict] = None):
+        self.llm = LLMClient(api_key, base_url, model, **(history_options or {}))
         self._initial_default_llm = self.llm
         self.step_llms = self._build_step_llms(
             step_model_configs or {},
             api_key,
             base_url,
             model,
+            history_options or {},
         )
         # Pass the search engine preference to the browser manager
         self.browser = BrowserManager(engine=search_engine, max_results=max_results)
@@ -48,11 +49,13 @@ class SearchWorkflow:
         default_api_key: str,
         default_base_url: str,
         default_model: str,
+        history_options: Optional[dict] = None,
     ) -> dict:
         client_cache = {
             (default_api_key, default_base_url, default_model): self.llm
         }
         clients = {}
+        hist_opts = history_options or {}
         for step_id in _WORKFLOW_LLM_STEPS:
             config = step_model_configs.get(step_id) if isinstance(step_model_configs, dict) else None
             api_key = str((config or {}).get("api_key") or default_api_key)
@@ -64,6 +67,7 @@ class SearchWorkflow:
                     api_key,
                     base_url,
                     model,
+                    **hist_opts,
                 )
             clients[step_id] = client_cache[cache_key]
         return clients

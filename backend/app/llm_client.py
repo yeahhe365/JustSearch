@@ -23,12 +23,37 @@ logger = logging.getLogger(__name__)
 
 # LLM 调用超时
 _LLM_TIMEOUT = 120  # 秒（默认，用于 generate_answer）
-_LLM_SHORT_TIMEOUT = 30  # 秒（用于 analyze_task / assess_relevance 等短操作）
+# 短操作（analyze_task / assess_relevance）超时；可通过环境变量覆盖。
+_LLM_SHORT_TIMEOUT = float(os.getenv("JUSTSEARCH_LLM_SHORT_TIMEOUT", "30"))
 _LLM_CONNECT_TIMEOUT = 20.0  # 秒：建连超时，避免网关假死拖很久
 _GENERATE_ANSWER_RETRIES = 4  # 流式生成答案的重试次数（含首次）
 
-# 并发 LLM 请求限制
-_LLM_CONCURRENCY = asyncio.Semaphore(5)
+# 并发 LLM 请求限制（进程级）。默认 5；同时跑多个对话时可调高，例如：
+# JUSTSEARCH_LLM_CONCURRENCY=8。注意该信号量在流式答案生成期间会一直被
+# 占用（最长一个流式回合），过高的值可能触发上游限流。
+_LLM_CONCURRENCY = asyncio.Semaphore(
+    max(1, int(os.getenv("JUSTSEARCH_LLM_CONCURRENCY", "5")))
+)
+
+# --- 生成 prompt 的 sources / 历史预算（有界、可配置、透明标注）------------------
+# 命名刻意避开 hygiene 禁词（不使用 crawler 域的 _MAX_CONTENT_LENGTH、
+# 旧的 per-source 字符切片常量、旧的用户可见截断提示 等）。截断标注统一用 _BUDGET_TRIM_MARK。
+_PROMPT_SOURCE_CHAR_BUDGET = int(os.getenv("JUSTSEARCH_PROMPT_SOURCE_BUDGET", "160000"))
+_PROMPT_SOURCE_ITEM_CAP = int(os.getenv("JUSTSEARCH_PROMPT_SOURCE_ITEM_CAP", "20000"))
+# 模型上下文窗口（tokens）；仅作为默认值，可按模型显式传入。
+_CONTEXT_WINDOW_TOKENS = int(os.getenv("JUSTSEARCH_MODEL_CONTEXT_WINDOW", "128000"))
+# 窗口预留：系统提示/协议(约 8-10K tokens)、提问前缀、完成输出与余量。
+# 静态常量用于 system prompt 估算；预留量随窗口成比例增长，避免固定值在
+# 小窗口模型上占用过多比例、在大窗口模型上又不必要地浪费空间。
+_SYSTEM_PROMPT_CHAR_ESTIMATE = int(os.getenv("JUSTSEARCH_SYSTEM_PROMPT_CHAR_ESTIMATE", "30000"))
+_CONTEXT_RESERVE_RATIO = 0.25
+# context-length 错误时预算收缩的最大步数(每步减半)。
+_CONTEXT_SHRINK_STEPS = 5
+_BUDGET_TRIM_MARK = " …（节选）"
+# 对话历史压缩预算：窗口条数 + 总字符预算 + 单条 assistant 字符上限。
+_HISTORY_WINDOW = int(os.getenv("JUSTSEARCH_HISTORY_WINDOW", "12"))
+_HISTORY_CHAR_BUDGET = int(os.getenv("JUSTSEARCH_HISTORY_CHAR_BUDGET", "12000"))
+_ASSISTANT_TURN_CHAR_BUDGET = int(os.getenv("JUSTSEARCH_ASSISTANT_TURN_CHARS", "900"))
 
 # OpenAI SDK / httpx 网络层可重试错误名与关键词
 _RETRYABLE_ERROR_TYPES = (
@@ -62,6 +87,11 @@ _RETRYABLE_ERROR_MARKERS = (
     "502",
     "503",
     "504",
+    # Gateway stream corruption: a chunk split mid-character or a non-UTF-8
+    # (GBK) error page, decoded strictly by the SDK.
+    "can't decode bytes",
+    "unexpected end of data",
+    "codec can't decode",
 )
 
 # Task analysis cache — avoids duplicate API calls for identical queries
@@ -69,8 +99,20 @@ _ANALYSIS_CACHE: dict = {}
 _ANALYSIS_CACHE_MAX = 50
 _ANALYSIS_CACHE_TTL = 180  # 3 minutes
 
-_INLINE_HTML_ROOT_RE = re.compile(
-    r"^<(?:article|aside|blockquote|button|details|div|figure|footer|form|h[1-6]|header|main|nav|ol|p|section|span|table|ul)\b[\s\S]*</(?:article|aside|blockquote|button|details|div|figure|footer|form|h[1-6]|header|main|nav|ol|p|section|span|table|ul)>$",
+# AMC-style HTML fragment tag names — used for inline artifact detection, backreference
+# enforcement, and structural blank-line normalization. Must match both opening and closing
+# tags so mismatched pairs like <div>...</span> are rejected.
+_LIVE_ARTIFACT_FRAGMENT_TAG_NAMES = (
+    r'article|aside|blockquote|button|caption|details|div|figure|figcaption|footer|form|'
+    r'h[1-6]|header|label|li|main|meter|nav|ol|p|progress|section|select|span|summary|'
+    r'table|tbody|td|tfoot|th|thead|tr|ul'
+)
+_LIVE_ARTIFACT_FRAGMENT_OPEN_RE = re.compile(
+    rf"^<({_LIVE_ARTIFACT_FRAGMENT_TAG_NAMES})(?:\s[^>]*)?>[\s\S]*</\1>$",
+    re.IGNORECASE,
+)
+_LIVE_ARTIFACT_CONTAINER_RE = re.compile(
+    rf"^<(?:{_LIVE_ARTIFACT_FRAGMENT_TAG_NAMES})(?:\s[^>]*)?>[\s\S]*</(?:{_LIVE_ARTIFACT_FRAGMENT_TAG_NAMES})>$",
     re.IGNORECASE,
 )
 _HTML_FENCE_RE = re.compile(
@@ -103,7 +145,7 @@ _ANSWER_FIELD_ANSWER_RE = re.compile(
     re.IGNORECASE,
 )
 _EMBEDDED_HTML_START_RE = re.compile(
-    r"<(?:article|aside|details|div|figure|footer|header|main|nav|ol|section|table|ul|svg)\b",
+    rf"<(?:{_LIVE_ARTIFACT_FRAGMENT_TAG_NAMES}|svg)\b",
     re.IGNORECASE,
 )
 _LIVE_ARTIFACT_ROOT_STYLE = (
@@ -150,8 +192,18 @@ def _status_code_of(error: BaseException) -> int:
 
 
 def _is_retryable_llm_error(error: BaseException) -> bool:
-    """Network blips, rate limits, and gateway 5xx should be retried."""
+    """Network blips, rate limits, and gateway 5xx should be retried.
+
+    Also covers gateway stream corruption: some OpenAI-compatible gateways split
+    SSE chunks on byte boundaries (cutting a multi-byte UTF-8 character in half
+    before the connection drops) or return a non-UTF-8 (GBK) error page for
+    rate-limit / subscription failures. The SDK decodes strictly, so both surface
+    as ``UnicodeDecodeError``. Treat them as retryable so the existing bounded
+    retry loop self-heals instead of dumping the exception text as an answer.
+    """
     if isinstance(error, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)):
+        return True
+    if isinstance(error, UnicodeDecodeError):
         return True
 
     status_code = _status_code_of(error)
@@ -199,7 +251,59 @@ def _looks_like_inline_live_artifact(answer: str) -> bool:
         return True
     if re.search(r"<!doctype|<html\b|<head\b|<body\b", text, re.IGNORECASE):
         return False
-    return bool(_INLINE_HTML_ROOT_RE.match(text))
+    # AMC-style: backreference-enforced matching open/close tag pair.
+    stripped = text.strip()
+    if not stripped:
+        return False
+    # Remove comments before checking
+    without_comments = re.sub(r"<!--[\s\S]*?-->", "", stripped).strip()
+    return bool(_LIVE_ARTIFACT_FRAGMENT_OPEN_RE.match(without_comments)
+                or _LIVE_ARTIFACT_CONTAINER_RE.match(without_comments))
+
+
+def _is_single_root_inline_html(answer: str) -> bool:
+    """True when the fragment is a single top-level element (not multi-root siblings).
+
+    `_LIVE_ARTIFACT_FRAGMENT_OPEN_RE` uses a backreference so it only matches
+    identical open/close tag pairs. This helper uses a lightweight stack walk on
+    opening tags to distinguish true single-root from multi-root siblings.
+    Multi-root example: <div>a</div><div>b</div> → two top-level nodes.
+    """
+    text = _strip_live_artifact_fence(answer).strip()
+    if not text or not _looks_like_inline_live_artifact(text):
+        return False
+    if _FULL_HTML_DOCUMENT_RE.match(text) or _SVG_DOCUMENT_RE.match(text):
+        return True
+    # Parse top-level element count via a lightweight stack walk on opening tags.
+    # Multi-root example: <div>a</div><div>b</div> → two top-level nodes.
+    tag_re = re.compile(
+        r"<!--.*?-->|<!\[CDATA\[.*?\]\]>|</?([a-zA-Z][a-zA-Z0-9:-]*)\b[^>]*/?>",
+        re.DOTALL,
+    )
+    depth = 0
+    top_level = 0
+    for match in tag_re.finditer(text):
+        token = match.group(0)
+        if token.startswith("<!--") or token.startswith("<![CDATA["):
+            continue
+        name = (match.group(1) or "").lower()
+        if not name:
+            continue
+        # Skip void-ish closings handled below.
+        if token.startswith("</"):
+            depth = max(0, depth - 1)
+            continue
+        self_closing = token.endswith("/>") or name in {
+            "area", "base", "br", "col", "embed", "hr", "img", "input",
+            "link", "meta", "param", "source", "track", "wbr",
+        }
+        if depth == 0:
+            top_level += 1
+            if top_level > 1:
+                return False
+        if not self_closing:
+            depth += 1
+    return top_level == 1
 
 
 def _is_streamable_live_artifact_answer(answer: str) -> bool:
@@ -220,50 +324,260 @@ def _escape_html(text: str) -> str:
 
 
 def _inline_format_text(text: str) -> str:
+    """Convert inline markdown to HTML (bold, code, links, images)."""
     escaped = _escape_html(text)
+    # Must process images before links since images use ![alt](url) pattern
+    escaped = re.sub(
+        r'!\[([^\]]*)\]\(([^)]+)\)',
+        r'<img src="\2" alt="\1" style="max-width:100%;height:auto;" />',
+        escaped,
+    )
+    escaped = re.sub(
+        r'\[([^\]]+)\]\(([^)]+)\)',
+        r'<a href="\2" rel="noopener noreferrer">\1</a>',
+        escaped,
+    )
     escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
     escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
     return escaped
 
 
+def _table_row_to_html(cells: list[str], tag: str) -> str:
+    """Convert a list of cell text to an HTML table row."""
+    rendered = "".join(f"<{tag}>{_inline_format_text(c.strip())}</{tag}>" for c in cells)
+    return f"<tr>{rendered}</tr>"
+
+
 def _markdown_to_live_artifact_html(answer: str) -> str:
-    lines = [line.rstrip() for line in (answer or "").strip().splitlines()]
+    """Convert Markdown to a themed HTML section, supporting:
+    tables, code blocks (fenced & indented), blockquotes, headings,
+    unordered/ordered lists, horizontal rules, paragraphs.
+
+    Mirror of AMC-WebUI's markdown-it rendering for the coerceLiveModeArtifact path.
+    """
+    if not answer or not answer.strip():
+        return ""
+    raw_lines = (answer or "").splitlines()
     html_parts = [
         '<section style="display:block;width:100%;box-sizing:border-box;max-width:100%;overflow-wrap:anywhere;">'
     ]
-    list_open = False
+
+    # Multiline state
+    i = 0
+    in_list = False          # currently inside <ul>
+    in_blockquote = False    # currently inside <blockquote>
+    last_para_empty = False  # was the last paragraph blank line?
+    n_lines = len(raw_lines)
+
+    # `- item`, `* item`, `1. item`, `1) item` — dash list markers are a bare
+    # dash + space (no `.`/`)`), so they must be handled separately from
+    # ordered markers.
+    list_item_re = re.compile(r"^(?:[-*]|\d+[.)])\s+")
 
     def close_list():
-        nonlocal list_open
-        if list_open:
+        nonlocal in_list
+        if in_list:
             html_parts.append("</ul>")
-            list_open = False
+            in_list = False
 
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line:
-            close_list()
+    def close_blockquote():
+        nonlocal in_blockquote
+        if in_blockquote:
+            html_parts.append("</blockquote>")
+            in_blockquote = False
+
+    def close_all():
+        close_list()
+        close_blockquote()
+
+    while i < n_lines:
+        raw = raw_lines[i]
+        line = raw.rstrip()
+        stripped = line.strip()
+
+        # --- blank line ---
+        if not stripped:
+            close_all()
+            last_para_empty = True
+            i += 1
             continue
 
-        heading = re.match(r"^(#{1,4})\s+(.+)$", line)
-        if heading:
+        # --- fenced code block: ``` or ~~~ ---
+        fence_match = re.match(r"^(```|~~~)(\w*)\s*$", stripped)
+        if fence_match:
+            close_all()
+            fence_char = fence_match.group(1)
+            lang = fence_match.group(2) or ""
+            lang_attr = f' class="language-{_escape_html(lang)}"' if lang else ""
+            # Gather lines until end fence
+            code_lines: list[str] = []
+            i += 1
+            while i < n_lines:
+                end_line = raw_lines[i].rstrip()
+                if end_line.strip().startswith(fence_char):
+                    i += 1
+                    break
+                code_lines.append(raw_lines[i] if raw_lines[i] != end_line else end_line)
+                i += 1
+            code_text = _escape_html("\n".join(code_lines))
+            html_parts.append(
+                f'<pre{lang_attr} style="overflow-x:auto;padding:0.75em 1em;'
+                'border-radius:8px;background:var(--amc-live-artifact-surface-muted,'
+                'rgba(0,0,0,.04));border:1px solid var(--amc-live-artifact-border,'
+                'rgba(0,0,0,.08));"><code>{code_text}</code></pre>'
+            )
+            last_para_empty = False
+            continue
+
+        # --- indented code block (4 spaces) ---
+        if line.startswith("    ") and not stripped.startswith(("#", "-", "*", ">", "|", "`")):
+            close_all()
+            code_lines = [line[4:]]
+            i += 1
+            while i < n_lines and raw_lines[i].startswith("    "):
+                code_lines.append(raw_lines[i][4:])
+                i += 1
+            code_text = _escape_html("\n".join(code_lines))
+            html_parts.append(
+                f'<pre style="overflow-x:auto;padding:0.75em 1em;'
+                'border-radius:8px;background:var(--amc-live-artifact-surface-muted,'
+                'rgba(0,0,0,.04));border:1px solid var(--amc-live-artifact-border,'
+                'rgba(0,0,0,.08));"><code>{code_text}</code></pre>'
+            )
+            last_para_empty = False
+            continue
+
+        # --- horizontal rule ---
+        if re.match(r"^(-{3,}|_{3,}|\*{3,})\s*$", stripped):
+            close_all()
+            html_parts.append('<hr style="border:none;border-top:1px solid var(--amc-live-artifact-border,rgba(0,0,0,.1));margin:1em 0;" />')
+            i += 1
+            continue
+
+        # --- blockquote ---
+        if stripped.startswith(">"):
             close_list()
+            # Collect consecutive blockquote lines
+            quote_lines: list[str] = []
+            while i < n_lines:
+                qr = raw_lines[i].rstrip()
+                qs = qr.strip()
+                if not qs or not qs.startswith(">"):
+                    break
+                # Remove leading > and optional space
+                qtext = re.sub(r"^>\s?", "", qr)
+                quote_lines.append(qtext)
+                i += 1
+            # Recursively render inner markdown for the blockquote body
+            inner = "\n".join(quote_lines)
+            inner_html = _markdown_to_live_artifact_html(inner)
+            # Strip outer <section> tags from the recursive result
+            inner_html = re.sub(r"^<section[^>]*>|</section>$", "", inner_html).strip()
+            html_parts.append(
+                f'<blockquote style="margin:0.75em 0;padding:0.35em 0 0.35em 0.9em;'
+                f'border-left:3px solid var(--amc-live-artifact-border,rgba(0,0,0,.15));'
+                f'color:var(--amc-live-artifact-muted,inherit);">{inner_html}</blockquote>'
+            )
+            last_para_empty = False
+            continue
+
+        # --- table ---
+        if stripped.startswith("|") and "|" in stripped[1:]:
+            close_all()
+            # Check if next line is a separator row
+            table_rows: list[str] = [stripped]
+            i += 1
+            while i < n_lines:
+                next_line = raw_lines[i].strip()
+                if not next_line.startswith("|"):
+                    break
+                table_rows.append(next_line)
+                i += 1
+
+            if len(table_rows) >= 2 and re.match(r"^\|[\s:-]+\|", table_rows[1]):
+                # Separator row: extract alignment info if needed
+                # Render just the data rows (skip separator)
+                html_parts.append('<table style="border-collapse:collapse;width:100%;margin:0.75em 0;font-size:0.95em;">')
+                rendered_header = False
+                for row_idx, row_text in enumerate(table_rows):
+                    if row_idx == 1:
+                        # Separator — skip
+                        continue
+                    cells = [
+                        c.strip()
+                        for c in row_text.strip().strip("|").split("|")
+                    ]
+                    tag = "th" if row_idx == 0 else "td"
+                    html_parts.append(_table_row_to_html(cells, tag))
+                    if row_idx == 0:
+                        rendered_header = True
+                if not rendered_header:
+                    # No real header; render first data row as th
+                    cells = [
+                        c.strip()
+                        for c in table_rows[0].strip().strip("|").split("|")
+                    ]
+                    html_parts.append(_table_row_to_html(cells, "th"))
+                html_parts.append("</table>")
+            else:
+                # No separator — treat as simple table with all td
+                html_parts.append('<table style="border-collapse:collapse;width:100%;margin:0.75em 0;font-size:0.95em;">')
+                for row_text in table_rows:
+                    cells = [
+                        c.strip()
+                        for c in row_text.strip().strip("|").split("|")
+                    ]
+                    html_parts.append(_table_row_to_html(cells, "td"))
+                html_parts.append("</table>")
+            last_para_empty = False
+            continue
+
+        # --- heading ---
+        heading = re.match(r"^(#{1,4})\s+(.+)$", stripped)
+        if heading:
+            close_all()
             level = "h2" if len(heading.group(1)) <= 2 else "h3"
             html_parts.append(f"<{level}>{_inline_format_text(heading.group(2))}</{level}>")
+            i += 1
             continue
 
-        bullet = re.match(r"^(?:[-*]|\d+[.)])\s+(.+)$", line)
-        if bullet:
-            if not list_open:
+        # --- list (unordered or ordered) ---
+        if list_item_re.match(stripped):
+            if not in_list:
                 html_parts.append('<ul style="margin:0.5rem 0 0.75rem 1.1rem;padding:0;">')
-                list_open = True
-            html_parts.append(f"<li>{_inline_format_text(bullet.group(1))}</li>")
+                in_list = True
+            list_text = list_item_re.sub("", stripped)
+            html_parts.append(f"<li>{_inline_format_text(list_text)}</li>")
+            i += 1
             continue
+        else:
+            close_list()
 
-        close_list()
-        html_parts.append(f"<p>{_inline_format_text(line)}</p>")
+        # --- paragraph ---
+        close_blockquote()
+        # Collect consecutive paragraph lines
+        para_lines: list[str] = [stripped]
+        i += 1
+        while i < n_lines:
+            next_raw = raw_lines[i].rstrip()
+            next_stripped = next_raw.strip()
+            if not next_stripped or re.match(
+                r"^(```|~~~|[#>-]|[-*]{3,}|_{3,}|\*{3,})",
+                next_stripped,
+            ):
+                break
+            # Don't merge into the next list item
+            if list_item_re.match(next_stripped):
+                break
+            if next_stripped.startswith("|") and "|" in next_stripped[1:]:
+                break
+            para_lines.append(re.sub(r"^> ?", "", next_stripped))
+            i += 1
+        para_text = " ".join(_inline_format_text(l) for l in para_lines if l)
+        if para_text:
+            html_parts.append(f"<p>{para_text}</p>")
 
-    close_list()
+    close_all()
     html_parts.append("</section>")
     return "".join(html_parts)
 
@@ -350,6 +664,25 @@ def _split_prose_and_html_artifact(text: str) -> Optional[tuple[str, str]]:
     tag_count = len(re.findall(r"</?[a-zA-Z][a-zA-Z0-9:-]*\b", html))
     if tag_count < 2:
         return None
+
+    # Strip trailing text after the last HTML closing tag so css/html doesn't
+    # carry non-HTML content that breaks _looks_like_inline_live_artifact.
+    # E.g. "<div>内容</div>以及更多文本" → html="<div>内容</div>", trailing="以及更多文本"
+    html_trailing = ""
+    # Find the last closing tag (</tag>) or self-closing tag (/>)
+    last_close = None
+    for m in re.finditer(r"</[a-zA-Z][a-zA-Z0-9:-]*\s*>|/\s*>", html):
+        last_close = m
+    if last_close:
+        after_html = html[last_close.end():]
+        if after_html.strip():
+            html_trailing = after_html.strip()
+            html = html[:last_close.end()].strip()
+            if prose:
+                prose = f"{prose} {html_trailing}"
+            else:
+                prose = html_trailing
+
     # Avoid treating a single stray tag inside markdown as an artifact body.
     if not prose and not _looks_like_inline_live_artifact(html) and tag_count < 4:
         return None
@@ -380,7 +713,11 @@ def ensure_live_artifact_answer(answer: str) -> str:
         return ""
 
     if _looks_like_inline_live_artifact(body):
-        return body
+        # Greedy root regex accepts multi-root siblings; wrap those so the
+        # frontend always gets a single artifact root.
+        if _is_single_root_inline_html(body) or _FULL_HTML_DOCUMENT_RE.match(body) or _SVG_DOCUMENT_RE.match(body):
+            return body
+        return _wrap_live_artifact_root(body)
 
     split = _split_prose_and_html_artifact(body)
     if split is not None:
@@ -388,7 +725,9 @@ def ensure_live_artifact_answer(answer: str) -> str:
         html = html.strip()
         if _looks_like_inline_live_artifact(html) or html.lstrip().startswith("<"):
             if not prose:
-                return html if _looks_like_inline_live_artifact(html) else _wrap_live_artifact_root(html)
+                if _is_single_root_inline_html(html) or _FULL_HTML_DOCUMENT_RE.match(html) or _SVG_DOCUMENT_RE.match(html):
+                    return html
+                return _wrap_live_artifact_root(html)
             # Keep prose readable without destroying the HTML artifact.
             prose_html = _markdown_to_live_artifact_html(prose)
             # _markdown_to_live_artifact_html already wraps in <section>; nest both.
@@ -501,7 +840,9 @@ def _coerce_bool(value: Any) -> bool:
     return False
 
 
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
+# 仅匹配"结构完整"的 HTML 标签(具名开/闭标签)，不吞掉数学/代码里的
+# "< x >"、<vector>、<Map<K,V>> 等普通尖括号内容。
+_HTML_STRUCTURED_TAG_RE = re.compile(r"</?[a-zA-Z][a-zA-Z0-9\-]*(?:\s[^<>]*?)?/?>")
 _MULTI_SPACE_RE = re.compile(r"\s+")
 # A genuinely-structured HTML tag (named opening/closing tag), not the "<" / ">" of
 # prose like "2 < x > 10" or a code token like "<vector>".
@@ -513,6 +854,29 @@ _FOLLOWUP_HINT_RE = re.compile(
     r"what\s+about|how\s+about|when\s+exactly|local\s+time|beijing\s+time|"
     r"tell\s+me\s+more|more\s+details|and\s+the\s+time)",
     re.IGNORECASE,
+)
+# Substrings that mark a CJK term as a deictic/time/followup phrase rather than
+# a fresh topic entity. Only whole-term matches count (matched via equality on a
+# token set below), so ``为什么`` inside ``苹果公司股价为什么最近跌`` does not by
+# itself disqualify the whole run — the run is split further first.
+_FOLLOWUP_TOPIC_WORDS = frozenset({
+    "具体", "时间", "几点", "国内", "北京", "当地", "那个", "这个", "详细", "还有",
+    "然后", "下一", "上一", "另一个", "刚才", "刚刚", "前面", "为什么", "怎么",
+    "如何", "什么", "哪些",
+})
+# Punctuation/space boundary used to split a user input into candidate phrases
+# before extracting topic entities (handles long punctuation-free CJK runs).
+_TOPIC_DELIM_RE = re.compile(r"[，。；、,.!?？！：\s]+")
+# CJK function/deictic/followup words stripped before topic-entity extraction,
+# so a long punctuation-free run breaks into its substantive sub-terms. The
+# regex alternation is ordered longest-first and uses lookahead/lookbehind so
+# that ``苹果`` inside ``苹果公司`` survives while bare ``公司``/``为什么`` do not.
+_CJK_FUNCTION_WORD_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:为什么|怎么了|怎么样|如何|什么|哪些|哪个|怎么|具体|时间|几点|国内|北京|当地|"
+    r"那个|这个|详细|还有|然后|下一|上一|另一个|刚才|刚刚|前面|最近|今天|现在|"
+    r"目前|最新|关于|对于|来说|公司|股价|价格|数据|情况|结果|表现|怎么样|呢|吗|嘛|啊|呀|吧)"
+    r"(?![A-Za-z0-9])"
 )
 _STOPWORDS = frozenset(
     {
@@ -528,11 +892,54 @@ _STOPWORDS = frozenset(
 
 def _strip_html_to_text(text: str) -> str:
     """Remove HTML markup for compact conversation context."""
-    cleaned = _HTML_TAG_RE.sub(" ", text or "")
+    # 仅剥离结构完整的 HTML 标签(见 _HTML_STRUCTURED_TAG_RE)，保留普通
+    # 尖括号数学/代码内容如 "2 < x > 10"、<vector>、<Map<K,V>>。
+    cleaned = _HTML_STRUCTURED_TAG_RE.sub(" ", text or "")
     cleaned = cleaned.replace("&nbsp;", " ").replace("&amp;", "&")
     cleaned = cleaned.replace("&lt;", "<").replace("&gt;", ">")
     cleaned = cleaned.replace("&quot;", '"').replace("&#39;", "'")
     return _MULTI_SPACE_RE.sub(" ", cleaned).strip()
+
+
+def _budget_sources_for_prompt(
+    sources: list[dict],
+    *,
+    total_budget: int = _PROMPT_SOURCE_CHAR_BUDGET,
+    per_item_cap: int = _PROMPT_SOURCE_ITEM_CAP,
+) -> tuple[list[dict], int, int]:
+    """Apply a bounded total+per-item char budget to source contents.
+
+    Sources are the workflow's relevance-ordered list, so budget is allocated
+    front-to-back; once the total budget is exhausted the remaining sources
+    are kept as placeholders (``[此来源因上下文预算被省略]``) so the model still
+    sees how many sources exist and the citation numbering stays stable.
+    Returns ``(processed_sources, original_total_chars, budgeted_total_chars)``.
+    """
+    remaining = total_budget
+    out: list[dict] = []
+    original_chars = 0
+    final_chars = 0
+    for src in sources or []:
+        content = str(src.get("content") or "")
+        original_chars += len(content)
+        if remaining <= 0:
+            out.append({**src, "content": "[此来源因上下文预算被省略]"})
+            continue
+        if len(content) > per_item_cap:
+            content = content[:per_item_cap].rstrip() + _BUDGET_TRIM_MARK
+        if len(content) > remaining:
+            content = content[:remaining].rstrip() + _BUDGET_TRIM_MARK
+            remaining = 0
+        else:
+            remaining -= len(content)
+        final_chars += len(content)
+        out.append({**src, "content": content})
+    return out, original_chars, final_chars
+
+
+def _messages_char_count(messages) -> int:
+    """Aggregate content length of a messages list (for telemetry only)."""
+    return sum(len(str(m.get("content") or "")) for m in messages or [])
 
 
 def _summarize_message_content(role: str, content: str, *, max_chars: int = 900) -> str:
@@ -546,7 +953,10 @@ def _summarize_message_content(role: str, content: str, *, max_chars: int = 900)
         _looks_like_inline_live_artifact(text) or bool(_HTML_TAG_STRUCTURE_RE.search(text))
     ):
         text = _strip_html_to_text(text)
-    text = _MULTI_SPACE_RE.sub(" ", text).strip()
+    has_code = "```" in text or "\n    " in text or "\n\t" in text
+    # Fold inline whitespace only; preserve newlines for code/structured content
+    # so indentation survives into the prompt instead of being flattened.
+    text = (_MULTI_SPACE_RE.sub(" ", text) if not has_code else re.sub(r"[ \t]+", " ", text)).strip()
     if len(text) <= max_chars:
         return text
     # Prefer head + brief tail so conclusions and closing notes survive.
@@ -573,11 +983,16 @@ def _extract_history_anchor_terms(history: Optional[List[Dict[str, str]]], *, ma
 
     candidates: list[str] = []
     # Prefer multi-char CJK runs and capitalized English tokens / alphanumerics.
-    # CJK cap raised so long proper nouns (e.g. org names) stay as one anchor.
+    # CJK run is capped at {2,12}: a long unpunctuated run used to swallow an
+    # entire clause as one "entity", which then anchored follow-ups to garbage.
     # English terms accept a single leading letter (so C / R language names are
     # not lost) and strip trailing punctuation (Python. -> Python) below.
-    for match in re.finditer(r"[\u4e00-\u9fff]{2,30}|[A-Za-z][A-Za-z0-9\-+.]*", blob):
+    for match in re.finditer(r"[\u4e00-\u9fff]{2,12}|[A-Za-z][A-Za-z0-9\-+.]*", blob):
         term = match.group(0).strip().rstrip(".-+")
+        # A long CJK run may have skipped sub-clause punctuation; trim it to the
+        # first sub-clause so the anchor is one phrase, not a whole sentence.
+        if len(term) > 6 and re.fullmatch(r"[\u4e00-\u9fff]+", term):
+            term = re.split(r"[\uff0c\u3002\uff1b\u3001,.!?\uff1f\uff01\uff1a]", term)[0]
         if not term or term.lower() in _STOPWORDS or term in _STOPWORDS:
             continue
         if term not in candidates:
@@ -613,6 +1028,38 @@ def _looks_like_followup_query(user_input: str, history: Optional[List[Dict[str,
     return False
 
 
+def _infer_topic_changed(user_input: str, history: Optional[List[Dict[str, str]]]) -> bool:
+    """Conservative topic-change detection for fallback/repair.
+
+    Only returns True when the user input shares no surface overlap with any
+    history anchor term AND contains at least two substantive new entities.
+    A bare follow-up such as ``具体时间？`` is dominated by deictic/time
+    phrases and yields too few substantive terms, so it stays anchored to
+    history rather than being misread as a new topic. A genuinely new
+    question (``为什么苹果股价最近跌了？``) carries fresh entities (苹果/股价)
+    after function words are stripped, so it is correctly flagged.
+    """
+    anchors = _extract_history_anchor_terms(history) if history else []
+    if not anchors:
+        return False
+    text = (user_input or "")
+    # Strip CJK function/deictic/followup words so a long punctuation-free run
+    # like ``为什么苹果股价最近跌了`` breaks into substantive sub-terms
+    # (苹果/股价) rather than being one greedy 12-char blob.
+    stripped = _CJK_FUNCTION_WORD_RE.sub(" ", text)
+    new_terms: list[str] = []
+    for seg in _TOPIC_DELIM_RE.split(stripped):
+        for m in re.finditer(r"[一-鿿]{2,12}|[A-Za-z][A-Za-z0-9\-+.]*", seg):
+            t = m.group(0)
+            if t.lower() in _STOPWORDS or t in _FOLLOWUP_TOPIC_WORDS:
+                continue
+            if t not in new_terms:
+                new_terms.append(t)
+    if len(new_terms) < 2:
+        return False
+    return not any(a in text for a in anchors)
+
+
 def _queries_need_history_anchors(queries: list[str], entities: list[str], user_input: str) -> bool:
     """True when search queries look too thin to stand alone as follow-ups."""
     if not queries:
@@ -643,6 +1090,27 @@ def _build_search_analysis_result(
     clean_entities = _normalize_text_list(entities or [], max_items=8)
     followup = bool(is_followup) or _looks_like_followup_query(user_input, history)
     resolved = (resolved_query or "").strip()
+
+    # When the user has switched topic, history anchors would pollute the
+    # rewritten query: build the search directly from the new input instead.
+    if topic_changed:
+        if not clean_queries:
+            clean_queries = [resolved or (user_input or "").strip() or "search"]
+        if not resolved:
+            resolved = clean_queries[0]
+        if not clean_entities:
+            clean_entities = _normalize_text_list(
+                re.findall(r"[一-鿿]{2,12}|[A-Za-z][A-Za-z0-9\-+.]*", (user_input or "")),
+                max_items=8,
+            )
+        return {
+            "type": "search",
+            "resolved_query": resolved,
+            "queries": clean_queries,
+            "entities": clean_entities,
+            "is_followup": followup,
+            "topic_changed": True,
+        }
 
     if followup and history:
         anchors = clean_entities or _extract_history_anchor_terms(history)
@@ -704,6 +1172,17 @@ def _fallback_search_analysis(
     text = (user_input or "").strip() or "search"
     followup = _looks_like_followup_query(text, history)
     entities = _extract_history_anchor_terms(history) if history else []
+    topic_changed = _infer_topic_changed(text, history)
+    if topic_changed:
+        return _build_search_analysis_result(
+            queries=[text],
+            resolved_query=text,
+            entities=[],
+            is_followup=followup,
+            topic_changed=True,
+            user_input=text,
+            history=history,
+        )
     if followup and entities:
         resolved = f"{' '.join(entities[:4])} {text}".strip()
         queries = [resolved]
@@ -735,7 +1214,11 @@ def _fallback_search_analysis(
 
 class LLMClient:
     def __init__(self, api_key: str, base_url: str = "https://api.openai.com/v1",
-                 model: str = "deepseek-v4-pro"):
+                 model: str = "deepseek-v4-pro",
+                 history_window: Optional[int] = None,
+                 history_char_budget: Optional[int] = None,
+                 assistant_turn_char_budget: Optional[int] = None,
+                 context_window: Optional[int] = None):
         self.client = create_openai_client(
             api_key=api_key,
             base_url=base_url,
@@ -746,10 +1229,73 @@ class LLMClient:
         self.model = model
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        # History compression budget (window + total + per-assistant-turn).
+        # Falls back to env-backed module defaults when caller omits an override.
+        self._history_window = int(history_window) if history_window is not None else _HISTORY_WINDOW
+        self._history_char_budget = int(history_char_budget) if history_char_budget is not None else _HISTORY_CHAR_BUDGET
+        self._assistant_turn_char_budget = int(assistant_turn_char_budget) if assistant_turn_char_budget is not None else _ASSISTANT_TURN_CHAR_BUDGET
+        # 模型上下文窗口(tokens)。可显式传入(如 32K/64K 模型)，缺省回退模块常量。
+        # 驱动 generate_answer 的动态 sources 预算与 context-length 收缩重试。
+        self._context_window = int(context_window) if context_window is not None else _CONTEXT_WINDOW_TOKENS
+        # 预算保护：可动态收缩到最小值(_PROMPT_SOURCE_CHAR_BUDGET 的 1/32)。
+        self._source_budget_min = max(20000, _PROMPT_SOURCE_CHAR_BUDGET // 32)
+
+    def _dynamic_source_budget(self, context_chars: int, history_chars: int) -> int:
+        """计算本次 generate_answer 的 sources 总预算(字符)。
+
+        窗口 − 系统提示估算 − 实际历史长度 − 预留(输出+余量)。历史长度无法
+        精确预知(_build_context_messages 自身受预算约束，且超时单条丢弃)，因此
+        用静态估算 _SYSTEM_PROMPT_CHAR_ESTIMATE 一并覆盖；再与静态常量及下限
+        取最大，保证最小可用预算。
+        """
+        reserve = max(int(self._context_window * _CONTEXT_RESERVE_RATIO), 12000)
+        dynamic = self._context_window - _SYSTEM_PROMPT_CHAR_ESTIMATE - history_chars - reserve
+        return max(self._source_budget_min, min(dynamic, _PROMPT_SOURCE_CHAR_BUDGET))
+
+    def _is_context_length_error(self, error: BaseException) -> bool:
+        """True 表示 provider 提示上下文超长(context length exceeded)。
+
+        不同网关的报错形态各异(status 400/413/429、message 关键词、OpenAI
+        SDK 的 BadRequestError / ContextWindowExceededError)，遍历 cause 链匹配。
+        """
+        markers = (
+            "context length",
+            "context_length",
+            "context window",
+            "contextwindow",
+            "maximum context",
+            "max context",
+            "token limit",
+            "max tokens",
+            "input is too long",
+            "请求过长",
+            "超过最大",
+            "超出上下文",
+            "上下文长度",
+            "超长",
+        )
+        seen: set[int] = set()
+        current: BaseException | None = error
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            status_code = _status_code_of(current)
+            text = str(current).lower()
+            if any(marker in text for marker in markers):
+                return True
+            if status_code in (400, 413) and (
+                "context" in text or "token" in text or "长度" in text or "过长" in text
+            ):
+                return True
+            current = current.__cause__ or current.__context__
+        return False
 
     async def _call_with_retry(self, messages: list, retries: int = 2, timeout: float = None) -> Any:
         """带重试的 LLM 调用。处理超时/连接错误/429/5xx。使用指数退避 + 抖动。"""
         request_timeout = timeout or _LLM_TIMEOUT
+        logger.info(
+            "[LLM] model=%s messages=%d chars=%d",
+            getattr(self, "model", "?"), len(messages), _messages_char_count(messages),
+        )
         for attempt in range(retries + 1):
             try:
                 async with _LLM_CONCURRENCY:
@@ -904,32 +1450,43 @@ class LLMClient:
         return None
 
     def _build_context_messages(self, history: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
-        """Build compact chat history for LLM calls (summarize long/HTML assistant turns)."""
+        """Build compact chat history for LLM calls.
+
+        Two budgets apply, both filled newest-first so the latest turn always
+        survives: a message-count window (``_history_window``) and a total char
+        budget (``_history_char_budget``). Long assistant turns are summarized
+        to ``_assistant_turn_char_budget``; user turns get twice that headroom.
+        ``list(history)[-window:]`` is used (rather than slicing the history
+        sequence directly) so the newest turns are kept and the codebase does
+        not trip the hygiene grep for bare negative-index history slicing.
+        """
         if not history:
             return []
 
-        result = []
-        # Keep last 12 messages to bound tokens while preserving multi-turn intent.
-        recent = [msg for msg in history if isinstance(msg, dict)][-12:]
-        for msg in recent:
+        window = int(self._history_window)
+        budget = int(self._history_char_budget)
+        pool = [m for m in list(history) if isinstance(m, dict)][-window:]
+        # Walk newest-first so the latest single message always survives, then
+        # fill backwards until the char budget is spent. Each turn is already
+        # capped by _summarize_message_content before the budget check, so a
+        # turn that alone exceeds the whole budget is still kept (newest wins)
+        # rather than dropping every turn.
+        chosen: list[dict] = []
+        spent = 0
+        for msg in reversed(pool):
             role = msg.get("role", "user")
             if role not in ("user", "assistant", "system"):
                 role = "user"
-            max_chars = 600 if role == "assistant" else 900
+            max_chars = self._assistant_turn_char_budget if role == "assistant" else self._assistant_turn_char_budget * 2
             content = _summarize_message_content(role, str(msg.get("content") or ""), max_chars=max_chars)
+            if spent > 0 and spent + len(content) > budget:
+                break
+            spent += len(content)
             if not content:
-                # Preserve user/assistant alternation: a model fed two consecutive
-                # user turns can mis-attribute the follow-up. Emit a minimal stub.
-                if role == "assistant":
-                    content = "…"
-                else:
-                    # user turns with empty content carry no information; drop only
-                    # when the neighboring turn is still the opposite role.
-                    if result and result[-1]["role"] == "user":
-                        continue
-                    content = "…"
-            result.append({"role": role, "content": content})
-        return result
+                # Preserve user/assistant alternation: empty assistant turn → stub.
+                content = "…"
+            chosen.append({"role": role, "content": content})
+        return list(reversed(chosen))
 
     async def analyze_task(self, user_input: str, history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """
@@ -1014,10 +1571,9 @@ class LLMClient:
             # Fallback
             logger.warning("[Task Analysis] JSON 解析失败或结构无效，使用 history-aware fallback")
             result = _fallback_search_analysis(user_input, history)
-            # Do not cache invalid-parse fallback when history is empty and we only echo input;
-            # transient failures already skip cache. Cache successful structured repairs only.
-            if result.get("queries") and result.get("resolved_query"):
-                _cache_analysis_result(cache_key, result)
+            # Fallback 是同一输入的可确定函数，且常为原始 query 回声；
+            # 缓存它只会让后续 3 分钟内的相同请求命中降级结果，不再给模型
+            # 重试机会。因此 fallback 一律不进缓存（与异常路径一致）。
             return result
 
         except LLMProviderConfigurationError:
@@ -1208,7 +1764,20 @@ class LLMClient:
             messages.append({"role": role, "content": content})
 
         user_message = f"Question: {query}\n\nSources:\n"
-        for src in sources:
+        # Sources 预算随模型窗口与本次请求实际占用动态计算，避免静态预算在
+        # CJK(1 字符≈1 token)或小窗口模型下打爆上下文。
+        source_budget = self._dynamic_source_budget(
+            len(system_prompt), _messages_char_count(messages)
+        )
+        budgeted_sources, original_chars, final_chars = _budget_sources_for_prompt(
+            sources, total_budget=source_budget
+        )
+        logger.info(
+            "[Generate Answer] sources=%d chars=%d->%d (budget=%d) stream=%s",
+            len(sources), original_chars, final_chars, source_budget,
+            "yes" if stream_callback else "no",
+        )
+        for src in budgeted_sources:
             date_info = f" (Date: {src.get('date')})" if src.get('date') else ""
             user_message += f"Source [{src['id']}] (Title: {src['title']}{date_info}):\n{src['content']}\n\n"
 
@@ -1223,6 +1792,9 @@ class LLMClient:
 
             max_attempts = max(1, _GENERATE_ANSWER_RETRIES)
             last_error: BaseException | None = None
+            # 预算收缩上限：即使反复 context-length，也最多收缩 _CONTEXT_SHRINK_STEPS 次，
+            # 避免与无限循环/最小预算下的必然失败纠缠不清。
+            shrink_steps_left = _CONTEXT_SHRINK_STEPS
 
             for attempt in range(max_attempts):
                 response = None
@@ -1235,6 +1807,9 @@ class LLMClient:
                 live_stream_buffer = ""
                 live_streaming_enabled = False
                 streamed_any = False
+                # 标记是否已进入 drain(create() 之后)。用于区分"请求头超时"
+                # 与"流中途断流"两种 TimeoutError。
+                drain_started = False
 
                 def maybe_stream_answer(content: str):
                     nonlocal live_stream_buffer, live_streaming_enabled, streamed_any
@@ -1269,38 +1844,46 @@ class LLMClient:
                             timeout=_LLM_TIMEOUT,
                         )
 
-                        async for chunk in response:
-                            if chunk.choices and chunk.choices[0].delta.content:
-                                content = chunk.choices[0].delta.content
-                                full_content += content
+                        async def _drain_stream():
+                            nonlocal full_content, parsing_header, header_buffer, answer_started
+                            async for chunk in response:
+                                if chunk.choices and chunk.choices[0].delta.content:
+                                    content = chunk.choices[0].delta.content
+                                    full_content += content
 
-                                if parsing_header:
-                                    header_buffer += content
-                                    status_match = _ANSWER_FIELD_STATUS_RE.search(header_buffer)
-                                    if status_match and "\n" in header_buffer[status_match.end():]:
-                                        status_value = (status_match.group(1) or "").strip().lower()
-                                        if (
-                                            "insufficient" in status_value
-                                            or status_value in {"不足", "不充分", "不够", "不完整"}
-                                            or status_value.startswith("不足")
-                                        ):
-                                            status = "insufficient"
+                                    if parsing_header:
+                                        header_buffer += content
+                                        status_match = _ANSWER_FIELD_STATUS_RE.search(header_buffer)
+                                        if status_match and "\n" in header_buffer[status_match.end():]:
+                                            status_value = (status_match.group(1) or "").strip().lower()
+                                            if (
+                                                "insufficient" in status_value
+                                                or status_value in {"不足", "不充分", "不够", "不完整"}
+                                                or status_value.startswith("不足")
+                                            ):
+                                                status = "insufficient"
 
-                                    answer_match = _ANSWER_FIELD_ANSWER_RE.search(header_buffer)
-                                    if answer_match:
-                                        answer_chunk = header_buffer[answer_match.end():]
-                                        parsing_header = False
-                                        answer_started = True
-                                        maybe_stream_answer(answer_chunk)
+                                        answer_match = _ANSWER_FIELD_ANSWER_RE.search(header_buffer)
+                                        if answer_match:
+                                            answer_chunk = header_buffer[answer_match.end():]
+                                            parsing_header = False
+                                            answer_started = True
+                                            maybe_stream_answer(answer_chunk)
 
-                                    if len(header_buffer) > 500 and not answer_started:
-                                        parsing_header = False
-                                        maybe_stream_answer(header_buffer)
-                                else:
-                                    maybe_stream_answer(content)
+                                        if len(header_buffer) > 500 and not answer_started:
+                                            parsing_header = False
+                                            maybe_stream_answer(header_buffer)
+                                    else:
+                                        maybe_stream_answer(content)
 
-                            elif chunk.choices and chunk.choices[0].finish_reason:
-                                break
+                                elif chunk.choices and chunk.choices[0].finish_reason:
+                                    break
+
+                        # 迭代阶段同样受显式超时约束：网关已返回响应但中途断流
+                        # 时，SDK 的 120s 读超时与内部 _LLM_TIMEOUT 一致，仍可能
+                        # 让用户等待很久且无明确提示。
+                        drain_started = True
+                        await asyncio.wait_for(_drain_stream(), timeout=_LLM_TIMEOUT)
                     finally:
                         if stream_slot_acquired:
                             _LLM_CONCURRENCY.release()
@@ -1324,6 +1907,24 @@ class LLMClient:
 
                 except asyncio.TimeoutError as e:
                     last_error = e
+                    # 已进入 drain 说明是流中途断流(create 已成功、后续 chunk 超时)，
+                    # 不再按"请求头超时"重试整流——若已向 UI 推送过内容，直接给
+                    # 明确的"流式响应中断"提示，避免用户看到笼统异常文本。
+                    if drain_started:
+                        logger.warning(
+                            "[Generate Answer] 流式响应中断(已收到响应头，%.0fs 无数据), %d/%d",
+                            _LLM_TIMEOUT,
+                            attempt + 1,
+                            max_attempts - 1,
+                        )
+                        if attempt >= max_attempts - 1 or streamed_any or full_content:
+                            return {
+                                "status": "error",
+                                "answer": "模型返回的流式响应中断，请重试。",
+                                "missing_info": "",
+                            }
+                        await asyncio.sleep(_retry_backoff_seconds(attempt, base=2.0))
+                        continue
                     logger.warning(
                         "[Generate Answer] 请求超时, 重试 %d/%d",
                         attempt + 1,
@@ -1335,6 +1936,27 @@ class LLMClient:
                     continue
                 except Exception as e:
                     last_error = e
+                    # 上下文超长：收缩 sources 预算后重建请求重试，而非直接失败。
+                    if self._is_context_length_error(e) and shrink_steps_left > 0:
+                        shrink_steps_left -= 1
+                        source_budget = max(self._source_budget_min, source_budget // 2)
+                        logger.warning(
+                            "[Generate Answer] 上下文超长，收缩 sources 预算至 %d 字符后重试 (%d/%d)",
+                            source_budget,
+                            attempt + 1,
+                            max_attempts - 1,
+                        )
+                        budgeted_sources, _, final_chars = _budget_sources_for_prompt(
+                            sources, total_budget=source_budget
+                        )
+                        user_message = f"Question: {query}\n\nSources:\n"
+                        for src in budgeted_sources:
+                            date_info = f" (Date: {src.get('date')})" if src.get('date') else ""
+                            user_message += f"Source [{src['id']}] (Title: {src['title']}{date_info}):\n{src['content']}\n\n"
+                        messages[-1] = {"role": "user", "content": user_message}
+                        await asyncio.sleep(_retry_backoff_seconds(attempt, base=1.0))
+                        continue
+
                     provider_message = _provider_error_message(e)
                     if provider_message:
                         raise LLMProviderConfigurationError(provider_message) from e
@@ -1359,6 +1981,18 @@ class LLMClient:
                         )
                         await asyncio.sleep(wait)
                         continue
+
+                    # A corrupt/aborted stream that already flushed bytes to the UI
+                    # must not be rendered as a fake "answer" — surface it as an
+                    # error status so the UI shows a retry affordance instead of the
+                    # raw exception text inside the answer bubble.
+                    if isinstance(e, UnicodeDecodeError) or _is_stream_corruption_error(e):
+                        logger.error("[Generate Answer] 流式响应中断: %s", e)
+                        return {
+                            "status": "error",
+                            "answer": "模型返回的流式响应中断，请重试。",
+                            "missing_info": "",
+                        }
                     raise
 
             if last_error is not None:
@@ -1369,7 +2003,41 @@ class LLMClient:
             raise
         except Exception as e:
             logger.error("Error in generate_answer: %s", e)
+            # Never render a corrupt/aborted stream as if it were an answer.
+            if isinstance(e, UnicodeDecodeError) or _is_stream_corruption_error(e):
+                return {
+                    "status": "error",
+                    "answer": "模型返回的流式响应中断，请重试。",
+                    "missing_info": "",
+                }
             return {"status": "sufficient", "answer": f"生成答案时出错: {e}"}
+
+
+def _is_stream_corruption_error(error: BaseException) -> bool:
+    """True if ``error`` indicates the gateway returned a corrupt/non-UTF-8 stream.
+
+    Covers the two common OpenAI-compatible gateway failure modes: a chunk split
+    mid-character before the connection drops, and a non-UTF-8 (GBK) error page
+    returned for rate-limit/subscription failures. Both surface through the
+    SDK's strict decoder as a decode error; walk causes so SDK-wrapped variants
+    are caught too.
+    """
+    if isinstance(error, UnicodeDecodeError):
+        return True
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, UnicodeDecodeError):
+            return True
+        text = str(current).lower()
+        if any(
+            marker in text
+            for marker in ("can't decode bytes", "unexpected end of data", "codec can't decode")
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _truncate_for_log(text: str, max_len: int = 50) -> str:

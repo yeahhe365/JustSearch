@@ -61,6 +61,11 @@ def provider_allows_empty_api_key(provider: dict[str, Any]) -> bool:
     return is_local_provider_base_url(provider.get("base_url", ""))
 
 
+def is_provider_enabled(provider: dict[str, Any]) -> bool:
+    """Providers without an explicit enabled flag are treated as enabled."""
+    return provider.get("enabled", True) is not False
+
+
 def require_provider_api_key(provider: dict[str, Any], label: str = "provider") -> None:
     api_key = str(provider.get("api_key", "") or "").strip()
     if api_key or provider_allows_empty_api_key(provider):
@@ -154,9 +159,10 @@ def normalize_provider(provider: dict[str, Any]) -> dict[str, str]:
 
     base_url = str(provider.get("base_url", "")).strip()
     model_id = normalize_supported_model_ids(provider.get("model_id", ""))
-    if not base_url:
+    enabled = provider.get("enabled", True) is not False
+    if enabled and not base_url:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} 缺少 base_url")
-    if not model_id:
+    if enabled and not model_id:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} 缺少 model_id")
 
     return {
@@ -165,6 +171,7 @@ def normalize_provider(provider: dict[str, Any]) -> dict[str, str]:
         "api_key": str(provider.get("api_key", "")).strip(),
         "base_url": base_url,
         "model_id": model_id,
+        "enabled": enabled,
     }
 
 
@@ -211,15 +218,27 @@ def ensure_default_provider_id(
     requested = (default_provider_id or "").strip()
 
     if not requested:
-        return str(providers[0]["id"])
+        default = next(
+            (provider for provider in providers if is_provider_enabled(provider)),
+            providers[0],
+        )
+        return str(default["id"])
     if requested not in provider_ids:
         raise HTTPException(status_code=400, detail=f"默认 provider 不存在: {requested}")
+    default_provider = next(
+        (provider for provider in providers if str(provider.get("id", "")).strip() == requested),
+        None,
+    )
+    if default_provider is not None and not is_provider_enabled(default_provider):
+        raise HTTPException(status_code=400, detail=f"默认 provider 已禁用: {requested}")
     return requested
 
 
 def _available_model_pairs(providers: list[dict[str, Any]]) -> set[tuple[str, str]]:
     pairs: set[tuple[str, str]] = set()
     for provider in providers:
+        if not is_provider_enabled(provider):
+            continue
         provider_id = str(provider.get("id", "")).strip()
         if not provider_id:
             continue

@@ -1,22 +1,30 @@
 import { initializeAuth, normalizeSettings } from './modules/auth.js?v=1';
+import { initI18n, applyI18n } from './modules/i18n.js?v=1';
 import { state, setCurrentSessionId, setLiveArtifactsMode } from './modules/state.js?v=5';
-import { initUI, elements } from './modules/ui.js?v=31';
-import { abandonActiveChatWork, setupChatHandler, syncQuickSettingsFromState } from './modules/chat.js?v=40';
-import { initEvidencePanel } from './modules/evidence-panel.js?v=2';
-import { openHistorySearch, renderHistory, setupHistoryGroups, setupHistorySearch, updateActiveHistoryItem } from './modules/history-view.js?v=23';
-import { setupSettingsModal } from './modules/settings-modal.js?v=51';
-import { setupSidebar, toggleSidebarFromShortcut } from './modules/sidebar.js?v=19';
+import { initUI, elements } from './modules/ui.js?v=40';
+import { detachCurrentStream, setupChatHandler, syncQuickSettingsFromState } from './modules/chat.js?v=52';
+import { initEvidencePanel } from './modules/evidence-panel.js?v=5';
+import { openHistorySearch, renderHistory, setupHistoryGroups, setupHistorySearch, updateActiveHistoryItem } from './modules/history-view.js?v=25';
+import { setupSettingsModal } from './modules/settings-modal.js?v=56';
+import { setupShortcutsHelp } from './modules/shortcuts-help.js?v=2';
+import { setupSidebar, toggleSidebarFromShortcut } from './modules/sidebar.js?v=21';
 import {
     findOptionForModelPreference,
     initCustomModelSelect,
     loadSelectedModelPreference,
     syncCustomModelSelect,
-} from './modules/model-selector.js?v=15';
+} from './modules/model-selector.js?v=16';
 import { getSupportedModelItems, splitModelItem } from './modules/provider-models.js?v=1';
-import * as API from './modules/api.js?v=11';
-import { applyBridgePreferencesFromSettings, startBridgeStatusPolling } from './modules/bridge.js?v=7';
+import { isProviderEnabled } from './modules/provider-catalog.js?v=2';
+import { updateIntensityUI } from './modules/search-intensity.js?v=3';
+import * as API from './modules/api.js?v=14';
+import { applyBridgePreferencesFromSettings, startBridgeStatusPolling } from './modules/bridge.js?v=9';
 
 document.addEventListener('DOMContentLoaded', async () => {
+    // Language resolves synchronously from localStorage — apply before anything
+    // renders so the UI never flashes in the wrong language.
+    initI18n();
+    applyI18n();
     initUI();
     initEvidencePanel();
     initializeAuth();
@@ -33,7 +41,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setLiveArtifactsMode(settings.live_artifacts_mode);
     applyBridgePreferencesFromSettings();
     updateModelSelector(settings);
-    const { loadChat, deleteChat } = setupChatHandler(elements, renderHistory);
+    const { loadChat, deleteChat, rerenderCurrentView } = setupChatHandler(elements, renderHistory);
     const historyCallbacks = { onSelect: loadChat, onDelete: deleteChat };
 
     renderHistory(chatHistory, state.currentSessionId, historyCallbacks, chatGroups);
@@ -48,19 +56,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     setupSidebar(loadChat);
-    setupSettingsModal({
+    setupShortcutsHelp();
+    const { refreshSettingsForm } = setupSettingsModal({
         updateModelSelector,
         historyCallbacks,
         onSettingsSaved: () => {
             syncQuickSettingsFromState();
             applyBridgePreferencesFromSettings();
         },
+        onLanguageChanged: () => {
+            applyI18n();
+            renderHistory(chatHistory, state.currentSessionId, historyCallbacks, chatGroups);
+            rerenderCurrentView();
+            if (typeof refreshSettingsForm === 'function') refreshSettingsForm();
+            updateIntensityUI({
+                maxResults: state.settings.max_results,
+                maxIterations: state.settings.max_iterations,
+                disabled: Boolean(state.isProcessing),
+            });
+        },
     });
     setupHistoryGroups(historyCallbacks);
     setupHistorySearch(historyCallbacks);
     setupSystemThemeListener();
     setupPwaInstallPrompt();
-    setupSuggestionChips();
     setupKeyboardShortcuts();
     setupContextMenuSuppression();
 });
@@ -88,7 +107,7 @@ function updateModelSelector(settings) {
 
     providers.forEach(provider => {
         const providerId = String(provider.id || '').trim();
-        if (!providerId) return;
+        if (!providerId || !isProviderEnabled(provider)) return;
 
         const models = getSupportedModelItems(provider.model_id);
         models.forEach(model => {
@@ -147,7 +166,7 @@ function restoreSessionFromUrl(chatHistory, loadChat) {
 }
 
 function showHomeState() {
-    abandonActiveChatWork(elements);
+    detachCurrentStream(elements);
     setCurrentSessionId(null);
     elements.chatContainer.innerHTML = '';
     elements.heroSection.style.display = 'block';
@@ -158,7 +177,7 @@ function showHomeState() {
 function setupSystemThemeListener() {
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
         if ((state.settings.theme || 'light') === 'auto') {
-            import('./modules/utils.js?v=6').then(m => m.applyTheme('auto'));
+            import('./modules/utils.js?v=13').then(m => m.applyTheme('auto'));
         }
     });
 }
@@ -166,19 +185,6 @@ function setupSystemThemeListener() {
 function setupPwaInstallPrompt() {
     window.addEventListener('beforeinstallprompt', (event) => {
         event.preventDefault();
-    });
-}
-
-function setupSuggestionChips() {
-    document.querySelectorAll('.suggestion-chip').forEach(chip => {
-        chip.addEventListener('click', () => {
-            const query = chip.dataset.query;
-            if (!query) return;
-
-            elements.userInput.value = query;
-            elements.userInput.dispatchEvent(new Event('input'));
-            elements.sendBtn.click();
-        });
     });
 }
 

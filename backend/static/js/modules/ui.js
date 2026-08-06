@@ -2,13 +2,16 @@ import {
     createCopyButton,
     createDeleteMessageButton,
     createEditMessageButton,
+    createExportMessageButton,
+    createForkMessageButton,
     createMessageActionRail,
     createRegenerateButton
-} from './utils.js?v=6';
-import { extractSources, hasCitationSources, linkCitationsInElement, normalizeCitationSources, renderWithCitations } from './source-renderer.js?v=10';
-import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=27';
-import { bindCitationEvidenceClicks, setEvidenceContext } from './evidence-panel.js?v=2';
+} from './utils.js?v=13';
+import { extractSources, hasCitationSources, linkCitationsInElement, normalizeCitationSources, renderWithCitations } from './source-renderer.js?v=12';
+import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=49';
+import { bindCitationEvidenceClicks } from './evidence-panel.js?v=5';
 import { state } from './state.js?v=5';
+import { t } from './i18n.js?v=1';
 
 const USER_MESSAGE_COLLAPSE_CHARACTER_THRESHOLD = 600;
 const USER_MESSAGE_COLLAPSE_LINE_THRESHOLD = 8;
@@ -20,7 +23,7 @@ const MESSAGE_GROUP_WINDOW_MS = 5 * 60 * 1000;
  * @param {string} [title='确认'] - 弹窗标题
  * @returns {Promise<boolean>}
  */
-export function showConfirm(message, title = '确认') {
+export function showConfirm(message, title = t('ui.confirmTitle')) {
     return new Promise((resolve) => {
         const modal = document.getElementById('confirm-modal');
         const titleEl = document.getElementById('confirm-title');
@@ -112,6 +115,8 @@ export const elements = {
     collapseSidebarBtn: null,
     closeSidebarBtn: null,
     mobileOverlay: null,
+    scrollNav: null,
+    scrollToTopBtn: null,
     scrollToBottomBtn: null,
     historySearchInput: null,
     editMessageBanner: null,
@@ -133,6 +138,8 @@ export function initUI() {
     elements.collapseSidebarBtn = document.getElementById('collapse-sidebar-btn');
     elements.closeSidebarBtn = document.getElementById('close-sidebar-btn');
     elements.mobileOverlay = document.getElementById('mobile-overlay');
+    elements.scrollNav = document.getElementById('scroll-nav');
+    elements.scrollToTopBtn = document.getElementById('scroll-to-top-btn');
     elements.scrollToBottomBtn = document.getElementById('scroll-to-bottom-btn');
     elements.historySearchInput = document.getElementById('history-search-input');
     elements.editMessageBanner = document.getElementById('edit-message-banner');
@@ -144,23 +151,32 @@ export function initUI() {
 }
 
 function initScrollBehavior() {
-    const { chatContainer, scrollToBottomBtn } = elements;
-    if (!chatContainer || !scrollToBottomBtn) return;
+    const { chatContainer, scrollToBottomBtn, scrollToTopBtn, scrollNav } = elements;
+    if (!chatContainer) return;
 
     chatContainer.addEventListener('scroll', () => {
         const { scrollTop, scrollHeight, clientHeight } = chatContainer;
         const scrollBottom = scrollHeight - scrollTop - clientHeight;
-        
-        if (scrollBottom > 100) {
-            scrollToBottomBtn.classList.add('visible');
-        } else {
-            scrollToBottomBtn.classList.remove('visible');
-        }
+
+        // AMC-style scroll navigation: show ↓ when scrolled up from the bottom,
+        // show ↑ when scrolled down from the top.
+        if (scrollToBottomBtn) scrollToBottomBtn.classList.toggle('visible', scrollBottom > 100);
+        if (scrollToTopBtn) scrollToTopBtn.classList.toggle('visible', scrollTop > 100);
     });
 
-    scrollToBottomBtn.addEventListener('click', () => {
-        scrollToBottom();
-    });
+    if (scrollToBottomBtn) {
+        scrollToBottomBtn.addEventListener('click', () => scrollToBottom());
+    }
+    if (scrollToTopBtn) {
+        scrollToTopBtn.addEventListener('click', () => {
+            if (chatContainer.scrollTo) {
+                chatContainer.scrollTo({ top: 0, behavior: 'smooth' });
+            } else {
+                chatContainer.scrollTop = 0;
+            }
+        });
+    }
+    if (scrollNav) scrollNav.classList.add('is-initialized');
 }
 
 function findPreviousUserContent(messages, fromIndex) {
@@ -219,7 +235,7 @@ function createMessageAvatar(role) {
     if (role === 'assistant') {
         const img = document.createElement('img');
         // Use transparent icon (same as sidebar), not the white-background favicon.
-        img.src = '/static/assets/justsearch-icon.png?v=10';
+        img.src = '/static/assets/justsearch-icon.png?v=11';
         img.alt = '';
         avatar.appendChild(img);
     } else if (role === 'error') {
@@ -286,7 +302,7 @@ function renderUserMessageContent(content, contentDiv) {
     toggle.setAttribute('aria-expanded', 'false');
 
     const label = document.createElement('span');
-    label.textContent = '展开';
+    label.textContent = t('ui.expand');
     const icon = document.createElement('span');
     icon.className = 'material-symbols-rounded';
     icon.textContent = 'expand_more';
@@ -297,7 +313,7 @@ function renderUserMessageContent(content, contentDiv) {
         const expanded = contentDiv.classList.toggle('is-expanded');
         contentDiv.classList.toggle('is-collapsed', !expanded);
         toggle.setAttribute('aria-expanded', String(expanded));
-        label.textContent = expanded ? '折叠' : '展开';
+        label.textContent = expanded ? t('ui.collapse') : t('ui.expand');
         icon.textContent = expanded ? 'expand_less' : 'expand_more';
     });
 
@@ -356,12 +372,31 @@ function stageMessageForEdit(content, messageIndex, actionCallbacks = {}, mode =
 function createMessageActions({ role, content, msgDiv, messageIndex, actionCallbacks }) {
     const normalizedRole = normalizeMessageRole(role);
     const buttons = [createCopyButton(content)];
+    if (content && typeof content === 'string' && content.trim()) {
+        buttons.push(createExportMessageButton(content));
+    }
 
     // AMC user Edit3 → resend mode (truncate from this user msg + re-send).
     if (normalizedRole === 'user') {
         buttons.push(createEditMessageButton(content, (value) => {
             stageMessageForEdit(value, messageIndex, actionCallbacks, 'resend');
         }));
+        // Fork: branch a new chat from this user message's index (inclusive).
+        if (messageIndex !== null && messageIndex !== undefined) {
+            buttons.push(createForkMessageButton(async () => {
+                const { forkChatAPI } = await import('./api.js?v=14');
+                const { showToast } = await import('./toast.js');
+                const summary = await forkChatAPI(state.currentSessionId, messageIndex);
+                if (summary && summary.id) {
+                    showToast(t('chat.forkedToNewSession'), 'success');
+                    if (typeof actionCallbacks.onForked === 'function') {
+                        await actionCallbacks.onForked();
+                    }
+                } else {
+                    showToast(t('chat.forkFailed'), 'error');
+                }
+            }));
+        }
     }
 
     // AMC assistant Retry → regenerate from previous user message (truncate at user).
@@ -381,9 +416,9 @@ function createMessageActions({ role, content, msgDiv, messageIndex, actionCallb
 
     if (messageIndex !== null && messageIndex !== undefined) {
         buttons.push(createDeleteMessageButton(async () => {
-            if (!await showConfirm('确定要删除这条消息吗？', '删除消息')) return;
-            const { deleteMessageAPI } = await import('./api.js?v=11');
-            const ok = await deleteMessageAPI(state.currentSessionId, messageIndex);
+            if (!await showConfirm(t('ui.confirmDeleteMessage'), t('ui.deleteMessage'))) return;
+            const { deleteMessageAPI } = await import('./api.js?v=14');
+            const ok = await deleteMessageAPI(state.currentSessionId, messageIndex, content);
             if (ok) {
                 msgDiv.remove();
                 if (typeof actionCallbacks.onMessageDeleted === 'function') {
@@ -391,12 +426,12 @@ function createMessageActions({ role, content, msgDiv, messageIndex, actionCallb
                 }
             } else {
                 const { showToast } = await import('./toast.js');
-                showToast('删除失败', 'error');
+                showToast(t('ui.deleteFailed'), 'error');
             }
         }));
     }
 
-    return createMessageActionRail(buttons, normalizedRole === 'assistant' ? '助手消息操作' : '用户消息操作');
+    return createMessageActionRail(buttons, normalizedRole === 'assistant' ? t('ui.assistantActions') : t('ui.userActions'));
 }
 
 export function appendMessage(role, content, logs = null, sources = null, stats = null, messageIndex = null, timestamp = null, actionCallbacks = {}) {
@@ -431,17 +466,25 @@ export function appendMessage(role, content, logs = null, sources = null, stats 
             suppressUnfencedInlineArtifact,
             liveArtifactsMode: Boolean(state.liveArtifactsMode),
         };
-        if (!getInlineLiveArtifact(content, answerBody.dataset.liveArtifactsMessageId, false, liveArtifactOptions)) {
+        // Probe once and reuse — avoids double extract/buildSrcdoc on history render.
+        const inlineArtifact = getInlineLiveArtifact(
+            content,
+            answerBody.dataset.liveArtifactsMessageId,
+            false,
+            liveArtifactOptions,
+        );
+        if (!inlineArtifact) {
             answerBody.innerHTML = renderWithCitations(content, resolvedSources);
         }
         renderLiveArtifactsForMessage(answerBody, content, {
             messageId: answerBody.dataset.liveArtifactsMessageId,
             isStreaming: false,
             sources: resolvedSources,
+            citations,
+            inlineArtifact,
             ...liveArtifactOptions,
         });
         linkCitationsInElement(answerBody, resolvedSources);
-        setEvidenceContext({ sources: resolvedSources, citations });
         bindCitationEvidenceClicks(answerBody, { sources: resolvedSources, citations });
         contentDiv.appendChild(answerBody);
     } else {
@@ -529,7 +572,7 @@ export function createLogContainer(logs, sourceCount = 0) {
     
     const statusText = document.createElement('span');
     statusText.className = 'log-status-text';
-    statusText.textContent = sourceCount > 0 ? `已完成 · 搜索过 ${sourceCount} 个网页` : '思考过程';
+    statusText.textContent = sourceCount > 0 ? t('ui.searchCompletedSources', { count: sourceCount }) : t('ui.thinkingStatus');
     
     statusLeft.appendChild(spinner);
     statusLeft.appendChild(statusText);
@@ -577,7 +620,7 @@ export function createDynamicLogContainer() {
     
     const statusText = document.createElement('span');
     statusText.className = 'log-status-text';
-    statusText.textContent = '正在思考...';
+    statusText.textContent = t('ui.thinking');
     
     statusLeft.appendChild(spinner);
     statusLeft.appendChild(statusText);

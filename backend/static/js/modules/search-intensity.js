@@ -2,40 +2,49 @@
  * 搜索强度档位：映射 max_results（广度）与 max_iterations（深度）。
  */
 
+import { t } from './i18n.js?v=1';
+
 export const INTENSITY_PRESETS = Object.freeze([
     {
         id: 'quick',
-        label: '快速',
-        max_results: 4,
-        max_iterations: 1,
-        hint: '约 4 源 · 1 轮',
-        description: '事实问答，尽量少轮搜索',
+        labelKey: 'searchIntensity.quick',
+        max_results: 8,
+        max_iterations: 3,
+        hintKey: 'searchIntensity.quickHint',
+        descriptionKey: 'searchIntensity.quickDesc',
     },
     {
         id: 'balanced',
-        label: '均衡',
-        max_results: 8,
-        max_iterations: 3,
-        hint: '约 8 源 · 最多 3 轮',
-        description: '日常问题默认强度',
+        labelKey: 'searchIntensity.balanced',
+        max_results: 12,
+        max_iterations: 5,
+        hintKey: 'searchIntensity.balancedHint',
+        descriptionKey: 'searchIntensity.balancedDesc',
     },
     {
         id: 'deep',
-        label: '深入',
-        max_results: 12,
-        max_iterations: 5,
-        hint: '约 12 源 · 最多 5 轮',
-        description: '对比调研，多源补充',
+        labelKey: 'searchIntensity.deep',
+        max_results: 20,
+        max_iterations: 8,
+        hintKey: 'searchIntensity.deepHint',
+        descriptionKey: 'searchIntensity.deepDesc',
     },
     {
         id: 'research',
-        label: '研究',
-        max_results: 20,
-        max_iterations: 8,
-        hint: '约 20 源 · 最多 8 轮',
-        description: '长报告与多轮穷尽搜索',
+        labelKey: 'searchIntensity.research',
+        max_results: 30,
+        max_iterations: 10,
+        hintKey: 'searchIntensity.researchHint',
+        descriptionKey: 'searchIntensity.researchDesc',
     },
 ]);
+
+export function getIntensityPresetLabel(preset) {
+    return preset ? t(preset.labelKey) : '';
+}
+export function getIntensityPresetHint(preset) {
+    return preset ? t(preset.hintKey) : '';
+}
 
 const PRESET_BY_ID = Object.freeze(
     Object.fromEntries(INTENSITY_PRESETS.map((preset) => [preset.id, preset]))
@@ -69,25 +78,25 @@ export function matchIntensityPreset(maxResults, maxIterations) {
 }
 
 export function resolveIntensityFromSettings(settings = {}) {
-    const maxResults = clampMaxResults(settings.max_results, 8);
-    const maxIterations = clampMaxIterations(settings.max_iterations, 3);
+    const maxResults = clampMaxResults(settings.max_results, 12);
+    const maxIterations = clampMaxIterations(settings.max_iterations, 5);
     const preset = matchIntensityPreset(maxResults, maxIterations);
     if (preset) {
         return {
             id: preset.id,
-            label: preset.label,
+            label: getIntensityPresetLabel(preset),
             max_results: preset.max_results,
             max_iterations: preset.max_iterations,
-            hint: preset.hint,
+            hint: getIntensityPresetHint(preset),
             isCustom: false,
         };
     }
     return {
         id: 'custom',
-        label: '自定义',
+        label: t('searchIntensity.custom'),
         max_results: maxResults,
         max_iterations: maxIterations,
-        hint: `约 ${maxResults} 源 · 最多 ${maxIterations} 轮`,
+        hint: t('searchIntensity.hintCustom', { sources: maxResults, rounds: maxIterations }),
         isCustom: true,
     };
 }

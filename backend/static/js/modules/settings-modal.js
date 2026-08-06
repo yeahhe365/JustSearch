@@ -1,43 +1,54 @@
 import { authFetch } from './auth.js?v=1';
 import { coerceBooleanSetting, setCurrentSessionId, state } from './state.js?v=5';
-import { abandonActiveChatWork } from './chat.js?v=40';
+import { abandonActiveChatWork } from './chat.js?v=52';
 import { showToast } from './toast.js';
-import { elements, showConfirm } from './ui.js?v=31';
-import { renderHistory } from './history-view.js?v=23';
+import { elements, showConfirm } from './ui.js?v=40';
+import { t, getLanguage, setLanguage } from './i18n.js?v=1';
+import { setupSettingsSearch } from './settings-search.js?v=2';
+import { renderHistory } from './history-view.js?v=25';
 import {
     getModelDisplayName,
     getSupportedModelItems,
     isUnsupportedGemini25Model,
     splitModelItem,
 } from './provider-models.js?v=1';
-import * as API from './api.js?v=11';
+import {
+    buildDisplayProviderRows,
+    getBaseUrlWarning,
+    getProviderCatalogEntry,
+    isProviderEnabled,
+    mergeModelOptions,
+    parseModelListText,
+    serializeModels,
+} from './provider-catalog.js?v=2';
+import * as API from './api.js?v=14';
 import {
     clampBaseFontSize,
     clampLiveArtifactsFontSize,
     resolveBaseFontSize,
     resolveLiveArtifactsFontSize,
-} from './utils.js?v=6';
+} from './utils.js?v=13';
 import {
     applyBridgePreferencesFromSettings,
     fetchBridgeStatus,
     normalizeBridgePollIntervalSec,
     wireBridgeSettingsPanel,
-} from './bridge.js?v=7';
+} from './bridge.js?v=9';
 
 const WORKFLOW_STEPS = [
-    { id: 'analysis', label: '问题分析' },
-    { id: 'relevance', label: '相关性评估' },
-    { id: 'interaction', label: '页面交互' },
-    { id: 'answer', label: '最终回答' },
+    { id: 'analysis', labelKey: 'settings.stepAnalysis' },
+    { id: 'relevance', labelKey: 'settings.stepRelevance' },
+    { id: 'interaction', labelKey: 'settings.stepInteraction' },
+    { id: 'answer', labelKey: 'settings.stepAnswer' },
 ];
 
 const PROVIDER_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 const SETTINGS_SAVE_STATES = {
-    saved: { icon: 'check_circle', text: '已保存' },
-    pending: { icon: 'sync', text: '待保存' },
-    saving: { icon: 'progress_activity', text: '保存中' },
-    invalid: { icon: 'error', text: '需要补全' },
-    error: { icon: 'warning', text: '保存失败' },
+    saved: { icon: 'check_circle', textKey: 'settings.saveSaved' },
+    pending: { icon: 'sync', textKey: 'settings.savePending' },
+    saving: { icon: 'progress_activity', textKey: 'settings.saveSaving' },
+    invalid: { icon: 'error', textKey: 'settings.saveInvalid' },
+    error: { icon: 'warning', textKey: 'settings.saveError' },
 };
 const SETTINGS_LAST_TAB_STORAGE_KEY = 'justsearch_settings_last_tab';
 
@@ -61,7 +72,7 @@ function safeSetLocalStorageItem(key, value) {
     }
 }
 
-export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSettingsSaved }) {
+export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSettingsSaved, onLanguageChanged }) {
     const settingsBtn = document.getElementById('settings-btn');
     // Guard: if ui.js was loaded as a separate module instance (mismatched ?v=),
     // elements.settingsModal may be null and the whole setup would throw before binding clicks.
@@ -113,6 +124,9 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
             switchTab(tabId);
         });
     });
+
+    // AMC-style settings search across all tabs.
+    setupSettingsSearch({ modalEl: elements.settingsModal });
 
     let _settingsPreviouslyFocused = null;
 
@@ -189,28 +203,32 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
     });
 
     resetSettingsBtn.addEventListener('click', async () => {
-        if (!(await showConfirm('您确定要恢复默认设置吗？', '恢复默认设置'))) return;
+        if (!(await showConfirm(t('settings.confirmReset'), t('settings.resetSettings')))) return;
         const defaults = await API.restoreDefaultSettingsAPI();
         if (defaults) {
             fillSettingsForm(defaults);
             if (await flushSettingsAutoSave()) {
-                showToast('已恢复默认设置', 'success');
+                // Reset the client-only language preference back to Chinese too.
+                try { localStorage.removeItem('justsearch_language'); } catch (e) { /* ignore */ }
+                setLanguage('zh');
+                if (typeof onLanguageChanged === 'function') onLanguageChanged();
+                showToast(t('settings.resetDone'), 'success');
             } else {
-                showToast('恢复默认设置失败', 'error');
+                showToast(t('settings.resetFailed'), 'error');
             }
         } else {
-            showToast('加载默认设置失败', 'error');
+            showToast(t('settings.loadDefaultsFailed'), 'error');
         }
     });
 
     clearHistoryBtn.addEventListener('click', async () => {
-        if (!(await showConfirm('确定要清除所有对话历史吗？此操作不可撤销。', '清除历史记录'))) return;
+        if (!(await showConfirm(t('settings.confirmClearHistory'), t('settings.clearHistory')))) return;
         if (await API.clearHistoryAPI()) {
             resetConversationView(historyCallbacks);
             elements.settingsModal.classList.remove('active');
-            showToast('历史记录已清除', 'success');
+            showToast(t('settings.historyCleared'), 'success');
         } else {
-            showToast('清除历史记录失败', 'error');
+            showToast(t('settings.historyClearFailed'), 'error');
         }
     });
 
@@ -219,9 +237,9 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
             exportHistoryBtn.disabled = true;
             try {
                 if (await API.exportHistoryAPI()) {
-                    showToast('聊天记录已导出', 'success');
+                    showToast(t('settings.exportDone'), 'success');
                 } else {
-                    showToast('导出聊天记录失败', 'error');
+                    showToast(t('settings.exportFailed'), 'error');
                 }
             } finally {
                 exportHistoryBtn.disabled = false;
@@ -243,14 +261,14 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
 
     if (clearCacheBtn) {
         clearCacheBtn.addEventListener('click', async () => {
-            if (!(await showConfirm('此操作将清除所有聊天记录、浏览器缓存（Cookies 等）并重置设置为默认值。确定要继续吗？此操作不可撤销。', '清除全部缓存'))) return;
+            if (!(await showConfirm(t('settings.confirmClearCache'), t('settings.clearCache')))) return;
             if (await API.clearCacheAPI()) {
                 resetConversationView(historyCallbacks);
                 elements.settingsModal.classList.remove('active');
-                showToast('全部缓存已清除，页面即将刷新', 'success');
+                showToast(t('settings.cacheCleared'), 'success');
                 setTimeout(() => window.location.reload(), 1500);
             } else {
-                showToast('清除缓存失败', 'error');
+                showToast(t('settings.cacheClearFailed'), 'error');
             }
         });
     }
@@ -271,7 +289,7 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
             ? JSON.stringify(currentSettings)
             : '';
         updateProviderValidationUI(currentSettings);
-        updateProviderCountLabel(currentSettings.providers.length);
+        updateProviderCountLabel(currentSettings.providers.filter(p => isProviderEnabled(p)).length);
         setSettingsSaveStatus('saved');
     }
 
@@ -285,7 +303,7 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
         const newSettings = collectSettingsForm();
         const validation = validateSettingsForm(newSettings);
         updateProviderValidationUI(newSettings, validation);
-        updateProviderCountLabel(newSettings.providers.length);
+        updateProviderCountLabel(newSettings.providers.filter(p => isProviderEnabled(p)).length);
         if (!validation.ok) {
             setSettingsSaveStatus('invalid', validation.message);
             return false;
@@ -310,8 +328,8 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
                 }
                 return true;
             }
-            setSettingsSaveStatus('error', '自动保存失败，请稍后重试');
-            showToast('自动保存设置失败', 'error');
+            setSettingsSaveStatus('error', t('settings.saveErrorRetry'));
+            showToast(t('settings.saveFailed'), 'error');
             return false;
         } finally {
             saveInFlight = false;
@@ -328,7 +346,7 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
         const settings = collectSettingsForm();
         const validation = validateSettingsForm(settings);
         updateProviderValidationUI(settings, validation);
-        updateProviderCountLabel(settings.providers.length);
+        updateProviderCountLabel(settings.providers.filter(p => isProviderEnabled(p)).length);
         setSettingsSaveStatus(validation.ok ? 'pending' : 'invalid', validation.ok ? '' : validation.message);
         saveTimeout = setTimeout(persistSettings, immediate ? 0 : 700);
     };
@@ -346,9 +364,14 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
         'engine-select',
         'max-results-input',
         'max-iterations-input',
+        'history-window-input',
+        'history-char-budget-input',
+        'assistant-turn-char-budget-input',
         'interactive-search-input',
         'base-font-size-input',
         'live-artifacts-font-size-input',
+        'completion-notification-input',
+        'completion-sound-input',
         'bridge-require-before-send-input',
         'bridge-show-banner-input',
         'bridge-toast-on-change-input',
@@ -363,6 +386,39 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
         }
     });
 
+    // Language select — client-only preference, deliberately OUTSIDE
+    // autoSaveInputs/collectSettingsForm so it never enters the backend payload.
+    const langSelect = document.getElementById('language-select');
+    if (langSelect) {
+        langSelect.addEventListener('change', () => {
+            setLanguage(langSelect.value);
+            if (typeof onLanguageChanged === 'function') onLanguageChanged();
+        });
+    }
+
+    // 开启「桌面通知」开关时申请浏览器通知权限（仅申请一次；已拒绝/已授权时不打扰）。
+    const completionNotificationInput = document.getElementById('completion-notification-input');
+    if (completionNotificationInput) {
+        completionNotificationInput.addEventListener('change', async () => {
+            if (!completionNotificationInput.checked) return;
+            if (typeof window === 'undefined' || !('Notification' in window)) {
+                showToast(t('settings.notifyUnsupported'), 'warning');
+                return;
+            }
+            if (Notification.permission === 'denied') {
+                showToast(t('settings.notifyDenied'), 'warning');
+                return;
+            }
+            if (Notification.permission === 'default') {
+                try {
+                    await Notification.requestPermission();
+                } catch (err) {
+                    showToast(t('settings.notifyRequestFailed'), 'warning');
+                }
+            }
+        });
+    }
+
     const baseFontSizeInput = document.getElementById('base-font-size-input');
     if (baseFontSizeInput) {
         baseFontSizeInput.addEventListener('input', () => {
@@ -375,6 +431,16 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
             updateFontSizeValueLabel('live-artifacts-font-size-input', 'live-artifacts-font-size-value');
         });
     }
+
+    return {
+        // Re-fill the whole form (localized labels re-resolve via data-i18n scan
+        // in applyI18n; this re-syncs the language <select> and dynamic values).
+        refreshSettingsForm: () => {
+            if (typeof state.settings === 'object' && state.settings) {
+                fillSettingsForm(state.settings);
+            }
+        },
+    };
 }
 
 function updateFontSizeValueLabel(inputId, labelId) {
@@ -390,7 +456,7 @@ function updateFontSizeValueLabel(inputId, labelId) {
 
 async function importHistoryFile(file, historyCallbacks, importHistoryBtn) {
     if (!file.name.toLowerCase().endsWith('.json')) {
-        showToast('请选择 JSON 文件', 'warning');
+        showToast(t('settings.importNeedJson'), 'warning');
         return;
     }
 
@@ -401,13 +467,13 @@ async function importHistoryFile(file, historyCallbacks, importHistoryBtn) {
         try {
             payload = JSON.parse(text);
         } catch (e) {
-            showToast('JSON 文件格式不正确', 'error');
+            showToast(t('settings.importInvalidJson'), 'error');
             return;
         }
 
         const result = await API.importHistoryAPI(payload);
         if (!result || result.status !== 'ok') {
-            showToast(result?.detail || '导入聊天记录失败', 'error');
+            showToast(result?.detail || t('settings.importFailed'), 'error');
             return;
         }
 
@@ -417,7 +483,10 @@ async function importHistoryFile(file, historyCallbacks, importHistoryBtn) {
         ]);
         renderHistory(history, state.currentSessionId, historyCallbacks, groups);
         showToast(
-            `已导入 ${result.imported_sessions || 0} 个对话，跳过 ${result.skipped_sessions || 0} 个重复对话`,
+            t('settings.importDone', {
+                imported: result.imported_sessions || 0,
+                skipped: result.skipped_sessions || 0,
+            }),
             'success',
         );
     } finally {
@@ -483,9 +552,14 @@ function fillSettingsForm(settings) {
     isApplyingSettingsForm = true;
     try {
         document.getElementById('theme-select').value = settings.theme || 'light';
+        const langSel = document.getElementById('language-select');
+        if (langSel) langSel.value = getLanguage();
         document.getElementById('engine-select').value = settings.search_engine || 'google';
         document.getElementById('max-results-input').value = normalizeNumberSetting(settings.max_results, 50, 1, 50);
         document.getElementById('max-iterations-input').value = normalizeNumberSetting(settings.max_iterations, 5, 1, 10);
+        document.getElementById('history-window-input').value = normalizeNumberSetting(settings.history_window, 12, 2, 30);
+        document.getElementById('history-char-budget-input').value = normalizeNumberSetting(settings.history_char_budget, 12000, 2000, 60000);
+        document.getElementById('assistant-turn-char-budget-input').value = normalizeNumberSetting(settings.assistant_turn_char_budget, 900, 200, 5000);
         const baseFontSize = resolveBaseFontSize(settings);
         const liveArtifactsFontSize = resolveLiveArtifactsFontSize(settings);
         const baseFontSizeInput = document.getElementById('base-font-size-input');
@@ -509,6 +583,14 @@ function fillSettingsForm(settings) {
         if (citationVerifyInput) {
             citationVerifyInput.checked = coerceBooleanSetting(settings.citation_verification_enabled, false);
         }
+        const completionNotificationInput = document.getElementById('completion-notification-input');
+        if (completionNotificationInput) {
+            completionNotificationInput.checked = coerceBooleanSetting(settings.completion_notification_enabled, false);
+        }
+        const completionSoundInput = document.getElementById('completion-sound-input');
+        if (completionSoundInput) {
+            completionSoundInput.checked = coerceBooleanSetting(settings.completion_sound_enabled, false);
+        }
         const requireBridgeInput = document.getElementById('bridge-require-before-send-input');
         if (requireBridgeInput) {
             requireBridgeInput.checked = coerceBooleanSetting(settings.bridge_require_before_send, true);
@@ -528,7 +610,7 @@ function fillSettingsForm(settings) {
             );
         }
         updateProviderValidationUI();
-        updateProviderCountLabel(collectProvidersForm().length);
+        updateProviderCountLabel(getEnabledProviderCount());
         setSettingsSaveStatus('saved');
         applyBridgePreferencesFromSettings();
     } finally {
@@ -551,6 +633,9 @@ function collectSettingsForm() {
         search_engine: document.getElementById('engine-select').value,
         max_results: normalizeNumberSetting(document.getElementById('max-results-input').value, 50, 1, 50),
         max_iterations: normalizeNumberSetting(document.getElementById('max-iterations-input').value, 5, 1, 10),
+        history_window: normalizeNumberSetting(document.getElementById('history-window-input').value, 12, 2, 30),
+        history_char_budget: normalizeNumberSetting(document.getElementById('history-char-budget-input').value, 12000, 2000, 60000),
+        assistant_turn_char_budget: normalizeNumberSetting(document.getElementById('assistant-turn-char-budget-input').value, 900, 200, 5000),
         base_font_size: clampBaseFontSize(baseFontSizeInput?.value ?? 16),
         live_artifacts_font_size: clampLiveArtifactsFontSize(liveArtifactsFontSizeInput?.value ?? 16),
         default_provider_id: defaultProvider?.value || providers[0]?.id || '',
@@ -560,6 +645,14 @@ function collectSettingsForm() {
         citation_verification_enabled: citationVerifyInput
             ? citationVerifyInput.checked
             : coerceBooleanSetting(state.settings?.citation_verification_enabled, false),
+        completion_notification_enabled: coerceBooleanSetting(
+            document.getElementById('completion-notification-input')?.checked,
+            coerceBooleanSetting(state.settings?.completion_notification_enabled, false),
+        ),
+        completion_sound_enabled: coerceBooleanSetting(
+            document.getElementById('completion-sound-input')?.checked,
+            coerceBooleanSetting(state.settings?.completion_sound_enabled, false),
+        ),
         bridge_require_before_send: requireBridgeInput
             ? requireBridgeInput.checked
             : coerceBooleanSetting(state.settings?.bridge_require_before_send, true),
@@ -590,39 +683,45 @@ function validateSettingsForm(settings) {
     const providers = Array.isArray(settings?.providers) ? settings.providers : [];
     const errors = [];
     const providerIds = new Map();
+    const enabledProviderIds = new Set();
+    const enabledCount = providers.filter(provider => isProviderEnabled(provider)).length;
 
-    if (providers.length === 0) {
-        errors.push({ message: '至少需要一个 Provider' });
+    if (enabledCount === 0) {
+        errors.push({ message: t('settings.errNoEnabledProvider') });
     }
 
     providers.forEach((provider, index) => {
+        const enabled = isProviderEnabled(provider);
         const id = String(provider.id || '').trim();
         const baseUrl = String(provider.base_url || '').trim();
         const modelId = String(provider.model_id || '').trim();
 
         if (!id) {
-            errors.push({ index, field: 'id', message: 'Provider ID 不能为空' });
+            errors.push({ index, field: 'id', message: t('settings.errProviderIdEmpty') });
         } else if (!PROVIDER_ID_PATTERN.test(id)) {
-            errors.push({ index, field: 'id', message: '仅支持字母、数字、下划线和连字符' });
+            errors.push({ index, field: 'id', message: t('settings.errProviderIdChars') });
         } else if (providerIds.has(id)) {
-            errors.push({ index, field: 'id', message: 'Provider ID 重复' });
-            errors.push({ index: providerIds.get(id), field: 'id', message: 'Provider ID 重复' });
+            errors.push({ index, field: 'id', message: t('settings.errProviderIdDuplicate') });
+            errors.push({ index: providerIds.get(id), field: 'id', message: t('settings.errProviderIdDuplicate') });
         } else {
             providerIds.set(id, index);
         }
 
-        if (!baseUrl) {
-            errors.push({ index, field: 'base_url', message: 'API 基础地址不能为空' });
-        }
-
-        if (!modelId) {
-            errors.push({ index, field: 'model_id', message: '至少添加一个模型' });
+        // Disabled providers may stay unconfigured (e.g. a preset you haven't set up yet).
+        if (enabled) {
+            enabledProviderIds.add(id);
+            if (!baseUrl) {
+                errors.push({ index, field: 'base_url', message: t('settings.errBaseUrlEmpty') });
+            }
+            if (!modelId) {
+                errors.push({ index, field: 'model_id', message: t('settings.errModelRequired') });
+            }
         }
     });
 
     const defaultProviderId = String(settings.default_provider_id || '').trim();
-    if (defaultProviderId && !providerIds.has(defaultProviderId)) {
-        errors.push({ message: '默认 Provider 不存在' });
+    if (defaultProviderId && !enabledProviderIds.has(defaultProviderId)) {
+        errors.push({ message: t('settings.errDefaultProviderDisabled') });
     }
 
     return {
@@ -645,14 +744,20 @@ function setSettingsSaveStatus(status, message = '') {
         icon.textContent = stateConfig.icon;
     }
     if (text) {
-        text.textContent = message || stateConfig.text;
+        text.textContent = message || t(stateConfig.textKey);
     }
 }
 
 function updateProviderCountLabel(count) {
     const label = document.getElementById('provider-count-label');
     if (!label) return;
-    label.textContent = `${count || 0} 个连接`;
+    label.textContent = t('settings.providerEnabledCount', { count: count || 0 });
+}
+
+function getEnabledProviderCount() {
+    return Array.from(document.querySelectorAll('.provider-card'))
+        .filter(card => card.querySelector('.provider-enable-input')?.checked)
+        .length;
 }
 
 function updateProviderValidationUI(settings = collectSettingsForm(), validation = validateSettingsForm(settings)) {
@@ -717,13 +822,13 @@ async function checkSearchEngines(e) {
     }
     if (resultsEl) {
         resultsEl.classList.add('active');
-        renderEngineCheckStatus(resultsEl, 'engine-check-pending', 'progress_activity', '正在检测搜索引擎...');
+        renderEngineCheckStatus(resultsEl, 'engine-check-pending', 'progress_activity', t('settings.engineCheckPending'));
     }
 
     try {
         const data = await API.checkEnginesAPI();
         if (!data || !Array.isArray(data.results)) {
-            showToast('搜索引擎检测失败', 'error');
+            showToast(t('settings.engineCheckFailed'), 'error');
             renderEngineCheckResults({ results: [] });
             return;
         }
@@ -732,9 +837,9 @@ async function checkSearchEngines(e) {
         const availableCount = data.results.filter(item => item.available).length;
         const totalCount = data.results.length;
         const toastType = availableCount === totalCount ? 'success' : 'warning';
-        showToast(`搜索引擎检测完成：${availableCount}/${totalCount} 可用`, toastType);
+        showToast(t('settings.engineCheckDone', { available: availableCount, total: totalCount }), toastType);
     } catch (err) {
-        showToast('搜索引擎检测请求失败', 'error');
+        showToast(t('settings.engineCheckRequestFailed'), 'error');
         renderEngineCheckResults({ results: [] });
     } finally {
         checkEnginesBtn.disabled = false;
@@ -754,14 +859,14 @@ function renderEngineCheckResults(data) {
     resultsEl.replaceChildren();
 
     if (results.length === 0) {
-        renderEngineCheckStatus(resultsEl, 'engine-check-empty', 'error', '暂无检测结果');
+        renderEngineCheckStatus(resultsEl, 'engine-check-empty', 'error', t('settings.engineCheckEmpty'));
         return;
     }
 
     if (data.query) {
         const queryEl = document.createElement('div');
         queryEl.className = 'engine-check-query';
-        queryEl.textContent = `测试词：${data.query}`;
+        queryEl.textContent = t('settings.engineCheckQuery', { query: data.query });
         resultsEl.appendChild(queryEl);
     }
 
@@ -775,8 +880,8 @@ function renderEngineCheckResults(data) {
         const label = getEngineDisplayName(result.engine);
         const resultCount = Number(result.result_count || 0);
         const detail = available
-            ? `可用 · ${Number.isFinite(resultCount) ? resultCount : 0} 个结果`
-            : `不可用 · ${result.error || '未解析到搜索结果'}`;
+            ? t('settings.engineAvailable', { count: Number.isFinite(resultCount) ? resultCount : 0 })
+            : t('settings.engineUnavailable', { error: result.error || t('settings.engineNoResult') });
 
         const item = document.createElement('div');
         item.className = `engine-check-result ${statusClass}`;
@@ -824,35 +929,33 @@ function renderEngineCheckStatus(resultsEl, className, icon, message) {
 function getEngineDisplayName(engine) {
     const names = {
         bing: 'Bing',
-        sogou: '搜狗（中文备用）',
-        baidu: '百度（中文）',
+        sogou: t('settings.engineSogou'),
+        baidu: t('settings.engineBaidu'),
         yandex: 'Yandex',
         duckduckgo: 'DuckDuckGo',
-        google: 'Google（默认）',
+        google: t('settings.engineGoogle'),
         brave: 'Brave Search',
     };
     return names[engine] || engine || 'Unknown';
 }
 
-async function validateApiKey(e) {
+async function runProviderConnectionTest(e) {
     e.preventDefault();
-    const validateBtn = e.currentTarget;
-    const providerCard = validateBtn.closest('.provider-card');
+    const testBtn = e.currentTarget;
+    const providerCard = testBtn.closest('.provider-card');
+    const resultEl = providerCard.querySelector('.provider-test-result');
     const apiKey = providerCard.querySelector('.provider-api-key-input').value.trim();
     const baseUrl = providerCard.querySelector('.provider-base-url-input').value.trim();
     const modelId = providerCard.querySelector('.provider-model-input').value.trim();
     const providerId = providerCard.querySelector('.provider-id-input').value.trim();
     if (isUnsupportedGemini25Model(modelId)) {
-        showToast('Gemini 2.5 系列模型不再支持', 'warning');
+        renderConnectionTestResult(resultEl, 'error', t('settings.connGemini25Unsupported'));
         return;
     }
 
-    validateBtn.disabled = true;
-    validateBtn.classList.add('is-validating');
-    const validateIcon = validateBtn.querySelector('.material-symbols-rounded');
-    if (validateIcon) {
-        validateIcon.textContent = 'progress_activity';
-    }
+    testBtn.disabled = true;
+    testBtn.classList.add('is-testing');
+    renderConnectionTestResult(resultEl, 'pending', t('settings.connTesting'));
     try {
         const res = await authFetch('/api/settings/validate-key', {
             method: 'POST',
@@ -870,19 +973,29 @@ async function validateApiKey(e) {
         });
         const data = await res.json();
         if (data.valid) {
-            showToast('API 连接验证通过', 'success');
+            renderConnectionTestResult(resultEl, 'success', t('settings.connSuccess', { model: data.model || modelId }));
         } else {
-            showToast(data.error || '验证失败', 'error');
+            renderConnectionTestResult(resultEl, 'error', data.error || t('settings.connFailed'));
         }
     } catch (err) {
-        showToast('验证请求失败', 'error');
+        renderConnectionTestResult(resultEl, 'error', t('settings.connRequestFailed'));
     } finally {
-        validateBtn.disabled = false;
-        validateBtn.classList.remove('is-validating');
-        if (validateIcon) {
-            validateIcon.textContent = 'verified';
-        }
+        testBtn.disabled = false;
+        testBtn.classList.remove('is-testing');
     }
+}
+
+function renderConnectionTestResult(resultEl, state, message) {
+    if (!resultEl) return;
+    resultEl.hidden = false;
+    resultEl.className = `provider-test-result is-${state}`;
+    resultEl.replaceChildren();
+    const icon = document.createElement('span');
+    icon.className = 'material-symbols-rounded';
+    icon.textContent = state === 'success' ? 'check_circle' : state === 'error' ? 'error' : 'progress_activity';
+    const text = document.createElement('span');
+    text.textContent = message;
+    resultEl.append(icon, text);
 }
 
 function resetConversationView(historyCallbacks) {
@@ -904,7 +1017,7 @@ function initProviderListUI() {
     addButton.addEventListener('click', () => {
         const providers = collectProvidersForm();
         const currentDefaultProviderId = getSelectedDefaultProviderId();
-        const newProvider = createEmptyProvider(providers.length + 1);
+        const newProvider = createEmptyProvider();
         providers.push(newProvider);
         renderProviderList(
             providers,
@@ -921,23 +1034,36 @@ function renderProviderList(providers, defaultProviderId, options = {}) {
 
     const collapseStates = options.preserveCollapsed ? getProviderCollapseStates() : new Map();
     const expandedProviderId = String(options.expandedProviderId || '').trim();
-    const items = Array.isArray(providers) && providers.length > 0
-        ? providers
-        : [createEmptyProvider(1)];
+    const displayRows = buildDisplayProviderRows(providers);
     const normalizedDefaultProviderId = String(defaultProviderId || '').trim();
-    const fallbackDefault = normalizedDefaultProviderId || String(items[0]?.id || '').trim() || '';
+    const enabledIds = displayRows
+        .map(row => String(row.provider.id || '').trim())
+        .filter((id, index, ids) => id && ids.indexOf(id) === index)
+        .filter(id => {
+            const row = displayRows.find(r => String(r.provider.id || '').trim() === id);
+            return row && isProviderEnabled(row.provider);
+        });
+    const fallbackDefault = normalizedDefaultProviderId && enabledIds.includes(normalizedDefaultProviderId)
+        ? normalizedDefaultProviderId
+        : (enabledIds[0] || '');
 
     container.innerHTML = '';
-    items.forEach((provider, index) => {
-        const providerId = String(provider.id || `provider-${index + 1}`).trim();
+    displayRows.forEach((row, index) => {
+        const providerId = String(row.provider.id || `provider-${index + 1}`).trim();
         const collapsed = expandedProviderId && providerId === expandedProviderId
             ? false
             : collapseStates.has(providerId)
                 ? collapseStates.get(providerId)
                 : null;
-        container.appendChild(createProviderCard(provider, fallbackDefault, index, { collapsed }));
+        container.appendChild(createProviderCard(
+            row.provider,
+            row.logo,
+            fallbackDefault,
+            index,
+            { collapsed, isPreset: row.isPreset },
+        ));
     });
-    updateProviderCountLabel(items.length);
+    updateProviderCountLabel(enabledIds.length);
     syncDefaultProviderBadges();
     refreshWorkflowStepModelOptions();
 }
@@ -970,12 +1096,12 @@ function renderWorkflowStepModels(stepModels, providers, defaultProviderId) {
             : '';
 
         const optionHtml = [
-            `<option value="">跟随聊天栏默认模型</option>`,
+            `<option value="">${t('settings.followDefaultModel')}</option>`,
             ...getGroupedWorkflowModelOptions(options, selectedValue),
         ].join('');
 
         row.innerHTML = `
-            <label for="${selectId}">${escapeHtml(step.label)}</label>
+            <label for="${selectId}">${escapeHtml(t(step.labelKey))}</label>
             <select id="${selectId}" class="workflow-step-model-select" data-step-id="${escapeHtml(step.id)}">
                 ${optionHtml}
             </select>
@@ -1037,7 +1163,7 @@ function getConfiguredModelOptions(providers) {
     const options = [];
     (Array.isArray(providers) ? providers : []).forEach((provider) => {
         const providerId = String(provider.id || '').trim();
-        if (!providerId) return;
+        if (!providerId || !isProviderEnabled(provider)) return;
 
         getSupportedModelItems(provider.model_id).forEach((modelValue) => {
             const { modelId, displayName } = splitModelItem(modelValue);
@@ -1097,86 +1223,106 @@ function decodeStepModelValue(value) {
     }
 }
 
-function createProviderCard(provider, defaultProviderId, index, options = {}) {
+function createProviderCard(provider, logo, defaultProviderId, index, options = {}) {
     const card = document.createElement('div');
     card.className = 'provider-card collapsed';
     const providerId = String(provider.id || `provider-${index + 1}`).trim();
     const isDefaultProvider = providerId === String(defaultProviderId || '').trim();
+    const isEnabled = isProviderEnabled(provider);
+    const isPreset = Boolean(options.isPreset);
     card.dataset.savedProviderId = provider.previous_id || providerId;
     card.dataset.liveProviderId = providerId;
+    card.dataset.isPreset = isPreset ? 'true' : 'false';
     const radioId = `default-provider-${index}`;
-    const providerSummary = formatProviderSummary(provider);
+    const displayName = String(provider.name || '').trim() || providerId;
     card.classList.toggle('is-default', isDefaultProvider);
+    card.classList.toggle('is-disabled', !isEnabled);
     card.innerHTML = `
         <div class="provider-card-header">
+            <label class="ios-switch provider-enable-switch" title="${isEnabled ? t('settings.providerDisable') : t('settings.providerEnable')}">
+                <input type="checkbox" class="provider-enable-input" ${isEnabled ? 'checked' : ''} role="switch" aria-label="${t('settings.providerEnableLabel', { name: escapeHtml(displayName) })}">
+                <span class="ios-slider"></span>
+            </label>
             <button type="button" class="provider-collapse-btn" aria-expanded="false">
                 <span class="provider-collapse-copy">
-                    <span class="provider-title-row">
-                        <span class="provider-card-name">${escapeHtml(provider.name || providerId)}</span>
-                        <span class="provider-default-badge">默认</span>
-                    </span>
-                    <span class="provider-card-subtitle">${escapeHtml(providerId)}</span>
-                    <span class="provider-summary-row" aria-hidden="true">
-                        <span class="provider-summary-pill provider-summary-base-url">${escapeHtml(providerSummary.baseUrl)}</span>
-                        <span class="provider-summary-pill provider-summary-model-count">${escapeHtml(providerSummary.modelCount)}</span>
-                        <span class="provider-summary-pill provider-summary-key-status">${escapeHtml(providerSummary.keyStatus)}</span>
+                    <img class="provider-logo" src="${escapeHtml(logo || '')}" alt="" width="20" height="20" draggable="false" decoding="async">
+                    <span class="provider-collapse-text">
+                        <span class="provider-title-row">
+                            <span class="provider-card-name">${escapeHtml(displayName)}</span>
+                            <span class="provider-default-badge">${t('settings.providerDefaultBadge')}</span>
+                        </span>
+                        <span class="provider-meta-row">
+                            <span class="provider-card-subtitle">${escapeHtml(providerId)}</span>
+                            <span class="provider-status-badge" data-state="" hidden></span>
+                        </span>
                     </span>
                 </span>
                 <span class="material-symbols-rounded provider-collapse-icon">expand_more</span>
             </button>
             <div class="provider-card-actions">
-                <label class="provider-default-label" for="${radioId}" title="设为默认 Provider">
-                    <input type="radio" id="${radioId}" name="default-provider-radio" value="${escapeHtml(providerId)}" ${isDefaultProvider ? 'checked' : ''}>
-                    <span>默认</span>
-                </label>
-                <button type="button" class="remove-provider-btn" title="删除 Provider" aria-label="删除 Provider">
+                <button type="button" class="remove-provider-btn" title="${t('settings.providerDelete')}" aria-label="${t('settings.providerDelete')}">
                     <span class="material-symbols-rounded">delete</span>
                 </button>
             </div>
         </div>
         <div class="provider-card-body">
+            <div class="provider-default-row">
+                <label class="provider-default-label" for="${radioId}" title="${t('settings.providerSetDefault')}">
+                    <input type="radio" id="${radioId}" name="default-provider-radio" value="${escapeHtml(providerId)}" ${isDefaultProvider ? 'checked' : ''} ${isEnabled ? '' : 'disabled'}>
+                    <span>${t('settings.providerSetDefault')}</span>
+                </label>
+            </div>
             <div class="provider-grid">
                 <div class="form-group">
                     <label>Provider ID</label>
                     <input type="text" class="provider-id-input" value="${escapeHtml(providerId)}" placeholder="openai">
                 </div>
                 <div class="form-group">
-                    <label>显示名称</label>
-                    <input type="text" class="provider-name-input" value="${escapeHtml(provider.name || providerId)}" placeholder="OpenAI">
+                    <label>${t('settings.providerDisplayName')}</label>
+                    <input type="text" class="provider-name-input" value="${escapeHtml(displayName)}" placeholder="OpenAI">
+                </div>
+            </div>
+            <div class="form-group provider-key-group">
+                <label>${t('settings.providerApiKey')}</label>
+                <div class="provider-key-wrap">
+                    <textarea rows="3" class="provider-api-key-input" spellcheck="false" placeholder="sk-..., sk-...">${escapeHtml(provider.api_key || '')}</textarea>
+                    <span class="provider-key-check" aria-hidden="true">
+                        <span class="material-symbols-rounded">check</span>
+                    </span>
                 </div>
             </div>
             <div class="form-group">
-                <label>API 密钥</label>
-                <div class="password-input-wrapper">
-                    <input type="password" class="provider-api-key-input" autocomplete="new-password" value="${escapeHtml(provider.api_key || '')}" placeholder="sk-..., sk-...">
-                    <div class="password-actions-wrapper">
-                        <button type="button" class="password-toggle-btn provider-toggle-key-btn" title="显示/隐藏密钥">
-                            <span class="material-symbols-rounded">visibility</span>
-                        </button>
-                        <button type="button" class="password-toggle-btn provider-validate-key-btn" title="验证 API 密钥">
-                            <span class="material-symbols-rounded">verified</span>
-                        </button>
-                    </div>
-                </div>
-            </div>
-            <div class="form-group">
-                <label>API 基础地址</label>
+                <label>${t('settings.providerBaseUrl')}</label>
                 <input type="text" class="provider-base-url-input" value="${escapeHtml(provider.base_url || '')}" placeholder="https://api.openai.com/v1">
+                <p class="provider-base-url-warning" hidden></p>
             </div>
             <div class="form-group model-settings-group">
                 <div class="model-panel-header">
                     <button type="button" class="model-panel-toggle" aria-expanded="false">
-                        <span class="model-panel-title">模型列表</span>
-                        <span class="model-panel-summary">${escapeHtml(providerSummary.modelCount)}</span>
+                        <span class="model-panel-title">${t('settings.modelList')}</span>
+                        <span class="model-panel-summary"></span>
                         <span class="material-symbols-rounded model-panel-icon">expand_more</span>
                     </button>
                 </div>
                 <div class="model-list-container"></div>
-                <button type="button" class="add-model-btn provider-add-model-btn">
-                    <span class="material-symbols-rounded">add</span>
-                    <span>添加模型</span>
-                </button>
+                <div class="model-actions-row">
+                    <button type="button" class="provider-manage-models-btn">
+                        <span class="material-symbols-rounded">settings</span>
+                        <span>${t('settings.manageModels')}</span>
+                    </button>
+                    <button type="button" class="add-model-btn provider-add-model-btn">
+                        <span class="material-symbols-rounded">add</span>
+                        <span>${t('settings.addModel')}</span>
+                    </button>
+                </div>
                 <input type="hidden" class="provider-model-input" value="${escapeHtml(provider.model_id || '')}">
+            </div>
+            <div class="provider-test-row">
+                <button type="button" class="provider-test-btn">
+                    <span class="material-symbols-rounded">verified</span>
+                    <span>${t('settings.testConnection')}</span>
+                </button>
+                <div class="provider-test-result" hidden role="status" aria-live="polite"></div>
             </div>
         </div>
     `;
@@ -1190,10 +1336,10 @@ function createProviderCard(provider, defaultProviderId, index, options = {}) {
             card.dataset.liveProviderId = nextProviderId;
         }
         radio.value = nextProviderId;
-        const displayName = card.querySelector('.provider-name-input').value.trim() || nextProviderId;
-        card.querySelector('.provider-card-name').textContent = displayName;
+        const displayNameValue = card.querySelector('.provider-name-input').value.trim() || nextProviderId;
+        card.querySelector('.provider-card-name').textContent = displayNameValue;
         card.querySelector('.provider-card-subtitle').textContent = nextProviderId;
-        updateProviderSummary(card);
+        updateProviderBadge(card);
         if (nextProviderId) {
             const providerIdMap = previousProviderId
                 ? new Map([[previousProviderId, nextProviderId]])
@@ -1203,9 +1349,9 @@ function createProviderCard(provider, defaultProviderId, index, options = {}) {
         requestSettingsAutoSave();
     });
     card.querySelector('.provider-name-input').addEventListener('input', () => {
-        const displayName = card.querySelector('.provider-name-input').value.trim() || idInput.value.trim();
-        card.querySelector('.provider-card-name').textContent = displayName;
-        updateProviderSummary(card);
+        const displayNameValue = card.querySelector('.provider-name-input').value.trim() || idInput.value.trim();
+        card.querySelector('.provider-card-name').textContent = displayNameValue;
+        updateProviderBadge(card);
         refreshWorkflowStepModelOptions();
         requestSettingsAutoSave();
     });
@@ -1228,39 +1374,83 @@ function createProviderCard(provider, defaultProviderId, index, options = {}) {
         setCollapsed(false);
     }
 
-    card.querySelector('.provider-toggle-key-btn').addEventListener('click', (event) => {
-        event.preventDefault();
-        const input = card.querySelector('.provider-api-key-input');
-        const type = input.getAttribute('type') === 'password' ? 'text' : 'password';
-        input.setAttribute('type', type);
-        const icon = event.currentTarget.querySelector('.material-symbols-rounded');
-        if (icon) {
-            icon.textContent = type === 'password' ? 'visibility' : 'visibility_off';
+    const enableInput = card.querySelector('.provider-enable-input');
+    const setEnabled = (enabled) => {
+        enableInput.checked = enabled;
+        card.classList.toggle('is-disabled', !enabled);
+        radio.disabled = !enabled;
+        updateProviderBadge(card);
+        updateProviderCountLabel(getEnabledProviderCount());
+    };
+    enableInput.addEventListener('change', () => {
+        if (!enableInput.checked && radio.checked) {
+            const nextRadio = Array.from(document.querySelectorAll('input[name="default-provider-radio"]'))
+                .find(candidate => candidate !== radio && !candidate.disabled);
+            if (nextRadio) {
+                nextRadio.checked = true;
+                syncDefaultProviderBadges();
+            }
         }
+        setEnabled(enableInput.checked);
+        refreshWorkflowStepModelOptions();
+        requestSettingsAutoSave({ immediate: true });
+    });
+    setEnabled(isEnabled);
+
+    const apiKeyInput = card.querySelector('.provider-api-key-input');
+    const keyWrap = card.querySelector('.provider-key-wrap');
+    const applyKeyMask = () => {
+        const hasValue = Boolean(apiKeyInput.value.trim());
+        const focused = document.activeElement === apiKeyInput;
+        apiKeyInput.classList.toggle('is-blurred', hasValue && !focused);
+        keyWrap.classList.toggle('has-key', hasValue && !focused);
+    };
+    apiKeyInput.addEventListener('input', () => {
+        updateProviderBadge(card);
+        applyKeyMask();
+        requestSettingsAutoSave();
+    });
+    apiKeyInput.addEventListener('focus', applyKeyMask);
+    apiKeyInput.addEventListener('blur', applyKeyMask);
+
+    const baseUrlInput = card.querySelector('.provider-base-url-input');
+    baseUrlInput.addEventListener('input', () => {
+        updateProviderBaseUrlWarning(card);
+        updateProviderBadge(card);
+        requestSettingsAutoSave();
     });
 
-    card.querySelector('.provider-validate-key-btn').addEventListener('click', validateApiKey);
     radio.addEventListener('change', () => {
         syncDefaultProviderBadges();
         requestSettingsAutoSave({ immediate: true });
     });
-    card.querySelector('.provider-api-key-input').addEventListener('input', () => {
-        updateProviderSummary(card);
-        requestSettingsAutoSave();
-    });
-    card.querySelector('.provider-base-url-input').addEventListener('input', () => {
-        updateProviderSummary(card);
-        requestSettingsAutoSave();
-    });
     card.querySelector('.remove-provider-btn').addEventListener('click', async () => {
         const providerName = card.querySelector('.provider-card-name')?.textContent?.trim() || providerId;
-        if (!(await showConfirm(`确定删除 ${providerName} 吗？`, '删除 Provider'))) return;
+        if (!(await showConfirm(t('settings.confirmDeleteProvider', { name: providerName }), t('settings.providerDelete')))) return;
+        if (isPreset) {
+            // 预置行：删除 = 禁用并重置为目录默认。
+            const entry = getProviderCatalogEntry(providerId);
+            card.querySelector('.provider-name-input').value = entry ? entry.label : displayName;
+            card.querySelector('.provider-base-url-input').value = entry ? entry.baseUrl : '';
+            card.querySelector('.provider-model-input').value = entry ? entry.models.join(', ') : '';
+            if (card._providerModelListApi) {
+                card._providerModelListApi.render();
+            }
+            if (enableInput.checked) {
+                enableInput.checked = false;
+                setEnabled(false);
+            }
+            updateProviderBaseUrlWarning(card);
+            refreshWorkflowStepModelOptions();
+            requestSettingsAutoSave({ immediate: true });
+            return;
+        }
         const currentDefaultProviderId = getSelectedDefaultProviderId();
         const providers = Array.from(document.querySelectorAll('.provider-card'))
             .filter(providerCard => providerCard !== card)
             .map(collectProviderCardForm)
             .filter(provider => provider.id || provider.base_url || provider.model_id || provider.api_key);
-        const nextProviders = providers.length > 0 ? providers : [createEmptyProvider(1)];
+        const nextProviders = providers.length > 0 ? providers : [];
         const preferredDefaultId = radio.checked ? '' : currentDefaultProviderId;
         renderProviderList(
             nextProviders,
@@ -1269,7 +1459,12 @@ function createProviderCard(provider, defaultProviderId, index, options = {}) {
         );
         requestSettingsAutoSave({ immediate: true });
     });
+    card.querySelector('.provider-test-btn').addEventListener('click', runProviderConnectionTest);
+    const manageModelsBtn = card.querySelector('.provider-manage-models-btn');
+    manageModelsBtn.addEventListener('click', () => openModelManagerForCard(card));
     setupProviderModelList(card);
+    updateProviderBaseUrlWarning(card);
+    updateProviderBadge(card);
     return card;
 }
 
@@ -1305,7 +1500,7 @@ function setupProviderModelList(providerCard) {
             });
         }
         updateModelPanelSummary(providerCard);
-        updateProviderSummary(providerCard);
+        updateProviderBadge(providerCard);
     }
 
     function serialize({ save = true } = {}) {
@@ -1319,7 +1514,7 @@ function setupProviderModelList(providerCard) {
             .filter(model => model && !isUnsupportedGemini25Model(model))
             .join(', ');
         updateModelPanelSummary(providerCard);
-        updateProviderSummary(providerCard);
+        updateProviderBadge(providerCard);
         refreshWorkflowStepModelOptions();
         if (save) {
             requestSettingsAutoSave();
@@ -1330,9 +1525,9 @@ function setupProviderModelList(providerCard) {
         const row = document.createElement('div');
         row.className = 'model-row';
         row.innerHTML = `
-            <input type="text" class="model-id-input" placeholder="模型 ID" value="${escapeHtml(id)}">
-            <input type="text" class="model-name-input" placeholder="显示名称" value="${escapeHtml(name)}">
-            <button type="button" class="remove-model-btn" title="删除模型">
+            <input type="text" class="model-id-input" placeholder="${t('settings.modelIdPlaceholder')}" value="${escapeHtml(id)}">
+            <input type="text" class="model-name-input" placeholder="${t('settings.modelNamePlaceholder')}" value="${escapeHtml(name)}">
+            <button type="button" class="remove-model-btn" title="${t('settings.deleteModel')}">
                 <span class="material-symbols-rounded">delete</span>
             </button>
         `;
@@ -1368,34 +1563,161 @@ function setupProviderModelList(providerCard) {
     });
     render();
     setModelPanelCollapsed(true);
+
+    // Expose for the model-manager modal so it can commit edits back to the card.
+    providerCard._providerModelListApi = { render, serialize };
 }
 
-function formatProviderSummary(provider) {
-    const modelCount = getSupportedModelItems(provider.model_id).length;
-    const baseUrl = String(provider.base_url || '').trim() || '未设置 API 地址';
-    const apiKey = String(provider.api_key || '').trim();
-    return {
-        baseUrl,
-        modelCount: `${modelCount || 0} 个模型`,
-        keyStatus: apiKey ? '已配置密钥' : '未配置密钥',
-    };
-}
+function openModelManagerForCard(providerCard) {
+    const modal = document.getElementById('model-manager-modal');
+    if (!modal) return;
+    const hiddenInput = providerCard.querySelector('.provider-model-input');
+    const listEl = document.getElementById('model-manager-list');
+    const searchEl = document.getElementById('model-manager-search');
+    const countEl = document.getElementById('model-manager-count');
+    const batchEl = document.getElementById('model-manager-batch-input');
+    const addBatchBtn = document.getElementById('model-manager-add-batch-btn');
+    const messageEl = document.getElementById('model-manager-batch-message');
+    const titleEl = document.getElementById('model-manager-title');
+    if (!listEl || !searchEl || !countEl || !batchEl || !addBatchBtn || !messageEl) return;
 
-function updateProviderSummary(providerCard) {
-    const summary = formatProviderSummary({
-        api_key: providerCard.querySelector('.provider-api-key-input')?.value || '',
-        base_url: providerCard.querySelector('.provider-base-url-input')?.value || '',
-        model_id: providerCard.querySelector('.provider-model-input')?.value || '',
+    const providerName = providerCard.querySelector('.provider-card-name')?.textContent?.trim() || '';
+    if (titleEl) titleEl.textContent = t('settings.modelManagerTitleFor', { name: providerName });
+
+    searchEl.value = '';
+    batchEl.value = '';
+    messageEl.hidden = true;
+
+    const readRows = () => getSupportedModelItems(hiddenInput.value).map((item) => {
+        const { modelId, displayName } = splitModelItem(item);
+        return { id: modelId, name: displayName === modelId ? '' : displayName };
     });
-    const baseUrlEl = providerCard.querySelector('.provider-summary-base-url');
-    const modelCountEl = providerCard.querySelector('.provider-summary-model-count');
-    const keyStatusEl = providerCard.querySelector('.provider-summary-key-status');
-    if (baseUrlEl) baseUrlEl.textContent = summary.baseUrl;
-    if (modelCountEl) modelCountEl.textContent = summary.modelCount;
-    if (keyStatusEl) {
-        keyStatusEl.textContent = summary.keyStatus;
-        keyStatusEl.classList.toggle('is-empty', summary.keyStatus === '未配置密钥');
+
+    const setBatchMessage = (text, isError = false) => {
+        messageEl.textContent = text;
+        messageEl.hidden = !text;
+        messageEl.classList.toggle('is-error', isError);
+    };
+
+    const commitRows = (rows) => {
+        hiddenInput.value = serializeModels(rows);
+        if (providerCard._providerModelListApi) {
+            providerCard._providerModelListApi.render();
+        }
+        updateModelPanelSummary(providerCard);
+        renderManagerRows();
+        requestSettingsAutoSave();
+    };
+
+    const renderManagerRows = () => {
+        const query = searchEl.value.trim().toLowerCase();
+        const rows = readRows();
+        countEl.textContent = String(rows.length);
+        listEl.innerHTML = '';
+        const filtered = rows.filter((row) => !query
+            || row.id.toLowerCase().includes(query)
+            || (row.name || '').toLowerCase().includes(query));
+        if (filtered.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'model-manager-empty';
+            empty.textContent = t('settings.modelManagerEmpty');
+            listEl.appendChild(empty);
+            return;
+        }
+        filtered.forEach((row) => {
+            const rowEl = document.createElement('div');
+            rowEl.className = 'model-manager-row';
+            rowEl.innerHTML = `
+                <input type="text" class="model-manager-id-input" value="${escapeHtml(row.id)}" placeholder="${t('settings.modelIdPlaceholder')}">
+                <input type="text" class="model-manager-name-input" value="${escapeHtml(row.name)}" placeholder="${t('settings.modelNamePlaceholder')}">
+                <button type="button" class="remove-model-btn" title="${t('settings.deleteModel')}" aria-label="${t('settings.deleteModel')}">
+                    <span class="material-symbols-rounded">delete</span>
+                </button>
+            `;
+            const idInputEl = rowEl.querySelector('.model-manager-id-input');
+            const nameInputEl = rowEl.querySelector('.model-manager-name-input');
+            idInputEl.addEventListener('input', () => {
+                const next = readRows();
+                const match = next.find((r) => r.id === row.id);
+                if (match) match.id = idInputEl.value;
+                commitRows(next);
+            });
+            nameInputEl.addEventListener('input', () => {
+                const next = readRows();
+                const match = next.find((r) => r.id === row.id);
+                if (match) match.name = nameInputEl.value;
+                commitRows(next);
+            });
+            rowEl.querySelector('.remove-model-btn').addEventListener('click', () => {
+                commitRows(readRows().filter((r) => r.id !== row.id));
+            });
+            listEl.appendChild(rowEl);
+        });
+    };
+
+    addBatchBtn.onclick = () => {
+        const incomingIds = parseModelListText(batchEl.value);
+        if (incomingIds.length === 0) {
+            setBatchMessage(t('settings.modelManagerPasteFirst'), true);
+            return;
+        }
+        const currentRows = readRows();
+        const merged = mergeModelOptions(currentRows, incomingIds.map((id) => ({ id, name: '' })));
+        const addedCount = merged.length - currentRows.length;
+        commitRows(merged);
+        batchEl.value = '';
+        setBatchMessage(addedCount > 0
+            ? t('settings.modelManagerAddedCount', { count: addedCount })
+            : t('settings.modelManagerNoNew'));
+    };
+
+    searchEl.oninput = renderManagerRows;
+
+    const closeManager = () => {
+        modal.classList.remove('active');
+        if (providerCard._providerModelListApi) {
+            providerCard._providerModelListApi.render();
+        }
+    };
+    const closeBtn = modal.querySelector('.model-manager-close-btn');
+    if (closeBtn) closeBtn.onclick = closeManager;
+    modal.onclick = (event) => {
+        if (event.target === modal) closeManager();
+    };
+
+    renderManagerRows();
+    modal.classList.add('active');
+    if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => searchEl.focus());
+    } else {
+        searchEl.focus();
     }
+}
+
+function updateProviderBadge(providerCard) {
+    const badge = providerCard?.querySelector('.provider-status-badge');
+    if (!badge) return;
+    const enabled = providerCard.querySelector('.provider-enable-input')?.checked;
+    const hasKey = Boolean(providerCard.querySelector('.provider-api-key-input')?.value.trim());
+    if (!enabled) {
+        badge.hidden = true;
+        badge.dataset.state = '';
+        badge.textContent = '';
+        return;
+    }
+    badge.hidden = false;
+    badge.dataset.state = hasKey ? 'ready' : 'missing';
+    badge.textContent = hasKey ? t('settings.keyReady') : t('settings.keyMissing');
+}
+
+function updateProviderBaseUrlWarning(providerCard) {
+    const warningEl = providerCard?.querySelector('.provider-base-url-warning');
+    const input = providerCard?.querySelector('.provider-base-url-input');
+    if (!warningEl || !input) return;
+    const message = getBaseUrlWarning(input.value);
+    warningEl.textContent = message;
+    warningEl.hidden = !message;
+    providerCard.classList.toggle('has-base-url-warning', Boolean(message));
 }
 
 function updateModelPanelSummary(providerCard) {
@@ -1404,11 +1726,11 @@ function updateModelPanelSummary(providerCard) {
     const hiddenInput = providerCard.querySelector('.provider-model-input');
     const items = getSupportedModelItems(hiddenInput?.value || '');
     if (items.length === 0) {
-        summaryEl.textContent = '0 个模型';
+        summaryEl.textContent = t('settings.modelCountZero');
         return;
     }
     const first = getModelDisplayName(items[0]);
-    summaryEl.textContent = `${first} · ${items.length} 个模型`;
+    summaryEl.textContent = t('settings.modelCountSummary', { first, count: items.length });
 }
 
 function collectProvidersForm() {
@@ -1426,6 +1748,7 @@ function collectProviderCardForm(card) {
         api_key: card.querySelector('.provider-api-key-input').value.trim(),
         base_url: card.querySelector('.provider-base-url-input').value.trim(),
         model_id: card.querySelector('.provider-model-input').value.trim(),
+        enabled: card.querySelector('.provider-enable-input')?.checked ?? true,
     };
 }
 
@@ -1439,13 +1762,16 @@ function markSavedProviderIdentities() {
     });
 }
 
-function createEmptyProvider(index) {
+function createEmptyProvider() {
+    const existingIds = new Set(collectProvidersForm().map(provider => String(provider.id || '').trim()));
+    let n = 1;
+    while (existingIds.has(`provider-${n}`)) n += 1;
     return {
-        id: index === 1 ? 'deepseek' : `provider-${index}`,
-        name: index === 1 ? 'DeepSeek' : `Provider ${index}`,
+        id: `provider-${n}`,
+        name: `Provider ${n}`,
         api_key: '',
-        base_url: index === 1 ? 'https://api.deepseek.com/v1' : 'https://api.openai.com/v1',
-        model_id: index === 1 ? 'deepseek-v4-pro' : '',
+        base_url: '',
+        model_id: '',
     };
 }
 
@@ -1461,14 +1787,20 @@ function escapeHtml(str) {
 }
 
 export const __settingsModalTestHooks = {
+    buildDisplayProviderRows,
     collectSettingsForm,
     collectProvidersForm,
     collectWorkflowStepModels,
+    createEmptyProvider,
     fillSettingsForm,
+    getBaseUrlWarning,
+    isProviderEnabled,
     normalizeNumberSetting,
+    openModelManagerForCard,
     renderEngineCheckResults,
     renderProviderList,
     renderWorkflowStepModels,
     safeGetLocalStorageItem,
     safeSetLocalStorageItem,
+    validateSettingsForm,
 };

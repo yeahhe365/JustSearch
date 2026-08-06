@@ -2,6 +2,8 @@
  * JustSearch — Custom Model Dropdown Selector Module
  */
 
+import { t } from './i18n.js?v=1';
+
 export const SELECTED_MODEL_STORAGE_KEY = 'justsearch_selected_model';
 
 function safeGetLocalStorageItem(key, fallback = '') {
@@ -257,7 +259,7 @@ export function syncCustomModelSelect() {
     const options = nativeSelect.options;
 
     if (options.length === 0) {
-        triggerText.textContent = 'Default';
+        triggerText.textContent = t('modelSelector.default');
         return;
     }
 

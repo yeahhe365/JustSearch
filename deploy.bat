@@ -15,7 +15,7 @@ if %errorlevel% equ 0 (
     if %errorlevel% equ 0 (
         echo.
         echo ✅ Deployment successful!
-        echo 🌍 Access JustSearch at: http://localhost:8000
+        echo 🌍 Access JustSearch at: http://localhost:8001
         pause
         exit /b 0
     ) else (

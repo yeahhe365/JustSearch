@@ -38,6 +38,8 @@ JustSearch 后端 ws://127.0.0.1:8000/justsearch（与 HTTP 共用端口）
 
 Docker 下后端跑在容器里,扩展连接地址与页面访问地址端口一致（默认宿主机 8001），路径 /justsearch。例如若访问 http://127.0.0.1:8001，则扩展应连 ws://127.0.0.1:8001/justsearch。
 
+WebSocket 连接会做鉴权：本机 loopback / Docker 发布端口网关免 token；其它来源需在 URL 带 `?token=<data/.auth_token>`（与 HTTP API 相同）。
+
 ## 注意事项
 
 - 扩展会用 `chrome.debugger` 附加到它创建的后台标签上,标签顶部会短暂出现「正被调试」黄条。任务结束扩展会自动 detach,黄条消失。

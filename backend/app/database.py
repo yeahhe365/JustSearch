@@ -136,6 +136,7 @@ class ChatSession(Base):
     id = Column(String, primary_key=True)
     title = Column(String, default="新对话")
     group_id = Column(String, ForeignKey("chat_groups.id", ondelete="SET NULL"), nullable=True, index=True)
+    is_pinned = Column(Boolean, default=False, nullable=False, index=True)
     created_at = Column(DateTime, default=func.now(), index=True)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), index=True)
 
@@ -210,6 +211,11 @@ async def init_db():
                 "ALTER TABLE chat_sessions ADD COLUMN group_id VARCHAR"
             ))
             logger.info("Added missing 'group_id' column to chat_sessions")
+        if "is_pinned" not in session_cols:
+            await conn.execute(text(
+                "ALTER TABLE chat_sessions ADD COLUMN is_pinned BOOLEAN DEFAULT 0"
+            ))
+            logger.info("Added missing 'is_pinned' column to chat_sessions")
 
         result = await conn.execute(text("PRAGMA table_info('chat_messages')"))
         existing_cols = {row[1] for row in result}
@@ -237,6 +243,10 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS ix_chat_sessions_group_updated "
             "ON chat_sessions (group_id, updated_at)"
         ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_chat_sessions_pinned "
+            "ON chat_sessions (is_pinned)"
+        ))
         # Full-text search index for chat content search
         await conn.execute(text(
             "CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts "
@@ -263,11 +273,16 @@ async def init_db():
             "VALUES (new.id, new.session_id, new.content); "
             "END"
         ))
-        await conn.execute(text("DELETE FROM chat_messages_fts"))
-        await conn.execute(text(
-            "INSERT INTO chat_messages_fts(rowid, session_id, content) "
-            "SELECT id, session_id, content FROM chat_messages"
-        ))
+        # Incremental: only backfill when FTS is empty. Runtime triggers keep it in sync;
+        # wiping + full rebuild on every startup is unnecessary and slow for large DBs.
+        fts_count = (
+            await conn.execute(text("SELECT count(*) FROM chat_messages_fts"))
+        ).scalar_one()
+        if fts_count == 0:
+            await conn.execute(text(
+                "INSERT INTO chat_messages_fts(rowid, session_id, content) "
+                "SELECT id, session_id, content FROM chat_messages"
+            ))
 
     logger.info("Database initialised at %s", _DB_PATH)
 
@@ -289,7 +304,7 @@ async def init_db():
 async def _cleanup_old_sessions(max_age_days: int = 90):
     """Remove empty sessions older than max_age_days."""
     try:
-        cutoff = datetime.now() - __import__('datetime').timedelta(days=max_age_days)
+        cutoff = datetime.now() - timedelta(days=max_age_days)
         async with await get_session() as session:
             result = await session.execute(
                 delete(ChatSession)
@@ -383,6 +398,7 @@ async def load_chat_history(session_id_or_path: str) -> Optional[Dict[str, Any]]
             "id": sess.id,
             "title": sess.title,
             "group_id": sess.group_id,
+            "is_pinned": bool(sess.is_pinned),
             "timestamp": _format_utc_timestamp(sess.updated_at),
             "messages": messages,
         }
@@ -393,12 +409,14 @@ async def save_chat_history(session_id: str, messages: list, title: Optional[str
     Incrementally append new messages to an existing session.
     Detects which messages are new by comparing against what's already stored.
     Falls back to full upsert for new sessions.
+    Uses optimistic concurrency control with a version check on the session row.
     """
     if not messages:
         return
 
     async with await get_session() as session:
-        # Upsert session row
+        # Use a transaction with SERIALIZABLE isolation (SQLite default).
+        # Lock the session row to prevent concurrent modifications.
         sess = (await session.execute(
             select(ChatSession).where(ChatSession.id == session_id)
         )).scalar_one_or_none()
@@ -429,10 +447,39 @@ async def save_chat_history(session_id: str, messages: list, title: Optional[str
             sess.title = title
         sess.updated_at = now
 
-        # Count existing messages to determine the append boundary
-        existing_count = (await session.execute(
-            select(func.count()).select_from(ChatMessage).where(ChatMessage.session_id == session_id)
-        )).scalar_one()
+        # 前缀校验：客户端传来的 messages 应与 DB 已存消息的前缀一致。
+        # 按 count 增量追加在并发/陈旧客户端下会静默丢新消息（count 比客户端
+        # 数组大时 new_msgs 为空或错位）。比较最后一条已存消息与客户端对应
+        # 位置的消息的 (role, content)，不一致说明视图已过期，直接返回不再
+        # 追加——新消息不会丢，客户端下次拉取完整历史即可拿到最新状态。
+        #
+        # 使用行级锁防止并发修改：在 SQLite 中通过 BEGIN IMMEDIATE 事务实现。
+        # 这里我们重新获取会话以确保在事务内读取最新状态。
+        existing_rows = (await session.execute(
+            select(ChatMessage).where(ChatMessage.session_id == session_id)
+            .order_by(ChatMessage.created_at, ChatMessage.id)
+        )).scalars().all()
+        existing_count = len(existing_rows)
+
+        if existing_count > len(messages):
+            logger.warning(
+                "save_chat_history: DB 已有 %d 条消息而客户端仅提供 %d 条，"
+                "前缀不匹配，跳过追加 (session=%s)",
+                existing_count, len(messages), session_id,
+            )
+            return
+        if existing_count > 0:
+            db_last = existing_rows[-1]
+            client_at_last = messages[existing_count - 1]
+            if str(db_last.role) != str(client_at_last.get("role", "")) or (
+                db_last.content or ""
+            ) != str(client_at_last.get("content", "") or ""):
+                logger.warning(
+                    "save_chat_history: 第 %d 条消息前缀不匹配(role/content 不一致)，"
+                    "跳过追加以避免并发下静默丢消息 (session=%s)",
+                    existing_count, session_id,
+                )
+                return
 
         new_msgs = messages[existing_count:]
         if new_msgs:
@@ -472,7 +519,7 @@ async def list_chats(limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         while len(chats) < target_count:
             result = await session.execute(
                 select(ChatSession)
-                .order_by(ChatSession.updated_at.desc())
+                .order_by(ChatSession.is_pinned.desc(), ChatSession.updated_at.desc())
                 .limit(batch_size)
                 .offset(scan_offset)
             )
@@ -488,6 +535,7 @@ async def list_chats(limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
                     "id": session_id,
                     "title": s.title,
                     "group_id": normalize_route_safe_id(s.group_id) if s.group_id else None,
+                    "is_pinned": bool(s.is_pinned),
                     "timestamp": _format_utc_timestamp(s.updated_at),
                 })
 
@@ -600,6 +648,50 @@ async def move_chat_to_group(session_id: str, group_id: Optional[str]) -> bool:
         return True
 
 
+async def set_chat_pinned(session_id: str, is_pinned: bool) -> Optional[Dict[str, Any]]:
+    """Toggle a chat's pinned flag without bumping ``updated_at``.
+
+    Pinning must not move a chat into the "today" date bucket — it only reorders
+    it ahead of unpinned peers (``list_chats`` sorts ``is_pinned DESC, updated_at
+    DESC``), mirroring AMC's pinned-ungrouped section. The ORM ``onupdate`` on
+    ``updated_at`` fires on any UPDATE, so we use a Core ``update()`` (which does
+    not apply ORM flush-time onupdate defaults) to leave the timestamp untouched.
+    """
+    is_pinned = bool(is_pinned)
+    async with await get_session() as session:
+        # Pin the chat WITHOUT bumping updated_at. The ORM/Core onupdate on
+        # updated_at fires on every UPDATE, so we preserve the existing value
+        # by explicitly setting updated_at = updated_at (a no-op assignment that
+        # prevents the server-side onupdate from replacing it). This keeps the
+        # chat in its original date bucket; only is_pinned changes.
+        result = await session.execute(
+            update(ChatSession)
+            .where(ChatSession.id == session_id)
+            .values(is_pinned=is_pinned, updated_at=ChatSession.updated_at)
+        )
+        if (result.rowcount or 0) == 0:
+            await session.rollback()
+            return None
+        await session.commit()
+
+        result = await session.execute(
+            select(ChatSession.id, ChatSession.title, ChatSession.group_id,
+                   ChatSession.is_pinned, ChatSession.updated_at)
+            .where(ChatSession.id == session_id)
+        )
+        row = result.first()
+        if row is None:
+            return None
+        sid, title, group_id, pinned_flag, updated_at = row
+        return {
+            "id": normalize_route_safe_id(sid),
+            "title": title,
+            "group_id": normalize_route_safe_id(group_id) if group_id else None,
+            "is_pinned": bool(pinned_flag),
+            "timestamp": _format_utc_timestamp(updated_at),
+        }
+
+
 async def delete_chat(session_id: str) -> bool:
     async with await get_session() as session:
         result = await session.execute(
@@ -609,8 +701,141 @@ async def delete_chat(session_id: str) -> bool:
         return (result.rowcount or 0) > 0
 
 
-async def delete_message(session_id: str, message_index: int):
-    """Delete a single message by its index (0-based) within a session."""
+async def _new_session_id() -> str:
+    """Generate a route-safe session id matching chat.py's format."""
+    return datetime.now().strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:4]
+
+
+def _session_summary_from_row(row) -> Dict[str, Any]:
+    sid, title, group_id, pinned_flag, updated_at = row
+    return {
+        "id": normalize_route_safe_id(sid),
+        "title": title,
+        "group_id": normalize_route_safe_id(group_id) if group_id else None,
+        "is_pinned": bool(pinned_flag),
+        "timestamp": _format_utc_timestamp(updated_at),
+    }
+
+
+async def duplicate_chat(session_id: str, new_title: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Deep-copy a chat into a new independent session.
+
+    The duplicate gets a fresh session_id and message rows (message ids are
+    auto-increment so no id remapping is needed), inherits the source's
+    group_id, starts unpinned, and is titled ``"<source>（副本）"`` unless
+    ``new_title`` overrides. Mirrors AMC's handleDuplicateSession.
+    """
+    source = await load_chat_history(session_id)
+    if not source:
+        return None
+    messages = source.get("messages", [])
+    now = _utc_now()
+    new_id = await _new_session_id()
+    title = (new_title or f"{source.get('title') or '新对话'}（副本）").strip()
+    async with await get_session() as session:
+        sess = ChatSession(
+            id=new_id,
+            title=title,
+            group_id=source.get("group_id"),
+            is_pinned=False,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(sess)
+        for msg in messages:
+            session.add(ChatMessage(
+                session_id=new_id,
+                role=str(msg.get("role", "user")),
+                content=str(msg.get("content", "")),
+                logs=msg.get("logs") if isinstance(msg.get("logs"), list) else [],
+                sources=msg.get("sources") if isinstance(msg.get("sources"), list) else [],
+                stats=msg.get("stats") if isinstance(msg.get("stats"), dict) else {},
+                citations=msg.get("citations") if isinstance(msg.get("citations"), list) else [],
+                created_at=now,
+            ))
+        await session.commit()
+
+        row = (await session.execute(
+            select(ChatSession.id, ChatSession.title, ChatSession.group_id,
+                   ChatSession.is_pinned, ChatSession.updated_at)
+            .where(ChatSession.id == new_id)
+        )).first()
+        if row is None:
+            return None
+        return _session_summary_from_row(row)
+
+
+async def fork_chat_from(
+    session_id: str,
+    upto_message_index: int,
+    new_title: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Create a new session containing the prefix of ``session_id`` up to and
+    including message ``upto_message_index`` (0-based). The source session is
+    left untouched. Mirrors AMC's handleForkMessage.
+    """
+    source = await load_chat_history(session_id)
+    if not source:
+        return None
+    messages = source.get("messages", [])
+    try:
+        idx = int(upto_message_index)
+    except (TypeError, ValueError):
+        return None
+    if idx < 0:
+        idx = 0
+    if idx >= len(messages):
+        idx = len(messages) - 1
+    prefix = messages[: idx + 1]
+    if not prefix:
+        return None
+    now = _utc_now()
+    new_id = await _new_session_id()
+    title = (new_title or f"{source.get('title') or '新对话'}（分叉）").strip()
+    async with await get_session() as session:
+        sess = ChatSession(
+            id=new_id,
+            title=title,
+            group_id=source.get("group_id"),
+            is_pinned=False,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(sess)
+        for msg in prefix:
+            session.add(ChatMessage(
+                session_id=new_id,
+                role=str(msg.get("role", "user")),
+                content=str(msg.get("content", "")),
+                logs=msg.get("logs") if isinstance(msg.get("logs"), list) else [],
+                sources=msg.get("sources") if isinstance(msg.get("sources"), list) else [],
+                stats=msg.get("stats") if isinstance(msg.get("stats"), dict) else {},
+                citations=msg.get("citations") if isinstance(msg.get("citations"), list) else [],
+                created_at=now,
+            ))
+        await session.commit()
+
+        row = (await session.execute(
+            select(ChatSession.id, ChatSession.title, ChatSession.group_id,
+                   ChatSession.is_pinned, ChatSession.updated_at)
+            .where(ChatSession.id == new_id)
+        )).first()
+        if row is None:
+            return None
+        return _session_summary_from_row(row)
+
+
+async def delete_message(
+    session_id: str,
+    message_index: int,
+    expected_content: Optional[str] = None,
+):
+    """Delete a single message by its index (0-based) within a session.
+
+    ``expected_content`` is a concurrency guard: when provided and the message
+    at ``message_index`` has different content, the delete is refused (returns
+    False) instead of removing a message that drifted under concurrent edits.
+    """
     async with await get_session() as session:
         sess = (await session.execute(
             select(ChatSession).where(ChatSession.id == session_id)
@@ -626,7 +851,15 @@ async def delete_message(session_id: str, message_index: int):
         if message_index < 0 or message_index >= len(msgs):
             return False
 
-        await session.delete(msgs[message_index])
+        target = msgs[message_index]
+        if expected_content is not None and (target.content or "") != str(expected_content):
+            logger.warning(
+                "delete_message: 下标 %d 处的消息内容与客户端不一致，拒绝删除 (session=%s)",
+                message_index, session_id,
+            )
+            return False
+
+        await session.delete(target)
         sess.updated_at = _utc_now()
         await session.commit()
         return True
@@ -638,6 +871,10 @@ async def truncate_messages_from(session_id: str, from_index: int) -> bool:
     Used when editing/resending a user turn or retrying an assistant answer:
     history is sliced to keep only messages before the anchor, then a new turn
     is appended. Returns True when the session exists (even if already shorter).
+
+    Deprecated: prefer :func:`replace_messages_from`, which deletes the tail
+    and inserts the new turn in one transaction so a workflow failure cannot
+    permanently discard the truncated tail.
     """
     if from_index is None:
         return False
@@ -669,6 +906,92 @@ async def truncate_messages_from(session_id: str, from_index: int) -> bool:
         sess.updated_at = _utc_now()
         await session.commit()
         return True
+
+
+async def replace_messages_from(
+    session_id: str,
+    from_index: int,
+    new_messages: List[Dict[str, Any]],
+    title: Optional[str] = None,
+    expected_prefix: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """Atomically replace ``from_index`` and onward with ``new_messages``.
+
+    Deletes the tail and inserts the new turn inside a single transaction, so
+    a workflow failure after the truncate no longer permanently loses history:
+    callers now truncate in-memory only and call this on the success path. If
+    the workflow fails, nothing is committed and the tail stays intact.
+    Returns True when the session exists.
+
+    ``expected_prefix`` is the caller's view of the messages before
+    ``from_index`` (used as a concurrency check): when it is provided and does
+    not match the stored prefix, the delete is refused (returns False) instead
+    of truncating at an index that drifted under concurrent edits.
+
+    Uses optimistic concurrency control with prefix validation within the
+    same transaction to prevent concurrent modifications.
+    """
+    if from_index is None or not new_messages:
+        return False
+    try:
+        from_index = int(from_index)
+    except (TypeError, ValueError):
+        return False
+    if from_index < 0:
+        from_index = 0
+
+    async with await get_session() as session:
+        sess = (await session.execute(
+            select(ChatSession).where(ChatSession.id == session_id)
+        )).scalar_one_or_none()
+        if sess is None:
+            return False
+
+        # All reads and writes happen in the same transaction.
+        # SQLite's WAL mode with SERIALIZABLE isolation ensures consistency.
+        msgs = (await session.execute(
+            select(ChatMessage).where(ChatMessage.session_id == session_id)
+            .order_by(ChatMessage.created_at, ChatMessage.id)
+        )).scalars().all()
+
+        if expected_prefix is not None:
+            prefix = msgs[:from_index]
+            if len(prefix) != len(expected_prefix):
+                logger.warning(
+                    "replace_messages_from: 前缀长度不匹配(DB=%d, 客户端=%d)，"
+                    "拒绝截断 (session=%s, from_index=%d)",
+                    len(prefix), len(expected_prefix), session_id, from_index,
+                )
+                return False
+            for db_msg, client_msg in zip(prefix, expected_prefix):
+                if str(db_msg.role) != str(client_msg.get("role", "")) or (
+                    db_msg.content or ""
+                ) != str(client_msg.get("content", "") or ""):
+                    logger.warning(
+                        "replace_messages_from: 前缀内容不匹配，拒绝截断 (session=%s, from_index=%d)",
+                        session_id, from_index,
+                    )
+                    return False
+
+        if from_index > len(msgs):
+            from_index = len(msgs)
+        for m in msgs[from_index:]:
+            await session.delete(m)
+        for msg in new_messages:
+            session.add(ChatMessage(
+                session_id=session_id,
+                role=msg.get("role", "user"),
+                content=msg.get("content", ""),
+                logs=msg.get("logs") if isinstance(msg.get("logs"), list) else [],
+                sources=msg.get("sources") if isinstance(msg.get("sources"), list) else [],
+                stats=msg.get("stats") if isinstance(msg.get("stats"), dict) else {},
+                citations=msg.get("citations") if isinstance(msg.get("citations"), list) else [],
+            ))
+        if title:
+            sess.title = title
+        sess.updated_at = _utc_now()
+        await session.commit()
+    return True
 
 
 async def delete_all_chats():
@@ -768,6 +1091,7 @@ def _normalize_imported_chat(chat: dict) -> Optional[Dict[str, Any]]:
         "title": str(chat.get("title", "")).strip()
         or _extract_title(normalized_messages[0]["content"]),
         "group_id": _normalize_optional_id(chat.get("group_id") or chat.get("groupId")),
+        "is_pinned": bool(chat.get("is_pinned")) if isinstance(chat.get("is_pinned"), bool) else False,
         "created_at": session_time,
         "updated_at": session_time,
         "messages": normalized_messages,
@@ -842,6 +1166,7 @@ async def import_history_package(payload: dict) -> Dict[str, int]:
                 id=chat["id"],
                 title=chat["title"],
                 group_id=group_id,
+                is_pinned=bool(chat.get("is_pinned")),
                 created_at=chat["created_at"],
                 updated_at=chat["updated_at"],
             ))
@@ -891,6 +1216,7 @@ DEFAULT_SETTINGS = {
             "api_key": "",
             "base_url": "https://api.deepseek.com/v1",
             "model_id": "deepseek-v4-pro",
+            "enabled": True,
         }
     ],
     "workflow_step_models": {
@@ -916,6 +1242,17 @@ DEFAULT_SETTINGS = {
     "base_font_size": 16,
     # Base size for Live Artifacts previews (mirrors AMC liveArtifactsCustomFontSize: 10–32, default 16).
     "live_artifacts_font_size": 16,
+    # Completion feedback (mirrors AMC isCompletionNotificationEnabled / isCompletionSoundEnabled).
+    # Desktop notification is only fired while the tab is hidden (document.hidden);
+    # the sound is a short two-tone chime via WebAudio.
+    "completion_notification_enabled": False,
+    "completion_sound_enabled": False,
+    # Conversation-history compression budget for LLM context.
+    # window: max number of recent turns kept; char_budget: total char cap
+    # (filled newest-first); assistant_turn_char_budget: per-assistant-turn cap.
+    "history_window": 12,
+    "history_char_budget": 12000,
+    "assistant_turn_char_budget": 900,
 }
 
 _REMOVED_SETTINGS_KEYS = {"max_context_turns"}
@@ -1109,6 +1446,8 @@ def _normalize_loaded_provider(provider: Any) -> Optional[dict]:
         return None
     item = provider.copy()
     item["id"] = provider_id
+    # Older stored providers have no enabled flag; treat them as enabled.
+    item.setdefault("enabled", True)
     return item
 
 

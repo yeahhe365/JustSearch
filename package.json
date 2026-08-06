@@ -5,12 +5,18 @@
   "type": "module",
   "description": "AI-powered deep search assistant",
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs --dev",
     "test:frontend": "node --test --test-force-exit tests/frontend/*.test.mjs && node tests/frontend/live-artifacts-dom-check.mjs"
   },
   "devDependencies": {
+    "esbuild": "^0.28.1",
     "jsdom": "^29.0.1"
   },
   "engines": {
     "node": ">=22.12"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
   }
 }

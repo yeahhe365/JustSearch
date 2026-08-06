@@ -1,7 +1,8 @@
 import { state, setCurrentSessionId } from './state.js?v=5';
-import { elements } from './ui.js?v=31';
-import { updateActiveHistoryItem, getCachedHistory, openHistorySearch } from './history-view.js?v=23';
-import { abandonActiveChatWork } from './chat.js?v=40';
+import { elements } from './ui.js?v=40';
+import { updateActiveHistoryItem, getCachedHistory, openHistorySearch } from './history-view.js?v=25';
+import { detachCurrentStream } from './chat.js?v=52';
+import { t } from './i18n.js?v=1';
 
 let popoverEl = null;
 let popoverTimeout = null;
@@ -50,24 +51,24 @@ function setupHistoryPopover(miniHistoryBtn, loadChat) {
         
         const header = document.createElement('div');
         header.className = 'popover-header';
-        header.textContent = '最近对话';
+        header.textContent = t('sidebar.miniRecent');
         popoverEl.appendChild(header);
-        
+
         const list = document.createElement('div');
         list.className = 'popover-list';
-        
+
         if (recentChats.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'popover-empty';
-            empty.textContent = '暂无其他最近对话';
+            empty.textContent = t('sidebar.noRecentChats');
             list.appendChild(empty);
         } else {
             recentChats.forEach(chat => {
                 const item = document.createElement('a');
                 item.className = 'popover-item';
                 item.href = `/c/${encodeRouteSegment(chat.id)}`;
-                item.textContent = chat.title || '新对话';
-                item.title = chat.title || '新对话';
+                item.textContent = chat.title || t('history.newChat');
+                item.title = chat.title || t('history.newChat');
                 item.addEventListener('click', (e) => {
                     e.preventDefault();
                     if (typeof loadChat === 'function') {
@@ -194,17 +195,22 @@ export function setupSidebar(loadChat) {
     elements.closeSidebarBtn.addEventListener('click', closeMobileSidebar);
     elements.mobileOverlay.addEventListener('click', closeMobileSidebar);
 
-    window.addEventListener('resize', () => {
+    // Track observers and listeners for cleanup
+    const _sidebarCleanup = [];
+
+    const resizeHandler = () => {
         if (window.innerWidth > 768) {
             closeMobileSidebar();
         }
-    });
+    };
+    window.addEventListener('resize', resizeHandler);
+    _sidebarCleanup.push(() => window.removeEventListener('resize', resizeHandler));
 
     const themeBtn = document.getElementById('quick-theme-btn');
     if (themeBtn) {
         const updateThemeIcon = () => {
             const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-            themeBtn.title = isDark ? '切换至浅色模式' : '切换至深色模式';
+            themeBtn.title = isDark ? t('sidebar.switchToLight') : t('sidebar.switchToDark');
             if (isDark) {
                 // Sun Icon (switching to light mode)
                 themeBtn.innerHTML = `<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>`;
@@ -226,16 +232,17 @@ export function setupSidebar(loadChat) {
             });
         });
         observer.observe(document.documentElement, { attributes: true });
+        _sidebarCleanup.push(() => observer.disconnect());
 
         themeBtn.addEventListener('click', async () => {
             const currentTheme = document.documentElement.getAttribute('data-theme');
             const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
 
-            const { applyTheme } = await import('./utils.js?v=6');
+            const { applyTheme } = await import('./utils.js?v=13');
             applyTheme(newTheme);
             updateThemeIcon();
 
-            const { saveSettingsAPI } = await import('./api.js?v=11');
+            const { saveSettingsAPI } = await import('./api.js?v=14');
             const { state } = await import('./state.js?v=5');
             if (state.settings) {
                 const newSettings = { ...state.settings, theme: newTheme };
@@ -289,17 +296,15 @@ export function toggleSidebarFromShortcut() {
 
 function resetToNewChat() {
     removeRecentChatsPopover();
-    // Abort in-flight streams and bump chatEpoch so late SSE cannot re-bind
-    // state.currentSessionId to the previous conversation (would cause the
-    // next message to append into history instead of a fresh chat).
-    abandonActiveChatWork(elements);
+    // Keep any in-flight stream running in the background (switch-away, not abort).
+    detachCurrentStream(elements);
     setCurrentSessionId(null);
     elements.chatContainer.innerHTML = '';
     elements.heroSection.style.display = 'block';
     elements.chatContainer.appendChild(elements.heroSection);
     updateActiveHistoryItem(null);
     elements.userInput.value = '';
-    elements.userInput.style.height = '38px';
+    elements.userInput.style.height = '26px';
     elements.userInput.style.overflowY = 'hidden';
     elements.userInput.focus();
 

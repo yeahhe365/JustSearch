@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import os
 import secrets
@@ -14,9 +15,12 @@ _AUTH_TOKEN_CACHE: str | None = None
 _TOKEN_ENV_VAR = "JUSTSEARCH_AUTH_TOKEN"
 _TOKEN_FILE_ENV_VAR = "JUSTSEARCH_AUTH_TOKEN_FILE"
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
-# Docker bridge 网段:容器里看到的客户端 IP 是网关(如 172.x.0.1),
-# 端口映射进来的本机请求也应视为可信 loopback,这样首页才会自动注入 token。
-_DOCKER_BRIDGE_PREFIXES = ("172.",)
+# Host → Docker published port 在容器内表现为 bridge 网关 (通常 *.*.*.1)。
+# 绝不能信任整个 172.16.0.0/12：同网其它容器 / 云 VPC 也会落在该段。
+_DOCKER_BRIDGE_GATEWAY_NETWORKS = (
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("10.0.0.0/8"),
+)
 _PROTECTED_HTTP_PREFIXES = ("/api",)
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DATA_DIR = _PROJECT_ROOT / "data"
@@ -41,6 +45,25 @@ def is_auth_enabled() -> bool:
     return True
 
 
+def _parse_ip_host(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+def _is_docker_bridge_gateway(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True only for typical Docker/libnetwork bridge gateways (last octet == 1).
+
+    Peer containers get addresses like 172.17.0.2 and must still present a token.
+    """
+    if not isinstance(ip, ipaddress.IPv4Address):
+        return False
+    if not any(ip in network for network in _DOCKER_BRIDGE_GATEWAY_NETWORKS):
+        return False
+    return int(ip.packed[-1]) == 1
+
+
 def is_loopback_host(host: str | None) -> bool:
     if not host:
         return False
@@ -49,11 +72,15 @@ def is_loopback_host(host: str | None) -> bool:
         return True
     if normalized.startswith("::ffff:"):
         normalized = normalized[7:]
-    if normalized == "127.0.0.1":
+    if normalized in _LOOPBACK_HOSTS:
         return True
-    # Docker 端口映射:宿主机本机请求经 bridge 网关进容器,IP 形如 172.x.0.1。
-    # 视为可信 loopback,与 127.0.0.1 同等对待(自动注入 token + 免带 Bearer)。
-    return any(normalized.startswith(p) for p in _DOCKER_BRIDGE_PREFIXES)
+    ip = _parse_ip_host(normalized)
+    if ip is None:
+        return False
+    if ip.is_loopback:
+        return True
+    # Docker published-port clients appear as the bridge gateway (e.g. 172.17.0.1).
+    return _is_docker_bridge_gateway(ip)
 
 
 def get_request_host(request: Request) -> str:
@@ -141,6 +168,16 @@ def is_trusted_loopback_origin(origin: str | None) -> bool:
     return is_loopback_host(parsed.hostname)
 
 
+def is_trusted_websocket_origin(origin: str | None) -> bool:
+    """Allow empty origin, loopback pages, and Chrome extension bridge clients."""
+    if not origin:
+        return True
+    if is_trusted_loopback_origin(origin):
+        return True
+    parsed = urlparse(origin)
+    return parsed.scheme == "chrome-extension"
+
+
 def is_http_request_authorized(
     request: Request,
     token_provider: Callable[[], str] = get_auth_token,
@@ -164,7 +201,10 @@ async def authorize_websocket(
         return True
     client_host = websocket.client.host if websocket.client else None
     if is_loopback_host(client_host):
-        return is_trusted_loopback_origin(websocket.headers.get("origin"))
+        if is_trusted_websocket_origin(websocket.headers.get("origin")):
+            return True
+        await websocket.close(code=4401, reason="Unauthorized")
+        return False
 
     expected = token_provider()
     provided = get_bearer_token(websocket.headers) or websocket.query_params.get("token", "").strip()

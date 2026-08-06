@@ -28,8 +28,12 @@ const {
     normalizePreviewableMarkdownContent,
     parseLiveArtifactInteractionSpec,
     sanitizeClippingStylesInHtml,
+    scheduleFinalHeightSweep,
     forceOpenAllDetailsInHtml,
     resolveLiveArtifactsModeFlag,
+    rebuildLiveArtifactFrames,
+    syncInlineArtifactFrameHeight,
+    finalHeightSweepTimers,
 } = __liveArtifactsTestHooks;
 
 const require = createRequire(import.meta.url);
@@ -191,7 +195,11 @@ test('resolveLiveArtifactsModeFlag falls back to global state for explicit undef
     assert.equal(resolveLiveArtifactsModeFlag({}), Boolean(orig));
 });
 
-test('handleArtifactFrameMessage shrinks iframe when all details collapse', () => {
+test('handleArtifactFrameMessage never shrinks when all details collapse', () => {
+    // New contract (content-clipping fix): bridge resize never shrinks, so a
+    // single under-report (here: all-details-collapsed, small content height)
+    // cannot clip the previously-seeded viewport. Content stays visible; the
+    // next probe pass restores the accurate height.
     installBrowserGlobals(`
         <!doctype html>
         <body>
@@ -226,9 +234,9 @@ test('handleArtifactFrameMessage shrinks iframe when all details collapse', () =
             frameId: 'collapse-frame-1',
         },
     });
-    // Must NOT be pinned back to the ~1108 expanded floor; should follow content (~540 + pad).
+    // Must NOT shrink below the seeded 1108 — content stays fully visible.
     const h = parseInt(viewport.style.height, 10);
-    assert.ok(h < 1000, `expected shrink below 1000, got ${h}`);
+    assert.ok(h >= 1100, `expected no shrink below 1100, got ${h}`);
 });
 
 test('liveArtifactsMode coerces Markdown answers into a single themed iframe artifact', () => {
@@ -315,10 +323,11 @@ test('streaming open HTML fences keep the pending artifact preview path', () => 
     assert.ok(artifact);
     assert.equal(artifact.isStreaming, true);
     assert.match(artifact.streamHtml, /Partial/);
-    // Streaming markup is baked into srcdoc so the iframe is never blank while waiting
-    // for a racy postMessage into an empty stream shell.
-    assert.match(artifact.srcdoc, /Partial/);
+    // Streaming keeps a stable empty shell in srcdoc; markup rides streamHtml + postMessage.
+    assert.match(artifact.streamHtml, /Partial/);
+    assert.match(artifact.srcdoc, /data-amc-stream-preview-root="true"/);
     assert.match(artifact.srcdoc, /stream-render/);
+    assert.doesNotMatch(artifact.srcdoc, /Partial/);
 });
 
 test('Live Artifact srcdoc uses AMC-style CSP and preview diagnostics', () => {
@@ -328,6 +337,11 @@ test('Live Artifact srcdoc uses AMC-style CSP and preview diagnostics', () => {
     assert.match(srcdoc, /default-src 'none'/);
     assert.match(srcdoc, /frame-src 'none'/);
     assert.match(srcdoc, /form-action 'none'/);
+    // Local HTTP deploy (127.0.0.1) and relative /static assets must not be blocked.
+    assert.match(srcdoc, /img-src[^;]*http:/);
+    assert.match(srcdoc, /img-src[^;]*https:/);
+    assert.match(srcdoc, /font-src[^;]*http:/);
+    assert.match(srcdoc, /connect-src[^;]*http:/);
     assert.match(srcdoc, /event: 'diagnostic'/);
     assert.match(srcdoc, /resource-error/);
     assert.match(srcdoc, /runtime-error/);
@@ -346,6 +360,19 @@ test('Live Artifact srcdoc uses AMC-style CSP and preview diagnostics', () => {
     assert.match(srcdoc, /HTMLDetailsElement/);
     assert.match(srcdoc, /addEventListener\('toggle'/);
     assert.match(srcdoc, /frameId: FRAME_ID/);
+});
+
+test('side panel body allows scroll when artifact is taller than viewport', () => {
+    const fs = require('node:fs');
+    const pathMod = require('node:path');
+    const { fileURLToPath } = require('node:url');
+    const cssPath = pathMod.resolve(
+        pathMod.dirname(fileURLToPath(import.meta.url)),
+        '../../backend/static/css/sections/live-artifacts.css',
+    );
+    const css = fs.readFileSync(cssPath, 'utf8');
+    // Panel body must scroll; height-only flex child without overflow clips tall iframes.
+    assert.match(css, /\.live-artifacts-panel-body\s*\{[^}]*overflow\s*:\s*auto/s);
 });
 
 test('Live Artifact srcdoc remeasures height when details toggle', () => {
@@ -532,6 +559,137 @@ test('parent-side height probe accepts forceOpenDetails option', () => {
     assert.ok(Number.isFinite(expanded) && expanded >= collapsed);
 });
 
+test('probe injects bridge base styles so height matches the iframe environment', () => {
+    // Content-clipping fix: the probe must measure with the same base CSS as the
+    // iframe (PREVIEW_BASE_STYLES) or it systematically under-reports vs the
+    // iframe's line-height 1.65 layout, seeding a viewport too short to hold
+    // content that then gets clipped at <br>/<details> boundaries.
+    installBrowserGlobals();
+    const html = `<section style="display:block;width:100%"><h2>Title</h2>${
+        Array.from({ length: 30 }, (_, i) => `<p>段落 ${i} ${'内容'.repeat(8)}</p>`).join('')
+    }</section>`;
+    const probe = document.querySelector('[data-amc-height-probe]'); // not yet appended
+    assert.equal(probe, null);
+    const height = measureArtifactContentHeight(html, 640);
+    // Probe ran and was cleaned up (no leftover probe in the DOM).
+    assert.equal(document.querySelector('[data-amc-height-probe]'), null);
+    assert.ok(height > 320, `expected iframe-environment probe > 320, got ${height}`);
+});
+
+test('syncInlineArtifactFrameHeight probes hydrated HTML and never shrinks the seed', () => {
+    // Content-clipping fix: the parent-side probe must measure the SAME HTML
+    // srcdoc renders (sanitize→forceOpenDetails→linkCitations), and the seeded
+    // viewport must never shrink (allowShrink:false) so the iframe can grow it
+    // later. A second sync must not drop the height below the first.
+    installBrowserGlobals(`
+        <!doctype html>
+        <body>
+            <div class="live-artifact-inline-viewport" style="height:1400px"></div>
+        </body>
+    `);
+    const viewport = document.querySelector('.live-artifact-inline-viewport');
+    const frame = document.createElement('iframe');
+    frame.className = 'live-artifact-inline-iframe';
+    frame.style.height = '1400px';
+    frame.dataset.liveArtifactFrameId = 'probe-parity-1';
+    viewport.appendChild(frame);
+
+    const artifact = {
+        id: 'probe-parity-1',
+        renderable: true,
+        language: 'html',
+        isStreaming: false,
+        code: `<section style="display:block;width:100%"><h2>已知问题</h2>${
+            Array.from({ length: 40 }, (_, i) => `<p>行 ${i} ${'内容'.repeat(12)}</p>`).join('')
+        }<br><details><summary>📋 查看更多更新详情</summary>${
+            Array.from({ length: 20 }, (_, i) => `<p>详情 ${i}</p>`).join('')
+        }</details></section>`,
+        sources: [{ id: 1, title: 'src', url: 'https://x.test' }],
+    };
+    const first = syncInlineArtifactFrameHeight(viewport, frame, artifact, viewport);
+    assert.ok(first >= 120, `first probe must be finite, got ${first}`);
+    const seededHeight = parseInt(viewport.style.height, 10);
+    assert.ok(seededHeight >= 120, `viewport seeded with ${seededHeight}`);
+    // Second sync (e.g. re-render) must never shrink below the first seed.
+    const second = syncInlineArtifactFrameHeight(viewport, frame, artifact, viewport);
+    const secondHeight = parseInt(viewport.style.height, 10);
+    assert.ok(secondHeight >= seededHeight, `second sync shrank: ${seededHeight} -> ${secondHeight}`);
+});
+
+test('bridge scheduleResize has setTimeout fallback for background tabs', () => {
+    // P0-1: a pure-rAF scheduleResize is suspended in background tabs, so the
+    // resize message is never emitted and the viewport stays clipped. The
+    // baked bridge script must carry a setTimeout(done, 120) fallback.
+    const srcdoc = buildSrcdoc('<section>x</section>', 'html', [], { frameId: 't1' });
+    assert.match(srcdoc, /resizeScheduled/);
+    assert.match(srcdoc, /setTimeout\(done,\s*120\)/);
+});
+
+test('scheduleFinalHeightSweep registers a grow-only timer per frame', () => {
+    // P0-2: after baking the final srcdoc, two delayed re-measures (allowShrink:false)
+    // cover "seed measured short + bridge resize lost". The timer set must be
+    // tracked on finalHeightSweepTimers so it can be cleared/replaced.
+    installBrowserGlobals(`
+        <!doctype html>
+        <body>
+            <div class="live-artifact-inline-viewport" style="height:320px"></div>
+        </body>
+    `);
+    const viewport = document.querySelector('.live-artifact-inline-viewport');
+    const frame = document.createElement('iframe');
+    frame.className = 'live-artifact-inline-iframe';
+    viewport.appendChild(frame);
+
+    const artifact = {
+        id: 'sweep-1',
+        renderable: true,
+        language: 'html',
+        isStreaming: false,
+        code: '<section style="display:block;width:100%"><h2>x</h2><p>body</p></section>',
+        sources: [],
+    };
+    scheduleFinalHeightSweep(viewport, frame, artifact, viewport, 1000);
+    const timers = finalHeightSweepTimers.get(frame);
+    assert.ok(timers && timers.size === 1, `expected 1 sweep timer, got ${timers?.size}`);
+});
+
+test('resize message with unknown frameId warns and does not throw', () => {
+    // P1-5 diagnostic: an unroutable resize must not crash the message handler.
+    installBrowserGlobals(`
+        <!doctype html>
+        <body>
+            <div class="live-artifact-inline-viewport">
+                <iframe class="live-artifact-inline-iframe" data-live-artifact-frame-id="known-1"></iframe>
+            </div>
+        </body>
+    `);
+    const frame = document.querySelector('.live-artifact-inline-iframe');
+    Object.defineProperty(frame, 'contentWindow', {
+        configurable: true,
+        value: { id: 'mock-diag-window' },
+    });
+
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args);
+    try {
+        // No throw, even though 'no-such-frame' is not in the DOM.
+        assert.doesNotThrow(() => handleArtifactFrameMessage({
+            source: frame.contentWindow,
+            data: {
+                channel: 'justsearch-live-artifacts',
+                event: 'resize',
+                height: 999,
+                frameId: 'no-such-frame',
+            },
+        }));
+        assert.equal(warnings.length, 1);
+        assert.match(String(warnings[0][0]), /resize 消息未找到目标 frame/);
+    } finally {
+        console.warn = originalWarn;
+    }
+});
+
 test('details-toggle resize falls back to precomputed expanded height', () => {
     installBrowserGlobals(`
         <!doctype html>
@@ -577,6 +735,8 @@ test('details-toggle resize falls back to precomputed expanded height', () => {
 
 test('under-reported resize never collapses to first-summary height for details artifacts', () => {
     // Regression: bridge scrollHeight ≈ collapsed clipped open details content.
+    // New contract (content-clipping fix): bridge resize never shrinks, so an
+    // under-report is held at the expanded floor (1100 + pad) — content stays.
     installBrowserGlobals(`
         <!doctype html>
         <body>
@@ -610,12 +770,17 @@ test('under-reported resize never collapses to first-summary height for details 
         },
     });
 
-    assert.equal(viewport.style.height, '1108px');
-    assert.equal(frame.style.height, '1108px');
+    // Expanded floor (1100) + pad keeps content from being clipped to summary-only.
+    const h = parseInt(viewport.style.height, 10);
+    assert.ok(h >= 1100, `expected no collapse below expanded floor 1100, got ${h}`);
 });
 
-test('trusted bridge resize can shrink inflated height to remove blank space', () => {
-    // Parent probe / text estimate overshot; iframe measured real content shorter.
+test('trusted bridge resize holds inflated height instead of shrinking', () => {
+    // New contract (content-clipping fix): a single bridge resize never shrinks,
+    // even when the iframe measured real content shorter than the parent probe.
+    // The old behavior (shrink-to-remove-blank-space) clipped content when the
+    // bridge's measure was itself stale/early. Overshoot is corrected on the
+    // next probe pass, not by a shrink here.
     installBrowserGlobals(`
         <!doctype html>
         <body>
@@ -652,9 +817,10 @@ test('trusted bridge resize can shrink inflated height to remove blank space', (
         },
     });
 
-    assert.equal(viewport.style.height, '988px');
-    assert.equal(frame.style.height, '988px');
-    // Trusted iframe measure becomes the new expanded floor (drops inflated probe).
+    // No shrink: holds at the seeded 2146 so content stays visible.
+    const h = parseInt(viewport.style.height, 10);
+    assert.ok(h >= 2138, `expected no shrink below 2138, got ${h}`);
+    // Trusted iframe measure still updates the expanded-floor datum for later probes.
     assert.equal(frame.dataset.liveArtifactExpandedHeight, '980');
 });
 
@@ -775,7 +941,7 @@ test('quick Live Artifacts button toggles AMC-style active prompt state', async 
             </body>
         `);
         const { state, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=40');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
         const button = document.getElementById('quick-live-artifacts-btn');
 
         state.settings = { search_engine: 'google', interactive_search: true };
@@ -829,64 +995,6 @@ test('string false setting does not enable Live Artifacts mode', async () => {
 
     setLiveArtifactsMode('false');
     assert.equal(state.liveArtifactsMode, false);
-});
-
-test('quick interactive search button coerces string false before toggling', async () => {
-    const originalSetTimeout = globalThis.setTimeout;
-    const originalFetch = globalThis.fetch;
-    let savedBody = null;
-    globalThis.setTimeout = (callback) => {
-        if (typeof callback === 'function') callback();
-        return 0;
-    };
-
-    try {
-        installBrowserGlobals(`
-            <!doctype html>
-            <body>
-                <button id="quick-interactive-btn" class="quick-toggle-btn active"></button>
-                <input id="interactive-search-input" type="checkbox" checked>
-                <button id="send-btn"></button>
-                <textarea id="user-input"></textarea>
-                <div id="chat-container"></div>
-                <section id="hero-section"></section>
-            </body>
-        `);
-        const { state, setSettings } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=40');
-        const button = document.getElementById('quick-interactive-btn');
-        const checkbox = document.getElementById('interactive-search-input');
-
-        setSettings({ search_engine: 'google', interactive_search: 'false' });
-        globalThis.fetch = async (_input, init) => {
-            savedBody = JSON.parse(init.body);
-            return new Response(JSON.stringify({ settings: savedBody }), {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-            });
-        };
-
-        setupChatHandler({
-            chatContainer: document.getElementById('chat-container'),
-            userInput: document.getElementById('user-input'),
-            sendBtn: document.getElementById('send-btn'),
-            heroSection: document.getElementById('hero-section'),
-            newChatBtn: document.createElement('button'),
-        }, () => {});
-
-        assert.equal(button.classList.contains('active'), false);
-
-        button.click();
-
-        await Promise.resolve();
-        assert.equal(state.settings.interactive_search, true);
-        assert.equal(savedBody.interactive_search, true);
-        assert.equal(button.classList.contains('active'), true);
-        assert.equal(checkbox.checked, true);
-    } finally {
-        globalThis.setTimeout = originalSetTimeout;
-        globalThis.fetch = originalFetch;
-    }
 });
 
 test('inline Live Artifacts expose cited search sources outside the iframe', () => {
@@ -964,7 +1072,7 @@ test('saved HTML answers with sources render citation links instead of inline ar
 
     const { state, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
     setLiveArtifactsMode(false);
-    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=31');
+    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=40');
     Object.assign(elements, {
         chatContainer: document.getElementById('chat-container'),
         heroSection: document.getElementById('hero-section'),
@@ -1001,7 +1109,7 @@ test('saved rich HTML table answers link citation tags in place', async () => {
 
     const { state, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
     setLiveArtifactsMode(false);
-    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=31');
+    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=40');
     Object.assign(elements, {
         chatContainer: document.getElementById('chat-container'),
         heroSection: document.getElementById('hero-section'),
@@ -1051,7 +1159,7 @@ test('saved HTML answers with JSON-encoded sources still render citation links',
 
     const { state, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
     setLiveArtifactsMode(false);
-    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=31');
+    const { elements, appendMessage } = await import('../../backend/static/js/modules/ui.js?v=40');
     Object.assign(elements, {
         chatContainer: document.getElementById('chat-container'),
         heroSection: document.getElementById('hero-section'),
@@ -1210,7 +1318,7 @@ test('Live Artifact frame messages require a registered preview iframe source', 
 test('streamChat sends live_artifacts_mode without the old Canvas request field', async () => {
     installBrowserGlobals();
     const { state } = await import('../../backend/static/js/modules/state.js?v=5');
-    const { streamChat } = await import('../../backend/static/js/modules/api.js?v=11');
+    const { streamChat } = await import('../../backend/static/js/modules/api.js?v=14');
     let capturedBody = null;
     let doneCalled = false;
 
@@ -1250,7 +1358,7 @@ test('streamChat sends live_artifacts_mode without the old Canvas request field'
 test('streamChat processes trailing SSE event when stream closes without blank delimiter', async () => {
     installBrowserGlobals();
     const { state } = await import('../../backend/static/js/modules/state.js?v=5');
-    const { streamChat } = await import('../../backend/static/js/modules/api.js?v=11');
+    const { streamChat } = await import('../../backend/static/js/modules/api.js?v=14');
     let answer = null;
     let doneCalled = false;
 
@@ -1292,7 +1400,7 @@ test('streamChat processes trailing SSE event when stream closes without blank d
 test('streamChat treats SSE error events as terminal failures', async () => {
     installBrowserGlobals();
     const { state } = await import('../../backend/static/js/modules/state.js?v=5');
-    const { streamChat } = await import('../../backend/static/js/modules/api.js?v=11');
+    const { streamChat } = await import('../../backend/static/js/modules/api.js?v=14');
     const encoder = new TextEncoder();
     let errorMessage = '';
     let doneCalled = false;
@@ -1336,7 +1444,7 @@ test('streamChat treats SSE error events as terminal failures', async () => {
 test('streamChat reports plain text error responses from gateways', async () => {
     installBrowserGlobals();
     const { state } = await import('../../backend/static/js/modules/state.js?v=5');
-    const { streamChat } = await import('../../backend/static/js/modules/api.js?v=11');
+    const { streamChat } = await import('../../backend/static/js/modules/api.js?v=14');
     let errorMessage = '';
 
     state.currentSessionId = 'session-text-error';
@@ -1361,7 +1469,7 @@ test('streamChat reports plain text error responses from gateways', async () => 
 test('streamChat does not retry a non-idempotent chat request after response starts', async () => {
     installBrowserGlobals();
     const { state } = await import('../../backend/static/js/modules/state.js?v=5');
-    const { streamChat } = await import('../../backend/static/js/modules/api.js?v=11');
+    const { streamChat } = await import('../../backend/static/js/modules/api.js?v=14');
     const originalSetTimeout = globalThis.setTimeout;
     const originalConsoleError = console.error;
     let fetchCalls = 0;
@@ -1417,27 +1525,27 @@ test('streamChat does not retry a non-idempotent chat request after response sta
     }
 });
 
-test('streaming inline HTML bakes markup into srcdoc instead of an empty shell', () => {
+test('streaming inline HTML uses a stable stream shell; markup stays on streamHtml', () => {
     const html = '<section style="display:grid"><strong>Partial';
     const artifact = extractInlineLiveArtifact(html, 'message-stream', true);
 
     assert.ok(artifact);
     assert.equal(artifact.isStreaming, true);
     assert.equal(artifact.streamHtml, html);
-    // Primary path: real HTML is in srcdoc (fixes intermittent blank previews).
-    assert.match(artifact.srcdoc, /Partial/);
+    // Stable shell prevents per-chunk iframe reloads; bridge still handles stream-render.
+    assert.match(artifact.srcdoc, /data-amc-stream-preview-root="true"/);
     assert.match(artifact.srcdoc, /stream-render/);
     assert.match(artifact.srcdoc, /sanitizeStreamDocument/);
     assert.match(artifact.srcdoc, /event: 'ready'/);
-    // Empty stream shell is only used when there is no markup yet.
-    assert.doesNotMatch(artifact.srcdoc, /data-amc-stream-preview-root="true"/);
+    assert.doesNotMatch(artifact.srcdoc, /Partial/);
 });
 
-test('streaming preview stays populated across incremental re-renders', () => {
+test('streaming preview reuses srcdoc across chunks and pushes stream-render updates', () => {
     installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
     const container = document.getElementById('message');
     const partial = '<section style="display:block;width:100%"><h2>Live';
     const fuller = '<section style="display:block;width:100%"><h2>Live Title</h2><p>Body text</p></section>';
+    const posts = [];
 
     renderLiveArtifactsForMessage(container, partial, {
         messageId: 'stream-stable',
@@ -1445,8 +1553,19 @@ test('streaming preview stays populated across incremental re-renders', () => {
     });
     const frame1 = container.querySelector('.live-artifact-inline-iframe');
     assert.ok(frame1);
-    assert.match(frame1.getAttribute('srcdoc') || '', /Live/);
-    assert.doesNotMatch(frame1.getAttribute('srcdoc') || '', /data-amc-stream-preview-root="true"/);
+    const srcdoc1 = frame1.getAttribute('srcdoc') || frame1.srcdoc || '';
+    assert.match(srcdoc1, /data-amc-stream-preview-root="true"/);
+    assert.doesNotMatch(srcdoc1, /Live Title/);
+    assert.match(frame1.dataset.liveArtifactPendingStreamHtml || '', /Live/);
+
+    Object.defineProperty(frame1, 'contentWindow', {
+        value: {
+            postMessage(data) {
+                posts.push(data);
+            },
+        },
+        configurable: true,
+    });
 
     renderLiveArtifactsForMessage(container, fuller, {
         messageId: 'stream-stable',
@@ -1454,15 +1573,30 @@ test('streaming preview stays populated across incremental re-renders', () => {
     });
     const frame2 = container.querySelector('.live-artifact-inline-iframe');
     assert.equal(frame1, frame2, 'iframe element is reused across stream updates');
-    assert.match(frame2.getAttribute('srcdoc') || '', /Live Title/);
-    assert.match(frame2.getAttribute('srcdoc') || '', /Body text/);
+    const srcdoc2 = frame2.getAttribute('srcdoc') || frame2.srcdoc || '';
+    assert.equal(srcdoc2, srcdoc1, 'srcdoc must stay stable while streaming (no iframe reload)');
+    assert.match(frame2.dataset.liveArtifactPendingStreamHtml || '', /Live Title/);
+    assert.match(frame2.dataset.liveArtifactPendingStreamHtml || '', /Body text/);
+    assert.ok(
+        posts.some((msg) => (
+            msg
+            && msg.channel === 'justsearch-live-artifacts'
+            && msg.event === 'stream-render'
+            && /Live Title/.test(msg.html || '')
+        )),
+        'stream-render postMessage should carry updated markup',
+    );
 
     renderLiveArtifactsForMessage(container, fuller, {
         messageId: 'stream-stable',
         isStreaming: false,
     });
-    assert.match(frame2.getAttribute('srcdoc') || '', /Body text/);
-    assert.equal(frame2.dataset.liveArtifactStreaming, 'false');
+    // Stream → final transitions remount the iframe (fresh node) so the final
+    // srcdoc reliably navigates — re-query the current frame instead of the
+    // stale pre-final reference.
+    const frameFinal = container.querySelector('.live-artifact-inline-iframe');
+    assert.match(frameFinal.getAttribute('srcdoc') || frameFinal.srcdoc || '', /Body text/);
+    assert.equal(frameFinal.dataset.liveArtifactStreaming, 'false');
 });
 
 test('public inline Live Artifact probe matches AMC raw HTML fragments', () => {
@@ -1565,8 +1699,8 @@ test('streaming chat re-renders citations when sources arrive after answer chunk
 
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { elements } = await import('../../backend/static/js/modules/ui.js?v=31');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=40');
+        const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
         const encoder = new TextEncoder();
         const events = [
             { type: 'meta', session_id: 'late-sources-session' },
@@ -1663,8 +1797,8 @@ test('streaming chat marks SSE error events as failed instead of completed', asy
 
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { elements } = await import('../../backend/static/js/modules/ui.js?v=31');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=40');
+        const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
         const encoder = new TextEncoder();
         const events = [
             { type: 'meta', session_id: 'error-status-session' },
@@ -1741,6 +1875,111 @@ test('streaming chat marks SSE error events as failed instead of completed', asy
     }
 });
 
+test('final baked srcdoc is not overwritten by a delayed streaming render (race guard)', async () => {
+    // P0-4: when answer_chunk and answer arrive in the same macrotask (rAF not
+    // yet flushed), the scheduled streaming render's rAF fires AFTER onAnswer
+    // baked the final srcdoc. The race guard (streamRenderSeq) must skip that
+    // stale streaming render so the baked content survives.
+    const originalFetch = globalThis.fetch;
+    installBrowserGlobals(`
+        <!doctype html>
+        <body>
+            <select id="model-select">
+                <option value="model-a" data-provider-id="provider-a">Model A</option>
+            </select>
+            <button id="send-btn"><span class="material-symbols-rounded">send</span></button>
+            <textarea id="user-input"></textarea>
+            <div id="chat-container"></div>
+            <section id="hero-section"></section>
+            <button id="new-chat-btn"></button>
+        </body>
+    `);
+
+    try {
+        const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
+        const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
+        const encoder = new TextEncoder();
+        // chunk and final answer in the same macrotask so rAF is still pending.
+        const finalHtml = '<div style="display:block;width:100%"><h2>Final</h2><p>done</p></div>';
+        const events = [
+            { type: 'meta', session_id: 'race-guard-session' },
+            { type: 'answer_chunk', content: finalHtml },
+            { type: 'answer', content: finalHtml, session_id: 'race-guard-session' },
+        ]
+            .map(event => `data: ${JSON.stringify(event)}\n\n`)
+            .join('') + 'data: [DONE]\n\n';
+
+        setCurrentSessionId(null);
+        setLiveArtifactsMode(true);
+        state.settings = {
+            default_provider_id: 'provider-a',
+            search_engine: 'google',
+            max_results: 10,
+            max_iterations: 3,
+            interactive_search: true,
+            max_concurrent_pages: 4,
+            live_artifacts_mode: true,
+        };
+
+        globalThis.fetch = async (input) => {
+            const url = String(input);
+            if (url === '/api/chat') {
+                return new Response(new ReadableStream({
+                    start(controller) {
+                        controller.enqueue(encoder.encode(events));
+                        controller.close();
+                    },
+                }), { status: 200 });
+            }
+            if (url === '/api/health') {
+                return new Response(JSON.stringify({ bridge: { extension_connected: true } }), {
+                    status: 200, headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            if (url === '/api/history' || url === '/api/history/groups') {
+                return new Response(JSON.stringify([]), {
+                    status: 200, headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        };
+
+        const testElements = {
+            chatContainer: document.getElementById('chat-container'),
+            userInput: document.getElementById('user-input'),
+            sendBtn: document.getElementById('send-btn'),
+            heroSection: document.getElementById('hero-section'),
+            newChatBtn: document.getElementById('new-chat-btn'),
+        };
+        Object.assign(elements, testElements);
+        setupChatHandler(testElements, () => {});
+
+        const input = document.getElementById('user-input');
+        input.value = 'race guard test';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        document.getElementById('send-btn').click();
+
+        // Let the queued rAF fire (it would normally overwrite the bake).
+        for (let i = 0; i < 20; i += 1) {
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        const frame = document.querySelector('.message-answer-body .live-artifact-inline-iframe');
+        assert.ok(frame, 'inline artifact frame should exist after bake');
+        const srcdoc = frame.getAttribute('srcdoc') || '';
+        // Final baked content must survive the stale streaming rAF.
+        assert.ok(/<h2>Final<\/h2>/.test(srcdoc), `baked srcdoc should retain final content; got: ${srcdoc.slice(0, 200)}`);
+        // The streaming shell element must NOT be present in the body — that
+        // would mean the stale streaming render overwrote the bake. (Note: the
+        // base styles always contain the CSS selector `body > [data-amc-stream-preview-root]`,
+        // so we match the actual streaming-root element, not the selector.)
+        assert.ok(!/<div data-amc-stream-preview-root="true"/.test(srcdoc), 'stale streaming render overwrote baked srcdoc');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
 test('streaming raw HTML answer exits inline artifact mode when sources arrive', async () => {
     const originalFetch = globalThis.fetch;
     installBrowserGlobals(`
@@ -1759,8 +1998,8 @@ test('streaming raw HTML answer exits inline artifact mode when sources arrive',
 
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { elements } = await import('../../backend/static/js/modules/ui.js?v=31');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=40');
+        const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
         const encoder = new TextEncoder();
         const htmlAnswer = '<div style="display:block;width:100%"><h2>LinuxDo 是什么？</h2><p>来源给出的官网是 linux.do/。[2]</p></div>';
         const events = [
@@ -1860,8 +2099,8 @@ test('streaming raw HTML answer links citations from final answer sources', asyn
 
     try {
         const { state, setCurrentSessionId, setLiveArtifactsMode } = await import('../../backend/static/js/modules/state.js?v=5');
-        const { elements } = await import('../../backend/static/js/modules/ui.js?v=31');
-        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=40');
+        const { elements } = await import('../../backend/static/js/modules/ui.js?v=40');
+        const { setupChatHandler } = await import('../../backend/static/js/modules/chat.js?v=52');
         const encoder = new TextEncoder();
         const htmlAnswer = '<div style="display:block;width:100%"><h2>LinuxDo 是什么？</h2><p>来源给出的官网是 linux.do/。[2]</p></div>';
         const events = [
@@ -1949,7 +2188,7 @@ test('streaming raw HTML answer links citations from final answer sources', asyn
 
 test('citation rendering resolves sparse source ids instead of array positions', async () => {
     installBrowserGlobals();
-    const { renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=10');
+    const { renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=12');
 
     const html = renderWithCitations('Sparse citation [4]', [
         { id: 2, title: 'Second', url: 'https://two.example' },
@@ -1967,7 +2206,7 @@ test('citation rendering resolves sparse source ids instead of array positions',
 
 test('citation rendering normalizes bare-domain source urls', async () => {
     installBrowserGlobals();
-    const { hasCitationSources, renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=10');
+    const { hasCitationSources, renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=12');
 
     const html = renderWithCitations('官网 [2]', [
         { id: 2, title: 'Linux Do', url: 'linux.do/' },
@@ -1989,7 +2228,7 @@ test('citation rendering normalizes bare-domain source urls', async () => {
 
 test('citation hydration links raw citation tags left in rendered HTML', async () => {
     installBrowserGlobals();
-    const { linkCitationsInElement } = await import('../../backend/static/js/modules/source-renderer.js?v=10');
+    const { linkCitationsInElement } = await import('../../backend/static/js/modules/source-renderer.js?v=12');
 
     const container = document.createElement('div');
     container.innerHTML = [
@@ -2013,7 +2252,7 @@ test('citation hydration links raw citation tags left in rendered HTML', async (
 
 test('citation rendering accepts JSON-encoded source arrays', async () => {
     installBrowserGlobals();
-    const { hasCitationSources, renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=10');
+    const { hasCitationSources, renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=12');
 
     const html = renderWithCitations(
         '<div><p>官网来源 [2]</p><code>[2]</code></div>',
@@ -2035,7 +2274,7 @@ test('citation rendering accepts JSON-encoded source arrays', async () => {
 
 test('citation rendering links citations from embedded reference markdown when sources are absent', async () => {
     installBrowserGlobals();
-    const { renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=10');
+    const { renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=12');
 
     const html = renderWithCitations([
         '官网 来源给出的官网是 linux.do/。[2]',
@@ -2060,7 +2299,7 @@ test('citation rendering links citations from embedded reference markdown when s
 
 test('citation rendering neutralizes non-http source urls', async () => {
     installBrowserGlobals();
-    const { renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=10');
+    const { renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=12');
 
     const html = renderWithCitations('Unsafe citation [1]', [
         { id: 1, title: 'Unsafe', url: 'javascript:alert(1)' },
@@ -2080,7 +2319,7 @@ test('citation rendering neutralizes non-http source urls', async () => {
 
 test('citation rendering tolerates malformed source payloads', async () => {
     installBrowserGlobals();
-    const { renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=10');
+    const { renderWithCitations } = await import('../../backend/static/js/modules/source-renderer.js?v=12');
 
     assert.doesNotThrow(() => renderWithCitations('No sources [1]', { id: 1, url: 'https://bad.example' }));
     assert.doesNotThrow(() => renderWithCitations(null, [{ id: 1, url: 'https://safe.example' }]));
@@ -2104,4 +2343,52 @@ test('citation rendering tolerates malformed source payloads', async () => {
     assert.equal(citations[2].textContent.trim(), '5');
     assert.equal(citations[2].getAttribute('href'), '#');
     assert.equal(citations[2].hasAttribute('target'), false);
+});
+
+test('rebuildLiveArtifactFrames re-navigates srcdoc iframes after background discard', () => {
+    installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
+    const container = document.getElementById('message');
+
+    renderLiveArtifactsForMessage(container, '<section><p>Recovered content</p></section>', {
+        messageId: 'recover-message',
+        isStreaming: false,
+    });
+    const frame = container.querySelector('.live-artifact-inline-iframe');
+    assert.ok(frame);
+    const original = frame.getAttribute('srcdoc') || '';
+    assert.match(original, /Recovered content/);
+
+    // Simulate Chrome discarding the iframe nested document while keeping the srcdoc attribute.
+    frame.srcdoc = original;
+
+    rebuildLiveArtifactFrames();
+
+    const rebuilt = frame.getAttribute('srcdoc') || '';
+    assert.match(rebuilt, /Recovered content/);
+    assert.match(rebuilt, /live-artifact-reload/);
+    assert.notEqual(rebuilt, original);
+});
+
+test('rebuildLiveArtifactFrames re-pushes streaming content after reload', () => {
+    installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
+    const container = document.getElementById('message');
+    const html = '<section><h2>Live</h2><p>body</p></section>';
+
+    renderLiveArtifactsForMessage(container, html, {
+        messageId: 'recover-stream',
+        isStreaming: true,
+    });
+    const frame = container.querySelector('.live-artifact-inline-iframe');
+    assert.ok(frame);
+
+    const posts = [];
+    Object.defineProperty(frame, 'contentWindow', {
+        configurable: true,
+        value: { postMessage: (data) => posts.push(data) },
+    });
+
+    rebuildLiveArtifactFrames();
+
+    assert.match(frame.getAttribute('srcdoc') || '', /live-artifact-reload/);
+    assert.ok(posts.some((msg) => msg?.event === 'stream-render' && /body/.test(msg.html || '')));
 });

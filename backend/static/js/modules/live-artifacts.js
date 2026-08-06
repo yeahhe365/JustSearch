@@ -1,10 +1,12 @@
 import { showToast } from './toast.js';
+import { t } from './i18n.js?v=1';
 import { state } from './state.js?v=5';
 import {
     assignOccurrenceAttributes,
     createOccurrenceTracker,
     shouldSkipTextNode,
 } from './citation-occurrences.js?v=1';
+import { setFrameEvidenceContext } from './evidence-panel.js?v=5';
 
 const ARTIFACT_LANGUAGES = new Set(['html', 'svg']);
 const SUPPORTING_LANGUAGES = new Set(['css', 'javascript', 'js']);
@@ -13,14 +15,16 @@ const LIVE_ARTIFACT_INTERACTION_LANGUAGE = 'amc-live-artifact-interaction';
 const STREAM_PREVIEW_ROOT = '<div data-amc-stream-preview-root="true"></div>';
 const STREAM_RENDER_EVENT = 'stream-render';
 const INTERACTION_SOURCE = 'amc-live-artifact-interaction:v1';
+// Allow http: so local deploy (http://127.0.0.1) and relative /static assets work.
+// Sandbox has no allow-same-origin, so 'self' would not unlock parent-origin resources.
 const PREVIEW_CONTENT_SECURITY_POLICY = [
     "default-src 'none'",
-    "img-src https: data: blob:",
-    "style-src 'unsafe-inline' https:",
-    "script-src 'unsafe-inline' https: blob:",
-    "font-src https: data:",
-    "media-src https: data: blob:",
-    "connect-src https: data: blob:",
+    "img-src http: https: data: blob:",
+    "style-src 'unsafe-inline' http: https:",
+    "script-src 'unsafe-inline' http: https: blob:",
+    "font-src http: https: data:",
+    "media-src http: https: data: blob:",
+    "connect-src http: https: data: blob:",
     "worker-src blob:",
     "frame-src 'none'",
     "object-src 'none'",
@@ -153,8 +157,11 @@ const LIVE_ARTIFACT_THEME_PALETTES = {
         accent: '#2563eb',
         accentSurface: 'rgba(37, 99, 235, 0.12)',
         success: '#10b981',
+        successSurface: 'rgba(16, 185, 129, 0.12)',
         danger: '#ef4444',
+        dangerSurface: 'rgba(239, 68, 68, 0.12)',
         warning: '#f59e0b',
+        warningSurface: 'rgba(245, 158, 11, 0.12)',
     },
     dark: {
         colorScheme: 'dark',
@@ -167,8 +174,11 @@ const LIVE_ARTIFACT_THEME_PALETTES = {
         accent: '#38bdf8',
         accentSurface: 'rgba(56, 189, 248, 0.14)',
         success: '#34d399',
+        successSurface: 'rgba(52, 211, 153, 0.14)',
         danger: '#f87171',
+        dangerSurface: 'rgba(248, 113, 113, 0.14)',
         warning: '#fbbf24',
+        warningSurface: 'rgba(251, 191, 36, 0.14)',
     },
 };
 const DEFAULT_LIVE_ARTIFACT_FONT_SIZE = 16;
@@ -195,6 +205,7 @@ export function renderLiveArtifactsForMessage(container, markdownText, options =
 
     const messageId = resolveMessageId(container, options.messageId);
     const artifactSources = normalizeArtifactSources(options.sources);
+    const artifactCitations = Array.isArray(options.citations) ? options.citations : [];
     const isStreaming = Boolean(options.isStreaming);
     const liveArtifactsMode = resolveLiveArtifactsModeFlag(options);
     const interactionSpec = extractLiveArtifactInteraction(markdownText, isStreaming);
@@ -206,12 +217,15 @@ export function renderLiveArtifactsForMessage(container, markdownText, options =
     }
 
     // AMC path: normalize → single live artifact (native HTML or coerced) → ArtifactFrame.
-    const inlineArtifact = getInlineLiveArtifact(markdownText, messageId, isStreaming, {
-        suppressUnfencedInlineArtifact: Boolean(options.suppressUnfencedInlineArtifact),
-        liveArtifactsMode,
-    });
+    // Callers (chat/ui) may pass a prebuilt inlineArtifact to avoid double extract/build.
+    const inlineArtifact = options.inlineArtifact !== undefined
+        ? options.inlineArtifact
+        : getInlineLiveArtifact(markdownText, messageId, isStreaming, {
+            suppressUnfencedInlineArtifact: Boolean(options.suppressUnfencedInlineArtifact),
+            liveArtifactsMode,
+        });
     if (inlineArtifact) {
-        hydrateArtifactCitations(inlineArtifact, artifactSources);
+        hydrateArtifactCitations(inlineArtifact, artifactSources, artifactCitations);
         syncRegistryForMessage(messageId, [inlineArtifact]);
         clearArtifactControls(container);
         renderInlineArtifactFrame(container, inlineArtifact);
@@ -223,7 +237,7 @@ export function renderLiveArtifactsForMessage(container, markdownText, options =
         normalizePreviewableMarkdownContent(markdownText, { isStreaming }),
         messageId,
     );
-    artifacts.forEach(artifact => hydrateArtifactCitations(artifact, artifactSources));
+    artifacts.forEach(artifact => hydrateArtifactCitations(artifact, artifactSources, artifactCitations));
     syncRegistryForMessage(messageId, artifacts);
     clearArtifactControls(container);
 
@@ -347,17 +361,14 @@ export function refreshLiveArtifactPreviews(settings) {
 }
 
 /**
- * Prefer the real HTML/SVG payload for preview srcdoc.
- * Empty shell is only used while streaming before any markup arrives.
- * (Previously streaming always used an empty root + postMessage, which often
- * painted a blank iframe when the message raced the sandbox bridge.)
+ * Resolve the HTML body baked into iframe srcdoc.
+ *
+ * While streaming: always use a stable empty shell. Chunk content is pushed via
+ * postMessage `stream-render` so the iframe does not fully reload every rAF.
+ * When the stream ends (or for history): bake the real markup into srcdoc.
  */
 function resolveArtifactPreviewCode(artifact) {
-    const code = String(artifact?.code || '').trim();
-    if (code) return artifact.code;
     if (artifact?.isStreaming) {
-        const stream = String(artifact.streamHtml || '').trim();
-        if (stream) return artifact.streamHtml;
         return STREAM_PREVIEW_ROOT;
     }
     return artifact?.code || '';
@@ -612,16 +623,33 @@ function wrapAsArtifactRoot(html) {
     return `<div data-justsearch-live-artifact-root="true" style="${ARTIFACT_ROOT_STYLE}">${inner}</div>`;
 }
 
+// Cache markdown-it across stream frames (factory identity invalidates on test reinstall).
+let markdownItForArtifact = null;
+let markdownItForArtifactFactory = null;
+
+function getMarkdownItForArtifact() {
+    if (typeof window === 'undefined' || typeof window.markdownit !== 'function') {
+        return null;
+    }
+    const factory = window.markdownit;
+    if (markdownItForArtifact && markdownItForArtifactFactory === factory) {
+        return markdownItForArtifact;
+    }
+    markdownItForArtifactFactory = factory;
+    markdownItForArtifact = factory({
+        html: true,
+        linkify: true,
+        typographer: true,
+        breaks: false,
+    });
+    return markdownItForArtifact;
+}
+
 function renderMarkdownHtmlForArtifact(markdownText) {
     const text = String(markdownText || '');
     try {
-        if (typeof window !== 'undefined' && typeof window.markdownit === 'function') {
-            const mi = window.markdownit({
-                html: true,
-                linkify: true,
-                typographer: true,
-                breaks: false,
-            });
+        const mi = getMarkdownItForArtifact();
+        if (mi) {
             let html = mi.render(text);
             if (window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
                 // Keep style/class so model HTML mixed into MD survives; scripts stay forbidden.
@@ -673,9 +701,9 @@ function sanitizeClippingStylesInHtml(html) {
     const rewriteStyle = (styleValue) => {
         let next = String(styleValue || '');
         next = next
-            .replace(/(^|;)\s*max-height\s*:\s*(?:100vh|100%)\s*/gi, '$1max-height:none')
-            .replace(/(^|;)\s*height\s*:\s*(?:100vh|100%)\s*/gi, '$1height:auto')
-            .replace(/(^|;)\s*min-height\s*:\s*(?:100vh|100%)\s*/gi, '$1min-height:0')
+            .replace(/(^|;)\s*max-height\s*:\s*(?:100vh|100dvh|100svh|100lvh|100%)\s*/gi, '$1max-height:none')
+            .replace(/(^|;)\s*height\s*:\s*(?:100vh|100dvh|100svh|100lvh|100%)\s*/gi, '$1height:auto')
+            .replace(/(^|;)\s*min-height\s*:\s*(?:100vh|100dvh|100svh|100lvh|100%)\s*/gi, '$1min-height:0')
             // Only neutralize *clipping* (overflow:hidden) shells — the common "thin
             // gray bar" failure. Leave overflow-y:auto/scroll intact so artifacts with
             // intentional scroll containers keep working.
@@ -744,12 +772,11 @@ function createInlineArtifact(code, messageId, {
     coercedFrom = '',
 } = {}) {
     const rawCode = sanitizeClippingStylesInHtml(String(code || ''));
-    // Always bake live markup into srcdoc so the iframe is never an empty shell
-    // waiting on a racy postMessage. STREAM_PREVIEW_ROOT is only a last-resort
-    // placeholder when the stream has started but no markup has arrived yet.
-    const previewCode = rawCode.trim()
-        ? rawCode
-        : (isStreaming ? STREAM_PREVIEW_ROOT : '');
+    // Streaming: stable shell in srcdoc + streamHtml for postMessage updates.
+    // Final / history: bake real markup into srcdoc.
+    const previewCode = isStreaming
+        ? STREAM_PREVIEW_ROOT
+        : (rawCode.trim() ? rawCode : '');
     const title = getArtifactTitle({ info: '', language, code: rawCode }, language, 0);
     const id = `${messageId}-inline-0`;
     return {
@@ -1147,6 +1174,8 @@ ${code}
 /**
  * Rebuild artifact.srcdoc from source code with the live app theme.
  * Call at iframe mount so history reloads always match current data-theme.
+ * Skips rebuild when theme/font/sources/preview body are unchanged (critical
+ * during streaming so the stable shell does not thrash).
  */
 function ensureArtifactSrcdocTheme(artifact, sources = null) {
     if (!artifact?.renderable) return artifact;
@@ -1155,18 +1184,32 @@ function ensureArtifactSrcdocTheme(artifact, sources = null) {
     const normalizedSources = sources !== null && sources !== undefined
         ? normalizeArtifactSources(sources)
         : (Array.isArray(artifact.sources) ? artifact.sources : []);
-    // Keep streamHtml themed for any secondary postMessage path, but always bake
-    // the real payload into srcdoc (never an empty stream shell when markup exists).
-    if (artifact.isStreaming && artifact.streamHtml) {
-        artifact.streamHtml = materializeLiveArtifactThemeVars(
-            adaptArtifactHtmlForTheme(artifact.streamHtml, themeId),
-            themeId,
-        );
-        if (!String(artifact.code || '').trim() && artifact.streamHtml) {
-            artifact.code = artifact.streamHtml;
-        }
+    if (artifact.isStreaming && !String(artifact.code || '').trim() && artifact.streamHtml) {
+        artifact.code = artifact.streamHtml;
     }
     const previewCode = resolveArtifactPreviewCode(artifact);
+    // Signature covers everything that affects baked srcdoc. Streaming body is
+    // the constant shell, so growing streamHtml does not invalidate.
+    const bakeSignature = [
+        artifact.id || '',
+        artifact.language || '',
+        themeId,
+        String(fontSize),
+        artifact.isStreaming ? '1' : '0',
+        previewCode,
+        // Non-streaming: content lives in code. Streaming shell is in previewCode.
+        artifact.isStreaming ? '' : String(artifact.code || ''),
+        // Sources affect citation links inside baked HTML (final / history path).
+        artifact.isStreaming ? '0' : String(normalizedSources.length),
+        artifact.isStreaming
+            ? ''
+            : normalizedSources.map((s) => `${s.id}:${s.url || ''}`).join('|'),
+    ].join('\u001f');
+    if (artifact._srcdocBakeSignature === bakeSignature && artifact.srcdoc) {
+        return artifact;
+    }
+    artifact._srcdocBakeSignature = bakeSignature;
+    artifact.sources = normalizedSources;
     artifact.srcdoc = buildSrcdoc(previewCode, artifact.language, normalizedSources, {
         frameId: artifact.id,
         baseFontSize: fontSize,
@@ -1175,20 +1218,33 @@ function ensureArtifactSrcdocTheme(artifact, sources = null) {
     return artifact;
 }
 
-function hydrateArtifactCitations(artifact, sources) {
+/**
+ * Attach sources/citations metadata and prepare streamHtml citation links.
+ * Does NOT build srcdoc — ensureArtifactSrcdocTheme is the single bake path.
+ */
+function hydrateArtifactCitations(artifact, sources, citations = []) {
     const normalizedSources = normalizeArtifactSources(sources);
+    const normalizedCitations = Array.isArray(citations) ? citations : [];
     if (artifact) {
         artifact.sources = normalizedSources;
+        artifact.citations = normalizedCitations;
+        // Register per-frame evidence so iframe citation-click does not use the
+        // last-rendered message's singleton context.
+        if (artifact.id) {
+            setFrameEvidenceContext(artifact.id, {
+                sources: normalizedSources,
+                citations: normalizedCitations,
+            });
+        }
     }
     if (!artifact?.renderable || artifact.language !== 'html' || normalizedSources.length === 0) {
         return artifact;
     }
-    // Keep original artifact.code intact for copy/download; buildSrcdoc links citations.
+    // Keep original artifact.code intact for copy/download; stream path links
+    // citations into streamHtml so postMessage carries clickable chips.
     if (artifact.isStreaming && artifact.streamHtml) {
         artifact.streamHtml = linkArtifactCitationsInHtml(artifact.streamHtml, normalizedSources);
     }
-    const previewCode = resolveArtifactPreviewCode(artifact);
-    artifact.srcdoc = buildSrcdoc(previewCode, artifact.language, normalizedSources, { frameId: artifact.id });
     return artifact;
 }
 
@@ -1296,7 +1352,7 @@ function createArtifactCitationLink(id, source, safeUrl, tracker, groupIndex, ma
     anchor.dataset.liveArtifactSourceUrl = safeUrl || '';
     anchor.dataset.liveArtifactSourceId = id;
     anchor.title = source.title || source.url || `Source ${id}`;
-    anchor.setAttribute('aria-label', `查看来源 ${id} 的原文证据`);
+    anchor.setAttribute('aria-label', t('liveArtifacts.viewSourceEvidence', { id }));
     assignOccurrenceAttributes(anchor, tracker, id, groupIndex, markerIndex);
     // Use injected theme tokens so citation chips stay readable in dark mode.
     anchor.setAttribute('style', 'color:var(--amc-live-artifact-accent,#2563eb);text-decoration:none;cursor:pointer;margin:0 1px;font-weight:700;font-size:11px;padding:0 4px;border-radius:6px;background:var(--amc-live-artifact-accent-surface,rgba(37,99,235,.12));display:inline-flex;align-items:center;justify-content:center;vertical-align:super;line-height:16px;min-height:16px;white-space:nowrap;');
@@ -1414,8 +1470,11 @@ function materializeLiveArtifactThemeVars(html, themeId) {
         '--amc-live-artifact-accent': colors.accent,
         '--amc-live-artifact-accent-surface': colors.accentSurface,
         '--amc-live-artifact-success': colors.success,
+        '--amc-live-artifact-success-surface': colors.successSurface,
         '--amc-live-artifact-danger': colors.danger,
+        '--amc-live-artifact-danger-surface': colors.dangerSurface,
         '--amc-live-artifact-warning': colors.warning,
+        '--amc-live-artifact-warning-surface': colors.warningSurface,
     };
     return raw.replace(
         /var\(\s*(--amc-live-artifact-[\w-]+)\s*(?:,[^)]+)?\)/gi,
@@ -1559,7 +1618,7 @@ function buildPreviewThemeStyle(themeId) {
     const colors = resolveLiveArtifactThemePalette(themeId);
     // Mirror AMC: transparent html/body, tokenized text. Concrete hex also set so
     // unresolved var() never falls back to the browser's default white canvas look.
-    return `<style ${PREVIEW_THEME_ATTRIBUTE}="true">:root,html{color-scheme:${colors.colorScheme};--amc-live-artifact-text:${colors.text};--amc-live-artifact-muted:${colors.muted};--amc-live-artifact-subtle:${colors.subtle};--amc-live-artifact-surface:${colors.surface};--amc-live-artifact-surface-muted:${colors.surfaceMuted};--amc-live-artifact-border:${colors.border};--amc-live-artifact-accent:${colors.accent};--amc-live-artifact-accent-surface:${colors.accentSurface};--amc-live-artifact-success:${colors.success};--amc-live-artifact-danger:${colors.danger};--amc-live-artifact-warning:${colors.warning};}html,body{margin:0;padding:0;background:transparent!important;color:${colors.text}!important;}body{overflow-x:auto;color:${colors.text};}h1,h2,h3,h4,h5,h6,p,li,td,th,summary,label,span,a,strong,em,small,div,section,article,aside,header,footer,main,ul,ol,table{color:inherit;}</style>`;
+    return `<style ${PREVIEW_THEME_ATTRIBUTE}="true">:root,html{color-scheme:${colors.colorScheme};--amc-live-artifact-text:${colors.text};--amc-live-artifact-muted:${colors.muted};--amc-live-artifact-subtle:${colors.subtle};--amc-live-artifact-surface:${colors.surface};--amc-live-artifact-surface-muted:${colors.surfaceMuted};--amc-live-artifact-border:${colors.border};--amc-live-artifact-accent:${colors.accent};--amc-live-artifact-accent-surface:${colors.accentSurface};--amc-live-artifact-success:${colors.success};--amc-live-artifact-success-surface:${colors.successSurface};--amc-live-artifact-danger:${colors.danger};--amc-live-artifact-danger-surface:${colors.dangerSurface};--amc-live-artifact-warning:${colors.warning};--amc-live-artifact-warning-surface:${colors.warningSurface};}html,body{margin:0;padding:0;background:transparent!important;color:${colors.text}!important;}body{overflow-x:auto;color:${colors.text};}h1,h2,h3,h4,h5,h6,p,li,td,th,summary,label,span,a,strong,em,small,div,section,article,aside,header,footer,main,ul,ol,table{color:inherit;}</style>`;
 }
 
 function injectPreviewTheme(srcdoc, themeId) {
@@ -1594,6 +1653,7 @@ function injectPreviewBridge(code, frameId = '') {
   const HEIGHT_PAD = 8;
   const FRAME_ID = ${safeFrameId};
   const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'TEMPLATE']);
+  let isMeasuringHeight = false;
   // Keep document free of 100vh / overflow:hidden shells so scrollHeight tracks content
   // (same role as AMC theme style: body { overflow-x:auto } only).
   const neutralizeViewportLocks = () => {
@@ -1621,26 +1681,51 @@ function injectPreviewBridge(code, frameId = '') {
     } catch {}
   };
   /**
-   * AMC-WebUI notifyResize core + open-details bottom rect + pad.
-   * Prefer native scrollHeight (works when html/body are not height-locked).
+   * AMC-WebUI measureContentHeight: neutralize the doc shell + every visible
+   * body child, then take the max bottom rect of each visible child. This is
+   * the intrinsic content height — never body/html offsetHeight (those equal
+   * the iframe viewport once the parent sets a fixed height, causing a ratchet
+   * that leaves large blank regions under short content and clips tall content).
    */
   const measureContentHeight = () => {
     const body = document.body;
     const root = document.documentElement;
     if (!body || !root) return MIN_HEIGHT;
-    neutralizeViewportLocks();
 
-    let contentBottom = 0;
+    const restored = [];
+    const neutralizeSize = (el) => {
+      if (!(el instanceof HTMLElement)) return;
+      restored.push([el, el.style.height, el.style.minHeight, el.style.maxHeight]);
+      el.style.setProperty('height', 'auto', 'important');
+      el.style.setProperty('min-height', '0', 'important');
+      el.style.setProperty('max-height', 'none', 'important');
+    };
+
+    isMeasuringHeight = true;
     try {
+      neutralizeSize(root);
+      neutralizeSize(body);
+      Array.from(body.children).forEach((el) => {
+        if (!(el instanceof HTMLElement)) return;
+        if (SKIP_TAGS.has(el.tagName)) return;
+        neutralizeSize(el);
+      });
+
+      const scrollY = window.pageYOffset || root.scrollTop || body.scrollTop || 0;
+      let contentBottom = 0;
       const visit = (el) => {
         if (!(el instanceof Element) || SKIP_TAGS.has(el.tagName)) return;
+        let style;
+        try { style = window.getComputedStyle(el); } catch {}
+        if (style) {
+          if (style.display === 'none' || style.visibility === 'hidden') return;
+          if (style.position === 'fixed') return; // viewport-relative, must not inflate height
+        }
         const rect = el.getBoundingClientRect();
         if (!rect || (rect.height === 0 && rect.width === 0 && el.childElementCount === 0)) return;
         let marginBottom = 0;
-        try {
-          marginBottom = parseFloat(window.getComputedStyle(el).marginBottom) || 0;
-        } catch {}
-        contentBottom = Math.max(contentBottom, rect.bottom + marginBottom);
+        try { marginBottom = parseFloat(style.marginBottom) || 0; } catch {}
+        contentBottom = Math.max(contentBottom, rect.bottom + scrollY + marginBottom);
       };
       Array.from(body.children).forEach(visit);
       // Open details content is often deeper than body.children alone reports.
@@ -1648,18 +1733,34 @@ function injectPreviewBridge(code, frameId = '') {
         visit(details);
         Array.from(details.children).forEach(visit);
       });
-    } catch {}
 
-    const scrollY = window.pageYOffset || root.scrollTop || body.scrollTop || 0;
-    // Exact AMC max(body/root scroll/offset) plus content-bottom fallback.
-    return Math.max(
-      MIN_HEIGHT,
-      Math.ceil(contentBottom + scrollY + HEIGHT_PAD),
-      body.scrollHeight || 0,
-      body.offsetHeight || 0,
-      root.scrollHeight || 0,
-      root.offsetHeight || 0
-    );
+      const bodyStyle = window.getComputedStyle(body);
+      const paddingBottom = parseFloat(bodyStyle.paddingBottom) || 0;
+      const borderBottom = parseFloat(bodyStyle.borderBottomWidth) || 0;
+
+      if (contentBottom > 0) {
+        return Math.max(
+          MIN_HEIGHT,
+          Math.ceil(contentBottom + paddingBottom + borderBottom + HEIGHT_PAD),
+        );
+      }
+      // Empty/sparse documents: fall back to scrollHeight only (not offsetHeight).
+      return Math.max(
+        MIN_HEIGHT,
+        Math.ceil((body.scrollHeight || 0) + HEIGHT_PAD),
+        Math.ceil((root.scrollHeight || 0) + HEIGHT_PAD),
+      );
+    } catch {
+      return MIN_HEIGHT;
+    } finally {
+      for (let i = restored.length - 1; i >= 0; i -= 1) {
+        const [el, height, minHeight, maxHeight] = restored[i];
+        el.style.height = height;
+        el.style.minHeight = minHeight;
+        el.style.maxHeight = maxHeight;
+      }
+      isMeasuringHeight = false;
+    }
   };
   const notifyResize = (extra = {}) => {
     try {
@@ -1678,20 +1779,29 @@ function injectPreviewBridge(code, frameId = '') {
       }, '*');
     } catch {}
   };
-  let resizeFrame = 0;
+  let resizeScheduled = false;
   const scheduleResize = () => {
-    if (resizeFrame) return;
-    if (typeof requestAnimationFrame !== 'function') {
-      notifyResize();
-      return;
-    }
+    if (isMeasuringHeight || resizeScheduled) return;
+    resizeScheduled = true;
     // AMC uses a single rAF; double-rAF helps details layout commit before measure.
-    resizeFrame = requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        resizeFrame = 0;
-        notifyResize();
-      });
-    });
+    const done = () => {
+      // Guard: rAF and setTimeout can both fire; whichever arrives first wins,
+      // the other becomes a no-op (resizeScheduled is only reset here).
+      if (!resizeScheduled) return;
+      resizeScheduled = false;
+      if (isMeasuringHeight) return;
+      notifyResize();
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => requestAnimationFrame(done));
+    } else {
+      done();
+    }
+    // rAF is suspended in background tabs (and during long tasks), so a
+    // setTimeout fallback guarantees the resize message is always emitted —
+    // otherwise the parent viewport stays at the (too-small) seed height and
+    // the bottom of the artifact is clipped permanently.
+    setTimeout(done, 120);
   };
   const scheduleResizeBurst = () => {
     scheduleResize();
@@ -1959,6 +2069,9 @@ function injectPreviewBridge(code, frameId = '') {
     return { ...payload, state: { ...existing, ...state } };
   };
   const openSourceUrl = (url) => {
+    // Note: this line is inside a JS template literal, so '\/' must be written
+    // as '\\/' — a single '\/' is unescaped to '/' and would break the regex
+    // (the '/' then starts a comment, taking the whole bridge script down).
     if (!/^https?:\\/\\//i.test(url)) return false;
     try {
       const opened = window.open(url, '_blank');
@@ -1977,7 +2090,7 @@ function injectPreviewBridge(code, frameId = '') {
     if (sourceLink) {
       const url = sourceLink.getAttribute('data-live-artifact-source-url') || '';
       const href = sourceLink.getAttribute('href') || '';
-      if (sourceLink.tagName === 'A' && /^https?:\/\//i.test(href)) {
+      if (sourceLink.tagName === 'A' && /^https?:\\/\\//i.test(href)) {
         event.preventDefault();
         openSourceUrl(href);
         return;
@@ -1994,6 +2107,24 @@ function injectPreviewBridge(code, frameId = '') {
     if (!payload) return;
     event.preventDefault();
     parent.postMessage({ channel: 'justsearch-live-artifacts', event: 'followup', payload: mergeState(payload, collectState(trigger)) }, '*');
+  });
+  // Generic external links: a plain markdown answer coerced into the Live
+  // Artifacts frame links to docs as bare <a href="https://…">. Clicking one
+  // navigates the sandboxed frame away (the page renders inside the artifact).
+  // Open absolute http(s) links in a new tab instead — same path the citation /
+  // source-link handlers use. Same-page '#', relative, and non-http links keep
+  // their native behavior so multi-page artifacts and mailto:/tel: still work.
+  document.addEventListener('click', (event) => {
+    try {
+      const anchor = event.target && event.target.closest ? event.target.closest('a[href]') : null;
+      if (!anchor) return;
+      if (anchor.closest('a.live-artifact-citation-link, a.citation-link, [data-live-artifact-source-url], [data-amc-followup]')) return;
+      const href = anchor.getAttribute('href') || '';
+      if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+      if (!/^https?:\\/\\//i.test(href)) return;
+      event.preventDefault();
+      openSourceUrl(href);
+    } catch {}
   });
   Promise.resolve().then(scheduleResize);
 })();
@@ -2186,7 +2317,7 @@ function renderArtifactStrip(container, artifacts, isStreaming) {
 
     const meta = document.createElement('span');
     meta.className = 'live-artifacts-strip-meta';
-    meta.textContent = isStreaming ? '实时更新' : `${artifacts.length} 个`;
+    meta.textContent = isStreaming ? t('liveArtifacts.liveUpdating') : t('liveArtifacts.count', { count: artifacts.length });
     header.appendChild(title);
     header.appendChild(meta);
     strip.appendChild(header);
@@ -2325,6 +2456,15 @@ function measureArtifactContentHeight(html, widthPx, options = {}) {
             }
         }
 
+        // Match the iframe environment: inject the bridge base styles so the
+        // probe measures line-height 1.65 / theme tokens instead of the parent
+        // page's Inter font. Without this the probe systematically under-reports
+        // vs the iframe, seeding a viewport too short to hold the content.
+        const baseStyle = document.createElement('style');
+        baseStyle.textContent = String(PREVIEW_BASE_STYLES)
+            .replace(/<\/?style[^>]*>/g, '');
+        probe.insertBefore(baseStyle, probe.firstChild);
+
         document.body.appendChild(probe);
         let height = Math.ceil(Math.max(probe.scrollHeight || 0, probe.offsetHeight || 0));
         // jsdom / pre-layout environments often report 0; estimate from structure as a floor.
@@ -2376,7 +2516,17 @@ function estimateArtifactHeightFromMarkup(html) {
 
 function syncInlineArtifactFrameHeight(viewport, frame, artifact, container) {
     const cacheKey = getArtifactHeightCacheKey(artifact);
-    const contentHtml = artifact.isStreaming ? (artifact.streamHtml || artifact.code || '') : (artifact.code || '');
+    // Measure the SAME HTML the srcdoc renders. buildSrcdoc applies
+    // sanitizeClippingStylesInHtml → forceOpenAllDetailsInHtml → linkArtifactCitationsInHtml
+    // before baking; if the probe measures raw artifact.code (still carrying "[1]"
+    // text markers, un-clipped, with details collapsed) it systematically
+    // under-reports vs the iframe, and that too-small seed clips content.
+    const rawHtml = artifact.isStreaming ? (artifact.streamHtml || artifact.code || '') : (artifact.code || '');
+    const sources = Array.isArray(artifact.sources) ? artifact.sources : [];
+    const contentHtml = linkArtifactCitationsInHtml(
+        forceOpenAllDetailsInHtml(sanitizeClippingStylesInHtml(rawHtml)),
+        sources,
+    );
     const width = resolveInlineFrameWidth(viewport, container);
     const hasDetails = /<details(?:\s|\/>|>)/i.test(contentHtml);
     // Preview HTML forces details open (see forceOpenAllDetailsInHtml). Parent probe
@@ -2407,20 +2557,54 @@ function syncInlineArtifactFrameHeight(viewport, frame, artifact, container) {
         cacheFrameHeight(`stream:${artifact.id}`, nextHeight);
     }
     applyInlineArtifactFrameHeight(viewport, frame, nextHeight, {
-        // Allow bridge to shrink after load when it measures tighter than the probe.
-        allowShrink: !artifact.isStreaming,
+        // Never shrink on the parent-side probe: its height is measured in the
+        // parent environment (Inter font) while the iframe renders with the
+        // bridge base styles (line-height 1.65, UA font), so the probe
+        // systematically under-reports. Shrinking here let a too-small initial
+        // value clip content at <br>/<details> boundaries. The iframe bridge
+        // may still grow the frame afterward via handleArtifactFrameMessage.
+        allowShrink: false,
         enforceExpandedFloor: false,
     });
     return nextHeight;
 }
 
 function renderInlineArtifactFrame(container, artifact) {
-    // Always re-bake srcdoc against the live data-theme (AMC rebuilds when themeId changes).
-    ensureArtifactSrcdocTheme(artifact);
-
     let frameShell = container.querySelector(':scope > .live-artifact-inline-frame');
     let viewport = frameShell?.querySelector('.live-artifact-inline-viewport');
     let frame = frameShell?.querySelector('.live-artifact-inline-iframe');
+
+    // Transitioning stream shell → final: Chrome does NOT reliably re-navigate an
+    // already-loaded srcdoc iframe when the srcdoc attribute is swapped in place —
+    // it often stays on the shell's empty document (the white screen). AMC avoids
+    // this because React remounts/re-renders the iframe when srcDoc changes. Force
+    // a real remount here: drop the old shell so the block below builds a fresh
+    // iframe whose srcdoc navigates cleanly to the final content.
+    const streamingShellMounted = Boolean(
+        frame
+        && frame.dataset.liveArtifactStreamShell === '1'
+        && frame.srcdoc
+    );
+    if (!artifact.isStreaming && streamingShellMounted) {
+        frameShell?.remove();
+        frameShell = null;
+        viewport = null;
+        frame = null;
+    }
+
+    // Streaming with a mounted shell: skip buildSrcdoc entirely (content rides postMessage).
+    const streamShellReady = Boolean(
+        artifact.isStreaming
+        && frame
+        && frame.dataset.liveArtifactStreamShell === '1'
+        && frame.srcdoc,
+    );
+    if (streamShellReady) {
+        artifact.srcdoc = frame.srcdoc;
+    } else {
+        // Single bake path (skips when signature unchanged — keeps stream shell stable).
+        ensureArtifactSrcdocTheme(artifact);
+    }
 
     if (!frameShell || !viewport || !frame) {
         container.innerHTML = '';
@@ -2471,9 +2655,10 @@ function renderInlineArtifactFrame(container, artifact) {
                 frame.dataset.liveArtifactCollapsedHeight = String(height);
                 frame.dataset.liveArtifactExpandedHeight = String(Math.max(height, expanded));
                 frame.dataset.liveArtifactHasDetails = hasDetails ? 'true' : 'false';
-                // Seed height from probe; bridge may tighten afterward (no permanent overshoot).
+                // Seed height from probe; bridge may grow further but never shrink
+                // the initial seed (parent probe under-reports iframe metrics).
                 applyInlineArtifactFrameHeight(viewport, frame, fullHeight, {
-                    allowShrink: frame.dataset.liveArtifactStreaming !== 'true',
+                    allowShrink: false,
                     enforceExpandedFloor: false,
                 });
                 cacheFrameHeight(frame.dataset.liveArtifactHeightKey || '', fullHeight);
@@ -2483,6 +2668,7 @@ function renderInlineArtifactFrame(container, artifact) {
         viewport.appendChild(frame);
         frameShell.appendChild(viewport);
         container.appendChild(frameShell);
+        frame.dataset.liveArtifactFreshMount = '1';
     }
 
     const heightKey = getArtifactHeightCacheKey(artifact);
@@ -2495,39 +2681,101 @@ function renderInlineArtifactFrame(container, artifact) {
     // Parent-side height first (reliable), then iframe postMessage can only grow further.
     syncInlineArtifactFrameHeight(viewport, frame, artifact, container);
 
-    if (frame.srcdoc !== artifact.srcdoc) {
-        frame.srcdoc = artifact.srcdoc;
+    // While streaming with a mounted shell, never reassign srcdoc (avoids reload even if
+    // bake produced a byte-identical-looking but newly-stringified document).
+    const streamShellMountedNow = frame?.dataset?.liveArtifactStreamShell === '1';
+    if (artifact.isStreaming && streamShellMountedNow && frame.srcdoc) {
+        // keep existing srcdoc
+    } else if (frame.srcdoc !== artifact.srcdoc) {
+        // Synchronous assignment against the freshly-attached frame. Reproduced
+        // reliably: a brand-new iframe that is appended and then given its real
+        // srcdoc in the same task DOES navigate correctly; the failures only
+        // happened when an old iframe's srcdoc was swapped in place or when a
+        // delay was introduced before the first assignment. The stream→final
+        // remount above already removed the old shell, so `frame` here is a
+        // brand-new node — assign synchronously.
+        if (frame.dataset.liveArtifactFreshMount === '1') {
+            delete frame.dataset.liveArtifactFreshMount;
+        }
+        if (frame.srcdoc !== artifact.srcdoc) frame.srcdoc = artifact.srcdoc;
     }
-    // Secondary path: if the baked srcdoc still uses the empty stream shell, push HTML
-    // via postMessage (with retries). Primary path already embeds markup in srcdoc.
+    if (artifact.isStreaming) {
+        frame.dataset.liveArtifactStreamShell = '1';
+    } else {
+        delete frame.dataset.liveArtifactStreamShell;
+        // Final-state backstop: after baking the real srcdoc, re-measure the
+        // parent probe twice. syncInlineArtifactFrameHeight is allowShrink:false,
+        // so this only ever grows the viewport — covering the case where the
+        // initial seed measured short (fonts/layout not yet committed) AND the
+        // bridge resize message was lost (e.g. background tab rAF suspension).
+        scheduleFinalHeightSweep(viewport, frame, artifact, container, 400);
+        scheduleFinalHeightSweep(viewport, frame, artifact, container, 1600);
+    }
+    // Streaming content path: postMessage into the stable shell (retries + load handler).
     syncPendingStreamToFrame(frame, artifact);
     scheduleInlineArtifactFrameResize(frame, viewport);
+}
+
+const finalHeightSweepTimers = new WeakMap(); // frame -> Set<number>
+
+/**
+ * Final-state backstop: after baking completes, re-run the parent probe after
+ * ``delay`` ms. Only grows the viewport (syncInlineArtifactFrameHeight uses
+ * allowShrink:false). Covers "seed measured short + bridge resize lost".
+ */
+function scheduleFinalHeightSweep(viewport, frame, artifact, container, delay) {
+    let timers = finalHeightSweepTimers.get(frame);
+    if (!timers) {
+        timers = new Set();
+        finalHeightSweepTimers.set(frame, timers);
+    }
+    const timer = setTimeout(() => {
+        timers.delete(timer);
+        if (timers.size === 0) {
+            finalHeightSweepTimers.delete(frame);
+        }
+        try {
+            syncInlineArtifactFrameHeight(viewport, frame, artifact, container);
+        } catch (err) {
+            console.warn('[Live Artifacts] final height sweep failed', err);
+        }
+    }, delay);
+    timers.add(timer);
 }
 
 function syncPendingStreamToFrame(frame, artifact) {
     if (!frame || !artifact?.isStreaming) return;
     const html = artifact.streamHtml || artifact.code || '';
     if (!html || !String(html).trim()) return;
-    // Only postMessage when srcdoc is still the empty stream shell; otherwise content
-    // is already baked in and a reload will show it without messaging.
-    const srcdoc = frame.srcdoc || artifact.srcdoc || '';
-    if (srcdoc.includes('data-amc-stream-preview-root="true"') && !String(artifact.code || '').trim()) {
-        postInlineArtifactStream(frame, html);
-        return;
-    }
-    // Also re-push when the shell is present as a wrapper (legacy/partial docs).
-    if (srcdoc.includes('data-amc-stream-preview-root="true"') && String(html).trim()) {
-        postInlineArtifactStream(frame, html);
-    }
+    // Always push while streaming — srcdoc is the stable shell; content rides postMessage.
+    postInlineArtifactStream(frame, html);
 }
 
 function postInlineArtifactStream(frame, html) {
     if (!frame || typeof html !== 'string' || !html.trim()) return;
     const themeId = resolveLiveArtifactThemeId();
+    // Theme-adapt + force-open details for height probe parity; sanitize clipping first.
     const adaptedHtml = materializeLiveArtifactThemeVars(
-        adaptArtifactHtmlForTheme(html, themeId),
+        adaptArtifactHtmlForTheme(
+            forceOpenAllDetailsInHtml(sanitizeClippingStylesInHtml(html)),
+            themeId,
+        ),
         themeId,
     );
+    // Skip identical re-posts (rAF can re-enter with unchanged buffer).
+    if (frame.dataset.liveArtifactPendingStreamHtml === adaptedHtml) {
+        // Still re-send once so late-loading bridge can catch up.
+        try {
+            frame.contentWindow?.postMessage({
+                channel: 'justsearch-live-artifacts',
+                event: STREAM_RENDER_EVENT,
+                html: adaptedHtml,
+            }, '*');
+        } catch {
+            // Ignore frame messaging failures while the iframe is mounting.
+        }
+        return;
+    }
     frame.dataset.liveArtifactPendingStreamHtml = adaptedHtml;
     const send = () => {
         try {
@@ -2635,7 +2883,7 @@ function renderLiveArtifactSources(container, artifact, sources) {
 
     const strip = document.createElement('div');
     strip.className = 'live-artifact-source-strip';
-    strip.setAttribute('aria-label', '搜索来源');
+    strip.setAttribute('aria-label', t('liveArtifacts.searchSources'));
 
     const header = document.createElement('div');
     header.className = 'live-artifact-source-header';
@@ -2643,10 +2891,10 @@ function renderLiveArtifactSources(container, artifact, sources) {
     icon.className = 'material-symbols-rounded';
     icon.textContent = 'travel_explore';
     const label = document.createElement('span');
-    label.textContent = '搜索来源';
+    label.textContent = t('liveArtifacts.searchSources');
     const count = document.createElement('span');
     count.className = 'live-artifact-source-count';
-    count.textContent = `${selected.length} 个`;
+    count.textContent = t('liveArtifacts.selectedCount', { count: selected.length });
     header.append(icon, label, count);
     strip.appendChild(header);
 
@@ -2691,7 +2939,7 @@ function renderLiveArtifactInteraction(container, spec) {
         const pending = document.createElement('div');
         pending.className = 'live-artifact-interaction pending';
         pending.dataset.liveArtifactInteractionPending = 'true';
-        pending.textContent = 'Live Artifact 正在准备交互表单...';
+        pending.textContent = t('liveArtifacts.preparingForm');
         container.appendChild(pending);
         return;
     }
@@ -2733,7 +2981,7 @@ function renderLiveArtifactInteraction(container, spec) {
     submit.type = 'submit';
     submit.className = 'live-artifact-interaction-submit';
     submit.innerHTML = '<span class="material-symbols-rounded">send</span><span></span>';
-    submit.querySelector('span:last-child').textContent = spec.submitLabel || '继续';
+    submit.querySelector('span:last-child').textContent = spec.submitLabel || t('liveArtifacts.continue');
     actions.appendChild(submit);
     form.appendChild(actions);
 
@@ -2758,7 +3006,7 @@ function renderLiveArtifactInteraction(container, spec) {
             input.dispatchEvent(new Event('input', { bubbles: true }));
             input.focus();
         }
-        showToast('Live Artifact 已填入下一步请求', 'success');
+        showToast(t('liveArtifacts.filledNextRequest'), 'success');
     });
 
     container.appendChild(form);
@@ -2854,16 +3102,16 @@ function readInteractionFormState(form, spec) {
         const control = form.elements[key];
         const value = readInteractionControlValue(control, property);
         if (required && (value === '' || value === undefined)) {
-            return { error: '请填写所有必填字段。' };
+            return { error: t('liveArtifacts.errRequiredFields') };
         }
         if ((property.type === 'number' || property.type === 'integer') && value !== '') {
-            if (typeof value !== 'number' || !Number.isFinite(value)) return { error: '请输入有效数字。' };
-            if (property.type === 'integer' && !Number.isInteger(value)) return { error: '请输入整数。' };
-            if (property.minimum !== undefined && value < property.minimum) return { error: '数值超出允许范围。' };
-            if (property.maximum !== undefined && value > property.maximum) return { error: '数值超出允许范围。' };
+            if (typeof value !== 'number' || !Number.isFinite(value)) return { error: t('liveArtifacts.errValidNumber') };
+            if (property.type === 'integer' && !Number.isInteger(value)) return { error: t('liveArtifacts.errInteger') };
+            if (property.minimum !== undefined && value < property.minimum) return { error: t('liveArtifacts.errOutOfRange') };
+            if (property.maximum !== undefined && value > property.maximum) return { error: t('liveArtifacts.errOutOfRange') };
         }
         if (property.enum && !property.enum.some(option => String(option) === String(value))) {
-            return { error: '请选择允许的选项。' };
+            return { error: t('liveArtifacts.errInvalidOption') };
         }
         state[key] = value;
     }
@@ -2882,9 +3130,9 @@ function readInteractionControlValue(control, property) {
 }
 
 function formatInteractionFollowupPrompt(payload) {
-    const lines = ['请根据 Live Artifact 中的交互选择继续处理。', '', `指令：${payload.instruction}`];
-    if (payload.title) lines.push(`标题：${payload.title}`);
-    lines.push('', '选择状态：', JSON.stringify(payload.state || {}, null, 2), '', `source: ${payload.source}`);
+    const lines = [t('liveArtifacts.instructionPrompt'), '', t('liveArtifacts.instructionLabel', { instruction: payload.instruction })];
+    if (payload.title) lines.push(t('liveArtifacts.titleLabel', { title: payload.title }));
+    lines.push('', t('liveArtifacts.stateLabel'), JSON.stringify(payload.state || {}, null, 2), '', `source: ${payload.source}`);
     return lines.join('\n');
 }
 
@@ -2942,6 +3190,16 @@ function measureInlineArtifactDocumentHeight(doc) {
     const root = doc.documentElement;
     if (!body || !root) return INLINE_ARTIFACT_MIN_HEIGHT;
 
+    const skip = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'TEMPLATE']);
+    const restored = [];
+    const neutralizeSize = (el) => {
+        if (!(el instanceof doc.defaultView?.HTMLElement)) return;
+        restored.push([el, el.style.height, el.style.minHeight, el.style.maxHeight]);
+        el.style.setProperty('height', 'auto', 'important');
+        el.style.setProperty('min-height', '0', 'important');
+        el.style.setProperty('max-height', 'none', 'important');
+    };
+
     try {
         [root, body].forEach((el) => {
             el.style.setProperty('height', 'auto', 'important');
@@ -2949,35 +3207,73 @@ function measureInlineArtifactDocumentHeight(doc) {
             el.style.setProperty('max-height', 'none', 'important');
             el.style.setProperty('overflow-y', 'visible', 'important');
         });
-    } catch {
-        // Ignore style writes if the frame document is unavailable mid-navigation.
-    }
+        Array.from(body.children).forEach((el) => {
+            if (!(el instanceof Element) || skip.has(el.tagName)) return;
+            neutralizeSize(el);
+        });
 
-    let contentBottom = 0;
-    const skip = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'TEMPLATE']);
-    const visit = (el) => {
-        if (!(el instanceof Element) || skip.has(el.tagName)) return;
-        const rect = el.getBoundingClientRect();
-        if (!rect || (rect.width === 0 && rect.height === 0 && el.childElementCount === 0)) return;
-        let marginBottom = 0;
-        try {
-            marginBottom = parseFloat(doc.defaultView?.getComputedStyle(el)?.marginBottom) || 0;
-        } catch {
-            marginBottom = 0;
+        const scrollY = doc.defaultView?.pageYOffset || root.scrollTop || body.scrollTop || 0;
+        let contentBottom = 0;
+        const visit = (el) => {
+            if (!(el instanceof Element) || skip.has(el.tagName)) return;
+            let style;
+            try { style = doc.defaultView?.getComputedStyle(el); } catch {}
+            if (style) {
+                if (style.display === 'none' || style.visibility === 'hidden') return;
+                if (style.position === 'fixed') return;
+            }
+            const rect = el.getBoundingClientRect();
+            if (!rect || (rect.width === 0 && rect.height === 0 && el.childElementCount === 0)) return;
+            let marginBottom = 0;
+            try {
+                marginBottom = parseFloat(style?.marginBottom) || 0;
+            } catch {
+                marginBottom = 0;
+            }
+            contentBottom = Math.max(contentBottom, rect.bottom + scrollY + marginBottom);
+        };
+        Array.from(body.children).forEach(visit);
+        doc.querySelectorAll('details[open]').forEach((details) => {
+            visit(details);
+            Array.from(details.children).forEach(visit);
+        });
+
+        const bodyStyle = doc.defaultView?.getComputedStyle(body);
+        const paddingBottom = parseFloat(bodyStyle?.paddingBottom) || 0;
+        const borderBottom = parseFloat(bodyStyle?.borderBottomWidth) || 0;
+
+        if (contentBottom > 0) {
+            return Math.max(
+                INLINE_ARTIFACT_MIN_HEIGHT,
+                Math.ceil(contentBottom + paddingBottom + borderBottom),
+            );
         }
-        contentBottom = Math.max(contentBottom, rect.bottom + marginBottom);
-    };
-    Array.from(body.children).forEach(visit);
-
-    const scrollY = doc.defaultView?.pageYOffset || root.scrollTop || body.scrollTop || 0;
-    return Math.max(
-        Math.ceil(contentBottom + scrollY),
-        body.scrollHeight || 0,
-        body.offsetHeight || 0,
-        root.scrollHeight || 0,
-        root.offsetHeight || 0,
-        INLINE_ARTIFACT_MIN_HEIGHT,
-    );
+        // Empty/sparse documents: fall back to scrollHeight only (not offsetHeight —
+        // offsetHeight equals the iframe viewport once a height is set, ratcheting).
+        return Math.max(
+            INLINE_ARTIFACT_MIN_HEIGHT,
+            Math.ceil(body.scrollHeight || 0),
+            Math.ceil(root.scrollHeight || 0),
+        );
+    } catch {
+        return INLINE_ARTIFACT_MIN_HEIGHT;
+    } finally {
+        for (let i = restored.length - 1; i >= 0; i -= 1) {
+            const [el, height, minHeight, maxHeight] = restored[i];
+            el.style.height = height;
+            el.style.minHeight = minHeight;
+            el.style.maxHeight = maxHeight;
+        }
+        // Restore root/body shell styles too (they were not in `restored`).
+        try {
+            [root, body].forEach((el) => {
+                el.style.removeProperty('height');
+                el.style.removeProperty('min-height');
+                el.style.removeProperty('max-height');
+                el.style.removeProperty('overflow-y');
+            });
+        } catch {}
+    }
 }
 
 function resizeInlineArtifactFrame(frame, viewport) {
@@ -3017,8 +3313,8 @@ function decorateCodeBlocks(codeBlocks, artifacts) {
         btn.type = 'button';
         btn.className = 'code-copy-btn live-artifact-open-btn';
         btn.dataset.artifactId = artifact.id;
-        btn.title = '打开 Artifact';
-        btn.innerHTML = '<span class="material-symbols-rounded">preview</span><span>预览</span>';
+        btn.title = t('liveArtifacts.openArtifact');
+        btn.innerHTML = `<span class="material-symbols-rounded">preview</span><span>${t('liveArtifacts.preview')}</span>`;
         header.appendChild(btn);
     });
 }
@@ -3061,23 +3357,23 @@ function ensurePanel() {
                 <div class="live-artifacts-title">Artifact</div>
                 <div class="live-artifacts-meta"></div>
             </div>
-            <button type="button" class="live-artifacts-icon-btn live-artifacts-close-btn" aria-label="关闭 Artifact">
+            <button type="button" class="live-artifacts-icon-btn live-artifacts-close-btn" aria-label="${t('liveArtifacts.closeArtifact')}">
                 <span class="material-symbols-rounded">close</span>
             </button>
         </div>
         <div class="live-artifacts-toolbar">
-            <div class="live-artifacts-tabs" role="tablist" aria-label="Artifact 视图">
-                <button type="button" id="live-artifacts-tab-preview" class="live-artifacts-tab is-active" data-artifact-view="preview" role="tab" aria-selected="true" aria-controls="live-artifacts-preview-panel">预览</button>
-                <button type="button" id="live-artifacts-tab-code" class="live-artifacts-tab" data-artifact-view="code" role="tab" aria-selected="false" aria-controls="live-artifacts-code-panel">源码</button>
+            <div class="live-artifacts-tabs" role="tablist" aria-label="${t('liveArtifacts.artifactViews')}">
+                <button type="button" id="live-artifacts-tab-preview" class="live-artifacts-tab is-active" data-artifact-view="preview" role="tab" aria-selected="true" aria-controls="live-artifacts-preview-panel">${t('liveArtifacts.preview')}</button>
+                <button type="button" id="live-artifacts-tab-code" class="live-artifacts-tab" data-artifact-view="code" role="tab" aria-selected="false" aria-controls="live-artifacts-code-panel">${t('liveArtifacts.code')}</button>
             </div>
             <div class="live-artifacts-actions">
-                <button type="button" class="live-artifacts-icon-btn" data-artifact-action="copy" aria-label="复制源码" title="复制源码">
+                <button type="button" class="live-artifacts-icon-btn" data-artifact-action="copy" aria-label="${t('liveArtifacts.copyCode')}" title="${t('liveArtifacts.copyCode')}">
                     <span class="material-symbols-rounded">content_copy</span>
                 </button>
-                <button type="button" class="live-artifacts-icon-btn" data-artifact-action="download" aria-label="下载 Artifact" title="下载 Artifact">
+                <button type="button" class="live-artifacts-icon-btn" data-artifact-action="download" aria-label="${t('liveArtifacts.downloadArtifact')}" title="${t('liveArtifacts.downloadArtifact')}">
                     <span class="material-symbols-rounded">download</span>
                 </button>
-                <button type="button" class="live-artifacts-icon-btn" data-artifact-action="open" aria-label="新窗口打开" title="新窗口打开">
+                <button type="button" class="live-artifacts-icon-btn" data-artifact-action="open" aria-label="${t('liveArtifacts.openNewWindow')}" title="${t('liveArtifacts.openNewWindow')}">
                     <span class="material-symbols-rounded">open_in_new</span>
                 </button>
             </div>
@@ -3085,7 +3381,7 @@ function ensurePanel() {
         <div class="live-artifacts-panel-body">
             <div id="live-artifacts-preview-panel" class="live-artifacts-preview-view is-active" role="tabpanel" aria-labelledby="live-artifacts-tab-preview">
                 <iframe class="live-artifacts-frame" title="Live Artifact Preview" sandbox="allow-scripts allow-forms allow-modals allow-popups"></iframe>
-                <div class="live-artifacts-empty" hidden>该 Artifact 暂无可运行预览</div>
+                <div class="live-artifacts-empty" hidden>${t('liveArtifacts.noPreview')}</div>
             </div>
             <pre id="live-artifacts-code-panel" class="live-artifacts-code-view" role="tabpanel" aria-labelledby="live-artifacts-tab-code"><code></code></pre>
         </div>
@@ -3143,6 +3439,16 @@ function handleArtifactFrameMessage(event) {
         }
         if (sourceFrame.kind === 'inline') {
             const viewport = frame.closest('.live-artifact-inline-viewport');
+            // Direct height sync backstop: final-state height must not depend on
+            // a later bridge resize arriving on time. Measure now.
+            if (viewport && artifact && !artifact.isStreaming) {
+                const container = viewport.closest('.live-artifact-inline-frame')?.parentElement || null;
+                try {
+                    syncInlineArtifactFrameHeight(viewport, frame, artifact, container);
+                } catch (err) {
+                    console.warn('[Live Artifacts] ready-height sync failed', err);
+                }
+            }
             scheduleInlineArtifactFrameResize(frame, viewport);
         }
         return;
@@ -3152,16 +3458,15 @@ function handleArtifactFrameMessage(event) {
         if (sourceFrame.kind === 'inline') {
             const frame = sourceFrame.frame;
             const viewport = frame.closest('.live-artifact-inline-viewport');
-            const streaming = frame.dataset.liveArtifactStreaming === 'true';
             const hasDetails = frame.dataset.liveArtifactHasDetails === 'true';
             const collapsed = parseInt(frame.dataset.liveArtifactCollapsedHeight, 10) || 0;
             const expanded = parseInt(frame.dataset.liveArtifactExpandedHeight, 10) || 0;
 
-            // AMC: apply bridge height. JustSearch only blocks the classic under-report
-            // (≈ collapsed / first-summary box) which clipped open details. Trusted
-            // measures may shrink the frame to remove blank space under content.
-            // When the user has collapsed all details, openDetailsCount===0, do NOT
-            // re-enforce the expanded floor — let the iframe shrink with the content.
+            // AMC: apply bridge height. The bridge measures the iframe's real
+            // document, so it is the authority on growth. Early/probe-era under-
+            // reports must NOT shrink the seeded viewport — that clips content
+            // (no later grow pulls it back). Only the classic under-report needs
+            // the expanded-floor guard; everything else grows unconditionally.
             const openDetailsCount = Number.isFinite(data.openDetailsCount)
                 ? data.openDetailsCount
                 : null;
@@ -3179,9 +3484,10 @@ function handleArtifactFrameMessage(event) {
             }
 
             applyInlineArtifactFrameHeight(viewport, frame, targetHeight, {
-                // Under-report still must be allowed to drop an inflated overshoot down to
-                // the expanded floor (blank-space fix); floor blocks going to summary-only.
-                allowShrink: !streaming,
+                // Bridge resize never shrinks: a single early under-report would
+                // clip content with no guarantee of a corrective grow afterward.
+                // Overshoot is corrected on the next probe pass, not here.
+                allowShrink: false,
                 enforceExpandedFloor: underReported,
             });
         } else if (sourceFrame.kind === 'panel' && panelState?.frame) {
@@ -3220,10 +3526,18 @@ function findArtifactFrameByMessage(event) {
     const data = event?.data || {};
     const frameId = typeof data.frameId === 'string' ? data.frameId.trim() : '';
     if (frameId) {
-        const byId = Array.from(document.querySelectorAll('.live-artifact-inline-iframe'))
-            .find(frame => frame.dataset.liveArtifactFrameId === frameId);
+        const frames = Array.from(document.querySelectorAll('.live-artifact-inline-iframe'));
+        const byId = frames.find(frame => frame.dataset.liveArtifactFrameId === frameId);
         if (byId) {
             return { frame: byId, kind: 'inline' };
+        }
+        // Diagnostic: a resize the parent could not route. If this fires after
+        // the fixes, the bridge message-routing is the culprit (not the probe).
+        if (data.event === 'resize') {
+            console.warn('[Live Artifacts] resize 消息未找到目标 frame', {
+                frameId,
+                available: frames.map(f => f.dataset.liveArtifactFrameId || '(empty)'),
+            });
         }
     }
     return findArtifactFrameByMessageSource(event?.source);
@@ -3248,7 +3562,7 @@ function findArtifactFrameByMessageSource(source) {
 function openArtifactSourceUrl(url) {
     const safeUrl = getSafeSourceUrl(url);
     if (!safeUrl) {
-        showToast('来源链接无效，已阻止打开', 'warning', 4000);
+        showToast(t('liveArtifacts.invalidSourceUrl'), 'warning', 4000);
         return;
     }
     window.open(safeUrl, '_blank', 'noopener,noreferrer');
@@ -3269,7 +3583,7 @@ function handlePreviewDiagnostic(payload) {
     const now = Date.now();
     if (now - lastDiagnosticToastAt > 5000) {
         lastDiagnosticToastAt = now;
-        showToast('Live Artifact 预览遇到问题，详情见控制台', 'warning', 5000);
+        showToast(t('liveArtifacts.previewIssue'), 'warning', 5000);
     }
 }
 
@@ -3399,9 +3713,9 @@ async function handleArtifactAction(action) {
     if (action === 'copy') {
         try {
             await navigator.clipboard.writeText(artifact.code);
-            showToast('Artifact 源码已复制', 'success');
+            showToast(t('liveArtifacts.codeCopied'), 'success');
         } catch {
-            showToast('复制失败', 'error');
+            showToast(t('liveArtifacts.copyFailed'), 'error');
         }
         return;
     }
@@ -3436,6 +3750,94 @@ function openArtifactInNewWindow(artifact) {
     setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
+const VISIBILITY_REBUILD_THRESHOLD_MS = 30 * 1000;
+let pageHiddenSince = 0;
+let visibilityRecoveryInitialized = false;
+
+function initLiveArtifactVisibilityRecovery() {
+    if (visibilityRecoveryInitialized || typeof document === 'undefined') return;
+    if (typeof window !== 'undefined' && window.__liveArtifactVisibilityRecoveryInitialized) return;
+    visibilityRecoveryInitialized = true;
+    if (typeof window !== 'undefined') {
+        window.__liveArtifactVisibilityRecoveryInitialized = true;
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            pageHiddenSince = Date.now();
+            return;
+        }
+        if (pageHiddenSince) {
+            const hiddenMs = Date.now() - pageHiddenSince;
+            pageHiddenSince = 0;
+            if (hiddenMs >= VISIBILITY_REBUILD_THRESHOLD_MS) {
+                rebuildLiveArtifactFrames();
+            }
+        }
+    });
+
+    if (typeof window !== 'undefined') {
+        window.addEventListener('pageshow', (event) => {
+            if (event && event.persisted) {
+                rebuildLiveArtifactFrames();
+            }
+        });
+    }
+}
+
+/**
+ * Chrome can tear down the nested browsing context of dynamically assigned
+ * srcdoc iframes while a tab is in the background (Memory/Energy Saver, or
+ * after sleep). The outer page survives — the frame keeps its srcdoc
+ * attribute but renders blank until re-navigated. Rebuild every Live
+ * Artifact frame from the in-memory registry instead of forcing a reload.
+ */
+export function rebuildLiveArtifactFrames() {
+    if (typeof document === 'undefined') return;
+    document.querySelectorAll('.live-artifact-inline-iframe').forEach((frame) => {
+        reloadLiveArtifactFrame(frame);
+    });
+    if (panelState?.frame && activeArtifactId) {
+        const artifact = registry.get(activeArtifactId);
+        if (artifact?.renderable) {
+            ensureArtifactSrcdocTheme(artifact);
+            forceReloadIframeDocument(panelState.frame, artifact.srcdoc);
+            syncPendingStreamToFrame(panelState.frame, artifact);
+        }
+    }
+}
+
+function reloadLiveArtifactFrame(frame) {
+    const frameId = frame.dataset?.liveArtifactFrameId || '';
+    const artifact = frameId ? registry.get(frameId) : null;
+    if (artifact?.renderable) {
+        ensureArtifactSrcdocTheme(artifact);
+        if (artifact.srcdoc) {
+            forceReloadIframeDocument(frame, artifact.srcdoc);
+            if (artifact.isStreaming) {
+                syncPendingStreamToFrame(frame, artifact);
+            }
+            return;
+        }
+    }
+    // Registry entry missing (e.g. superseded): re-navigate from the attribute value.
+    const current = frame.srcdoc || frame.getAttribute?.('srcdoc') || '';
+    if (current) {
+        forceReloadIframeDocument(frame, current);
+    }
+}
+
+/**
+ * Re-assign srcdoc even when the value matches — Chrome may keep the
+ * attribute while discarding the inner document. Appending an inert
+ * timestamp comment guarantees a fresh navigation without a blank flash
+ * and without mutating the registry's clean srcdoc.
+ */
+function forceReloadIframeDocument(frame, srcdoc) {
+    if (!srcdoc) return;
+    frame.srcdoc = `${srcdoc}\n<!-- live-artifact-reload ${Date.now()} -->`;
+}
+
 export const __liveArtifactsTestHooks = {
     adaptArtifactHtmlForTheme,
     applyInlineArtifactFrameHeight,
@@ -3453,6 +3855,7 @@ export const __liveArtifactsTestHooks = {
     findArtifactFrameByMessage,
     findArtifactFrameByMessageSource,
     forceOpenAllDetailsInHtml,
+    forceReloadIframeDocument,
     handleArtifactFrameMessage,
     injectPreviewBaseFontSize,
     injectPreviewBaseStyles,
@@ -3469,10 +3872,17 @@ export const __liveArtifactsTestHooks = {
     parseLiveArtifactInteractionSpec,
     parseInfoAttributes,
     prefersHtmlArtifactPath,
+    rebuildLiveArtifactFrames,
     resolveLiveArtifactFontSizePx,
     resolveLiveArtifactThemeId,
     resolveLiveArtifactsModeFlag,
     sanitizeClippingStylesInHtml,
+    scheduleFinalHeightSweep,
     shouldMergeSupportingBlocks,
+    syncInlineArtifactFrameHeight,
+    finalHeightSweepTimers,
     wrapAsArtifactRoot,
 };
+
+initLiveArtifactVisibilityRecovery();
+

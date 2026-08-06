@@ -33,6 +33,7 @@
 - **📝 自动标注引用**：生成答案时会严格标注来源编号 `[1]`, `[2]`，并在文末提供对应的原始链接，确保信息真实可靠、可追溯。
 - **🛡️ 真机反爬**：直接使用你已登录的真实 Chrome，登录态/Cookie 与插件天然复用，触发验证码的概率远低于无头浏览器。
 - **🎨 现代 Web UI**：支持流式输出（Streaming）、实时搜索过程可视化、对话历史管理（支持重命名）、深色/浅色模式切换。
+- **⚡ 多对话同时进行**：切换会话或新建对话不会中断正在进行的搜索——后台会话继续跑完并保存，返回时直接看到结果；后端按会话隔离工作流，并可用环境变量放宽全局并发上限（见下）。
 - **🔐 安全认证**：自动生成 Bearer Token 保护 API；本机访问会由服务端自动注入，无需额外配置。桥接 WebSocket 仅接受 loopback 连接。
 - **🛡️ SSRF 防护**：阻止对内网地址（含 IPv4-mapped IPv6 和代理/VPN 虚拟 IP 段）的访问，防止服务端请求伪造。
 - **🐙 GitHub 深度优化**：针对 GitHub 用户和仓库页面进行了专门的爬取逻辑优化，更准确地获取星数、活跃度等信息。
@@ -40,6 +41,7 @@
 - **🤖 验证码就地解决**：搜索过程中遇到验证码时,JustSearch 在你真实的 Chrome 里检测到并提示,你在浏览器里直接完成即可,搜索会自动继续。
 - **📥 对话导出**：支持将对话记录导出为 Markdown 文件，方便保存和分享。
 - **🌓 跟随系统主题**：支持浅色、深色、跟随系统三种主题模式。
+- **🌐 多语言界面**：支持中文 / English / 跟随系统三种语言模式，覆盖侧栏、设置、聊天、快捷键等全部界面元素；可在「设置 → 常规」中随时切换，无需刷新页面。
 - **🔍 多搜索引擎**：支持 Google、Bing、DuckDuckGo、Brave Search、搜狗、百度、Yandex。
 
 ---
@@ -78,10 +80,12 @@ chmod +x deploy.sh
 > 2. 若无 Docker，则自动回退至本地 Python 环境，创建虚拟环境、安装依赖并启动服务。
 
 ### 3. 访问与配置
-1. 打开浏览器访问 `http://localhost:8000`。
-    - 首次访问时，服务端会自动注入认证 Token，**无需手动输入**。
+1. 打开浏览器访问服务地址：
+    - **Docker 部署**（`deploy.sh` / `docker-compose` 默认）：`http://localhost:8001`
+    - **本地 Python 启动**（`run.sh` / uvicorn）：`http://localhost:8000`
+    - 首次访问时，本机页面会自动注入认证 Token，**无需手动输入**。
     - 仅在服务重启后 Token 变更时，本机页面会刷新到新 Token。
-    - 如果需要从其他设备访问，请在目标 URL 后带上 `?token=<backend/.auth_token 中的值>`。
+    - 如果需要从其他设备访问，请在目标 URL 后带上 `?token=<data/.auth_token 中的值>`。
 2. 点击页面左下角的 **设置** ⚙️ 按钮。
 3. 输入您的 `API Key` 和 `Base URL`。
     - 默认配置为 DeepSeek API（`https://api.deepseek.com/v1`，模型 `deepseek-v4-pro`）。
@@ -110,7 +114,23 @@ pip install -r backend/requirements.txt
 
 > 扩展只需加载一次;后端重启无需重载扩展(它会自动重连)。
 
-### 3. 运行服务
+### 3. 构建前端产物(可选)
+
+前端 JS/CSS 采用**分片源文件 + esbuild 打包**：业务 JS 与各 CSS 分片位于
+`backend/static/js/modules/` 与 `backend/static/css/sections/`,运行时直接加载源文件即可正常开发。
+
+如需生产级优化(JS 合并压缩、CSS 拼接压缩、自动缓存指纹),执行:
+
+```bash
+npm install          # 首次;安装 esbuild
+npm run build        # 生成 backend/static/dist/ 产物
+```
+
+构建后 `backend/app/main.py` 会优先伺服 `dist/index.html`(自动缓存指纹 `?v=<hash>`,
+改代码后无需手动递增版本号);未构建时回退到源 `index.html`,开发体验不受影响。
+本地开发可运行 `npm run dev` 生成未压缩产物。
+
+### 4. 运行服务
 ```bash
 # 使用脚本运行
 ./run.sh
@@ -126,6 +146,8 @@ python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 | `JUSTSEARCH_BRIDGE_WS_HOST` | `127.0.0.1` | 桥接 WebSocket 监听地址(Docker 内用 `0.0.0.0`) |
 | `JUSTSEARCH_BRIDGE_WS_PATH` | `/justsearch` | 桥接 WebSocket 路径 |
 | `BRIDGE_REQUEST_TIMEOUT_MS` | `30000` | 单次桥接 RPC 请求超时(毫秒) |
+| `JUSTSEARCH_LLM_CONCURRENCY` | `5` | 进程级 LLM 请求并发上限；同时进行多个对话时可调大（如 `8`），注意过大会触发上游限流 |
+| `JUSTSEARCH_INTERACTIVE_CONCURRENCY` | `2` | 全局「交互模式」爬取并发上限（CDP 点击）；放宽后允许多个对话并行交互爬取 |
 | `CORS_ORIGINS` | `http://localhost:8000,http://127.0.0.1:8000,http://localhost,http://127.0.0.1` | 允许的 CORS 来源（逗号分隔） |
 | `OPENAI_API_KEY` | - | API Key 环境变量回退（优先使用设置面板中的配置） |
 
@@ -135,7 +157,12 @@ python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 docker-compose up -d
 ```
 
-访问 `http://localhost:8000`。认证 Token 会自动注入到本机页面中，无需手动配置；远程访问请显式提供 token。
+访问 `http://localhost:8001`（compose 将容器 `8000` 映射到宿主机 `127.0.0.1:8001`）。认证 Token 会自动注入到本机页面中，无需手动配置；远程访问请显式提供 token。
+
+浏览器桥接扩展请连 `ws://127.0.0.1:8001/justsearch`（与页面端口一致）。若扩展连的不是本机 loopback，可在 URL 后加 `?token=<token>`。
+
+> **升级提示**：镜像以非 root 用户 `justsearch` 运行。若旧数据卷由 root 创建导致无法写入，可在宿主机执行：  
+> `docker compose run --rm --user root justsearch chown -R justsearch:justsearch /app/data`
 
 ---
 
@@ -278,6 +305,8 @@ JustSearch/
 | `JUSTSEARCH_BRIDGE_WS_HOST` | `127.0.0.1` | 桥接 WS 监听地址 |
 | `JUSTSEARCH_BRIDGE_WS_PATH` | `/justsearch` | 桥接 WS 路径 |
 | `BRIDGE_REQUEST_TIMEOUT_MS` | `30000` | 桥接 RPC 请求超时(毫秒) |
+| `JUSTSEARCH_LLM_CONCURRENCY` | `5` | 进程级 LLM 请求并发上限；同时进行多个对话时可调大（如 `8`） |
+| `JUSTSEARCH_INTERACTIVE_CONCURRENCY` | `2` | 全局「交互模式」爬取并发上限（CDP 点击） |
 | `CORS_ORIGINS` | `http://localhost:8000,http://127.0.0.1:8000,http://localhost,http://127.0.0.1` | CORS 允许的源（逗号分隔） |
 | `OPENAI_API_KEY` | — | 备用 API Key |
 

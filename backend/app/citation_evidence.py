@@ -770,21 +770,33 @@ def extract_citation_claims(answer: str) -> list[dict[str, Any]]:
 
 # --- candidate segmentation & scoring ---------------------------------------
 
+def _split_sentence_spans(text: str) -> list[tuple[int, int]]:
+    """Split ``text`` into sentence-ish spans, always in ORIGINAL-text offsets.
+
+    Shared by ``_segment_candidates`` and ``_anchor_candidates_around`` so both
+    produce candidates whose (start, end) refer to the same coordinate system.
+    Normalization elsewhere can change text length (``。`` → ``". "``, entity
+    decoding, whitespace folding); locating anchors inside the normalized copy
+    and then slicing the original shifted every offset, which turned verified
+    matches into related/missing verdicts.
+    """
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for m in re.finditer(r"[。！？!?；;\n]+|\.\s+", text or ""):
+        if m.end() > start:
+            spans.append((start, m.end()))
+            start = m.end()
+    if start < len(text or ""):
+        spans.append((start, len(text or "")))
+    return spans
+
+
 def _segment_candidates(text: str) -> list[dict[str, Any]]:
     """Split source text into bounded candidate passages with offsets."""
     raw = text[:_MAX_SOURCE_CHARS]
     if not raw.strip():
         return []
-    # Sentence-ish segmentation for both CJK and Latin.
-    parts: list[tuple[int, int]] = []
-    start = 0
-    for m in re.finditer(r"[。！？!?；;\n]+|\.\s+", raw):
-        end = m.end()
-        if end > start:
-            parts.append((start, end))
-            start = end
-    if start < len(raw):
-        parts.append((start, len(raw)))
+    parts = _split_sentence_spans(raw)
     candidates: list[dict[str, Any]] = []
     seen_starts: set[int] = set()
     for s, e in parts:
@@ -815,24 +827,49 @@ def _segment_candidates(text: str) -> list[dict[str, Any]]:
     return deduped[:_MAX_CANDIDATES]
 
 
+def _anchor_regex(surface: str) -> re.Pattern | None:
+    """Compile an anchor surface into a regex that matches the ORIGINAL text.
+
+    The surface comes from ``_extract_structured_anchors`` running on
+    ``_normalize_text`` output, so it is already case-folded and whitespace
+    collapsed. We escape each whitespace-separated token and join with a
+    flexible ``\\s+`` so a single normalised anchor still matches the original
+    regardless of how the text was folded. Matching is case-insensitive.
+    """
+    parts = [re.escape(tok) for tok in re.split(r"\s+", (surface or "").strip()) if tok]
+    if not parts:
+        return None
+    return re.compile(r"\s+".join(parts), re.IGNORECASE)
+
+
 def _anchor_candidates_around(text: str, anchors: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Bounded windows centered on each critical anchor occurrence."""
+    """Build candidates as the whole sentence containing each critical anchor.
+
+    Offsets are ORIGINAL-text coordinates (same as ``_segment_candidates``),
+    because we locate each anchor by searching the unmodified ``text`` rather
+    than a normalized copy. Previously this function searched inside
+    ``_normalize_text(text)`` and used that offset to slice ``text`` — which
+    drifted whenever normalisation changed length, corrupting every
+    anchor-derived quote window.
+    """
+    spans = _split_sentence_spans(text)
+    if not spans:
+        return []
     out: list[dict[str, Any]] = []
-    lower = _normalize_text(text)
     for anchor in anchors:
-        idx = lower.find(anchor["surface"].lower())
-        if idx < 0:
+        surface = str(anchor.get("surface") or anchor.get("value") or "").strip()
+        pattern = _anchor_regex(surface)
+        if not pattern:
             continue
-        start = max(0, idx - _QUOTE_WINDOW // 3)
-        end = min(len(text), start + _QUOTE_WINDOW)
-        out.append({"text": text[start:end], "start": start, "end": end, "coherent": True})
+        for s, e in spans:
+            if pattern.search(text[s:e]):
+                out.append({"text": text[s:e], "start": s, "end": e, "coherent": True})
     return out
 
 
 def _score_candidate(
     claim_data: dict[str, Any],
     candidate: dict[str, Any],
-    source_lower: str,
     ctext_full: str = "",
 ) -> dict[str, Any]:
     """Score one candidate passage against one atomic claim. Returns signals + status."""
@@ -1087,7 +1124,7 @@ def _find_evidence_for_claim(claim: str, content: str) -> dict[str, Any]:
     source_lower = _normalize_text(text)
     best: dict[str, Any] | None = None
     for cand in deduped:
-        result = _score_candidate(claim_data, cand, source_lower, text)
+        result = _score_candidate(claim_data, cand, text)
         if best is None or _status_rank(result["status"]) > _status_rank(best["status"]) or (
             _status_rank(result["status"]) == _status_rank(best["status"]) and result["score"] > best["score"]
         ):

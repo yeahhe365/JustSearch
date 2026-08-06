@@ -20,8 +20,9 @@ test('presets cover four intensity tiers with bounded limits', () => {
 });
 
 test('matchIntensityPreset returns exact preset or null', () => {
-    assert.equal(matchIntensityPreset(8, 3)?.id, 'balanced');
-    assert.equal(matchIntensityPreset(20, 8)?.id, 'research');
+    assert.equal(matchIntensityPreset(8, 3)?.id, 'quick');
+    assert.equal(matchIntensityPreset(20, 8)?.id, 'deep');
+    assert.equal(matchIntensityPreset(30, 10)?.id, 'research');
     assert.equal(matchIntensityPreset(17, 4), null);
 });
 
@@ -32,7 +33,7 @@ test('resolveIntensityFromSettings marks unmatched values as custom', () => {
     assert.match(custom.hint, /50/);
     assert.match(custom.hint, /5/);
 
-    const balanced = resolveIntensityFromSettings({ max_results: 8, max_iterations: 3 });
+    const balanced = resolveIntensityFromSettings({ max_results: 12, max_iterations: 5 });
     assert.equal(balanced.id, 'balanced');
     assert.equal(balanced.isCustom, false);
 });
@@ -42,8 +43,8 @@ test('applyIntensityPresetToSettings updates max_results and max_iterations', ()
         { max_results: 50, max_iterations: 5, search_engine: 'google' },
         'quick'
     );
-    assert.equal(next.max_results, 4);
-    assert.equal(next.max_iterations, 1);
+    assert.equal(next.max_results, 8);
+    assert.equal(next.max_iterations, 3);
     assert.equal(next.search_engine, 'google');
 });
 
@@ -74,10 +75,10 @@ test('updateIntensityUI selects chip and shows custom when needed', () => {
         maxIterations: 5,
         root: document,
     });
-    assert.equal(resolved.id, 'deep');
-    assert.equal(document.querySelector('.intensity-chip[data-intensity="deep"]').classList.contains('active'), true);
+    assert.equal(resolved.id, 'balanced');
+    assert.equal(document.querySelector('.intensity-chip[data-intensity="balanced"]').classList.contains('active'), true);
     assert.equal(document.querySelector('.intensity-chip[data-intensity="custom"]').hidden, true);
-    assert.equal(document.getElementById('search-intensity-bar').dataset.activeIntensity, 'deep');
+    assert.equal(document.getElementById('search-intensity-bar').dataset.activeIntensity, 'balanced');
     assert.match(document.getElementById('search-intensity-hint').textContent, /12/);
 
     updateIntensityUI({ maxResults: 17, maxIterations: 2, root: document });

@@ -209,6 +209,7 @@
 }
 
 .markdown-body pre.code-block-wrapper {
+    position: relative;
     padding: 0;
     overflow: hidden;
     box-shadow: var(--shadow-xs);

@@ -4,15 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>JustSearch</title>
-    <link rel="icon" type="image/png" href="/static/assets/justsearch-favicon.png?v=10">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/assets/justsearch-favicon-16.png?v=13">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/assets/justsearch-favicon-32.png?v=13">
+    <link rel="icon" type="image/png" href="/static/assets/justsearch-favicon.png?v=13">
     <link rel="manifest" href="/static/manifest.json">
     <meta name="theme-color" content="#3b82f6" media="(prefers-color-scheme: light)">
     <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="description" content="JustSearch - 基于 AI 和深度搜索的智能研究助手">
-    <meta name="keywords" content="AI搜索,深度搜索,智能助手,LLM,搜索增强">
-    <!-- 在 CSS 加载前同步设置主题，避免暗色用户刷新时闪白(FOUC) -->
+    <meta name="description" data-i18n-content="meta.description" content="JustSearch - 基于 AI 和深度搜索的智能研究助手">
+    <meta name="keywords" data-i18n-content="meta.keywords" content="AI搜索,深度搜索,智能助手,LLM,搜索增强">
+    <!-- 在 CSS 加载前同步设置主题与语言，避免刷新时闪白/闪错语言(FOUC) -->
     <script>
         (function () {
             try {
@@ -21,10 +23,21 @@
                 var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
                 document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
             } catch (e) {}
+            try {
+                var lang = localStorage.getItem('justsearch_language') || 'zh';
+                var resolved = lang === 'en' ? 'en' : (lang === 'auto'
+                    ? (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'
+                    : 'zh-CN');
+                document.documentElement.lang = resolved;
+            } catch (e) {}
         })();
     </script>
-    <link rel="stylesheet" href="/static/css/style.css?v=46">
-    <link rel="stylesheet" href="/static/fonts/fonts.css?v=1">
+    <link rel="preload" href="/static/css/style.css?v=50" as="style" onload="this.onload=null;this.rel='stylesheet'">
+    <link rel="preload" href="/static/fonts/fonts.css?v=1" as="style" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript>
+        <link rel="stylesheet" href="/static/css/style.css?v=50">
+        <link rel="stylesheet" href="/static/fonts/fonts.css?v=1">
+    </noscript>
     <!-- 三方库本地托管(markdown-it / dompurify / highlight.js),避免 jsdelivr CDN 在国内超时 -->
     <script src="/static/vendor/markdown-it.min.js?v=14.0.0"></script>
     <script src="/static/vendor/purify.min.js?v=3.0.8"></script>
@@ -33,7 +46,7 @@
     <script src="/static/vendor/highlight.min.js?v=11.9.0"></script>
 </head>
 <body>
-    <a href="#user-input" class="skip-link">跳到输入框</a>
+    <a href="#user-input" class="skip-link" data-i18n="hero.skipToInput">跳到输入框</a>
     <div id="mobile-overlay" class="mobile-overlay"></div>
 
     <div id="sidebar">
@@ -41,74 +54,77 @@
         <div class="sidebar-expanded-pane">
             <div class="sidebar-header">
                 <div class="sidebar-brand">
-                    <img class="sidebar-brand-logo" src="/static/assets/justsearch-icon.png?v=10" alt="" width="28" height="28" decoding="async">
+                    <img class="sidebar-brand-logo" src="/static/assets/justsearch-icon.png?v=12" alt="" width="28" height="28" decoding="async">
                 </div>
                 <div class="sidebar-header-buttons">
-                    <button id="quick-theme-btn" class="icon-btn" aria-label="切换主题" title="切换主题">
+                    <button id="shortcuts-help-btn" class="icon-btn" data-i18n-aria-label="sidebar.keyboardShortcuts" data-i18n-title="sidebar.keyboardShortcuts" aria-label="键盘快捷键" title="键盘快捷键">
+                        <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg>
+                    </button>
+                    <button id="quick-theme-btn" class="icon-btn" data-i18n-aria-label="sidebar.toggleTheme" data-i18n-title="sidebar.toggleTheme" aria-label="切换主题" title="切换主题">
                         <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
                     </button>
-                    <button id="collapse-sidebar-btn" class="icon-btn desktop-only" aria-label="收起侧栏" title="收起侧栏">
+                    <button id="collapse-sidebar-btn" class="icon-btn desktop-only" data-i18n-aria-label="sidebar.collapse" data-i18n-title="sidebar.collapse" aria-label="收起侧栏" title="收起侧栏">
                         <svg class="icon-svg sidebar-collapse-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="8" y2="8" /><line x1="4" x2="14" y1="16" y2="16" /></svg>
                     </button>
-                    <button id="close-sidebar-btn" class="icon-btn mobile-only" aria-label="关闭侧栏" title="关闭侧栏">
+                    <button id="close-sidebar-btn" class="icon-btn mobile-only" data-i18n-aria-label="sidebar.close" data-i18n-title="sidebar.close" aria-label="关闭侧栏" title="关闭侧栏">
                         <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                     </button>
                 </div>
             </div>
 
             <div class="new-chat-wrapper">
-                <button id="new-chat-btn" class="new-chat-btn" aria-label="新建对话">
+                <button id="new-chat-btn" class="new-chat-btn" data-i18n-aria-label="sidebar.newChat" aria-label="新建对话">
                     <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.375 2.625a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z"></path></svg>
-                    <span class="btn-text">新对话</span>
+                    <span class="btn-text" data-i18n="sidebar.newChat">新对话</span>
                     <kbd class="sidebar-kbd">⌘N</kbd>
                 </button>
-                <button id="history-search-open-btn" class="history-search-btn" aria-label="搜索对话" title="搜索对话">
+                <button id="history-search-open-btn" class="history-search-btn" data-i18n-aria-label="sidebar.historySearch" data-i18n-title="sidebar.historySearch" aria-label="搜索对话" title="搜索对话">
                     <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-                    <span class="btn-text">搜索</span>
+                    <span class="btn-text" data-i18n="sidebar.search">搜索</span>
                     <kbd class="sidebar-kbd">⌘K</kbd>
                 </button>
                 <div class="history-search-box" id="history-search-box" hidden>
                     <svg class="search-icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-                    <input type="text" id="history-search-input" class="history-search-input" placeholder="搜索对话..." aria-label="搜索对话">
-                    <button id="history-search-close-btn" class="history-search-close-btn" aria-label="关闭搜索" title="关闭搜索">
+                    <input type="text" id="history-search-input" class="history-search-input" data-i18n-placeholder="history.searchPlaceholder" data-i18n-aria-label="history.searchPlaceholder" placeholder="搜索对话..." aria-label="搜索对话">
+                    <button id="history-search-close-btn" class="history-search-close-btn" data-i18n-aria-label="sidebar.close" data-i18n-title="sidebar.close" aria-label="关闭搜索" title="关闭搜索">
                         <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                     </button>
                 </div>
-                <button id="new-group-btn" class="new-group-btn" aria-label="新建分组" title="新建分组">
+                <button id="new-group-btn" class="new-group-btn" data-i18n-aria-label="sidebar.newGroup" data-i18n-title="sidebar.newGroup" aria-label="新建分组" title="新建分组">
                     <svg class="icon-svg" data-testid="new-group-folder-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 17a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3.9a2 2 0 0 1-1.69-.9l-.81-1.2A2 2 0 0 0 11.93 4H8a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2Z"></path><path d="M2 8v11a2 2 0 0 0 2 2h14"></path></svg>
-                    <span class="btn-text">新建分组</span>
+                    <span class="btn-text" data-i18n="sidebar.newGroup">新建分组</span>
                 </button>
             </div>
 
-            <div class="history-list" id="history-list" role="list" aria-label="对话历史">
+            <div class="history-list" id="history-list" role="list" data-i18n-aria-label="sidebar.historyLabel" aria-label="对话历史">
                 <!-- History items will be injected here -->
             </div>
 
             <div class="sidebar-footer">
-                <button id="settings-btn" class="sidebar-footer-settings-btn" aria-label="设置" title="设置">
+                <button id="settings-btn" class="sidebar-footer-settings-btn" data-i18n-aria-label="sidebar.settings" data-i18n-title="sidebar.settings" aria-label="设置" title="设置">
                     <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-                    <span>设置</span>
+                    <span data-i18n="sidebar.settings">设置</span>
                 </button>
             </div>
         </div>
 
         <!-- Collapsed Pane -->
         <div class="sidebar-collapsed-pane">
-            <button id="mini-toggle-btn" class="icon-btn mini-btn" aria-label="展开侧栏" title="展开侧栏">
+            <button id="mini-toggle-btn" class="icon-btn mini-btn" data-i18n-aria-label="sidebar.expand" data-i18n-title="sidebar.expand" aria-label="展开侧栏" title="展开侧栏">
                 <svg class="icon-svg sidebar-collapse-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="8" y2="8" /><line x1="4" x2="14" y1="16" y2="16" /></svg>
             </button>
             <div class="mini-divider"></div>
-            <button id="mini-new-chat-btn" class="icon-btn mini-btn" aria-label="新建对话" title="新建对话">
+            <button id="mini-new-chat-btn" class="icon-btn mini-btn" data-i18n-aria-label="sidebar.newChat" data-i18n-title="sidebar.newChat" aria-label="新建对话" title="新建对话">
                 <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.375 2.625a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z"></path></svg>
             </button>
-            <button id="mini-search-btn" class="icon-btn mini-btn" aria-label="搜索对话" title="搜索对话">
+            <button id="mini-search-btn" class="icon-btn mini-btn" data-i18n-aria-label="sidebar.historySearch" data-i18n-title="sidebar.historySearch" aria-label="搜索对话" title="搜索对话">
                 <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
             </button>
-            <button id="mini-history-btn" class="icon-btn mini-btn" aria-label="最近对话" title="最近对话">
+            <button id="mini-history-btn" class="icon-btn mini-btn" data-i18n-aria-label="sidebar.miniRecent" data-i18n-title="sidebar.miniRecent" aria-label="最近对话" title="最近对话">
                 <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><polyline points="3 3 3 8 8 8"></polyline><line x1="12" y1="7" x2="12" y2="12"></line><line x1="12" y1="12" x2="16" y2="14"></line></svg>
             </button>
             <div class="mini-footer">
-                <button id="mini-settings-btn" class="icon-btn mini-btn" aria-label="设置" title="设置">
+                <button id="mini-settings-btn" class="icon-btn mini-btn" data-i18n-aria-label="sidebar.settings" data-i18n-title="sidebar.settings" aria-label="设置" title="设置">
                     <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                 </button>
             </div>
@@ -117,11 +133,11 @@
 
     <div id="main">
         <div class="main-header">
-            <button id="expand-sidebar-btn" class="icon-btn sidebar-toggle" aria-label="展开侧栏">
+            <button id="expand-sidebar-btn" class="icon-btn sidebar-toggle" data-i18n-aria-label="sidebar.expand" aria-label="展开侧栏">
                 <svg class="icon-svg sidebar-collapse-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="8" y2="8" /><line x1="4" x2="14" y1="16" y2="16" /></svg>
             </button>
             <div class="model-select-wrapper" id="custom-model-select-container">
-                <div class="model-select-trigger" id="model-select-trigger" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false" aria-label="选择模型">
+                <div class="model-select-trigger" id="model-select-trigger" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false" data-i18n-aria-label="modelSelector.chooseModel" aria-label="选择模型">
                     <span class="model-select-current-text" id="model-select-current-text">Default</span>
                     <svg class="model-chevron-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                         <polyline points="6 9 12 15 18 9"></polyline>
@@ -134,70 +150,116 @@
             </div>
         </div>
 
-        <div id="chat-container" role="log" aria-label="对话内容" aria-live="polite">
+        <div id="chat-container" role="log" data-i18n-aria-label="sidebar.historyLabel" aria-label="对话内容" aria-live="polite">
             <!-- Messages will be injected here -->
             <div id="hero-section" class="hero-container">
                 <div class="hero-header">
-                    <img class="hero-brand-logo hero-brand-logo-light" src="/static/assets/justsearch-logo.png?v=9" alt="JustSearch">
-                    <img class="hero-brand-logo hero-brand-logo-dark" src="/static/assets/justsearch-logo-dark.png?v=9" alt="JustSearch">
+                    <img class="hero-brand-logo hero-brand-logo-light" src="/static/assets/justsearch-logo.png?v=12" alt="JustSearch">
+                    <img class="hero-brand-logo hero-brand-logo-dark" src="/static/assets/justsearch-logo-dark.png?v=12" alt="JustSearch">
                 </div>
-                <div class="hero-subtitle">
+                <div class="hero-subtitle" data-i18n="hero.subtitle">
                     提出复杂问题，获取基于实时搜索的全面答案。
                 </div>
                 <div class="hero-hints">
-                    <span class="hint-item"><kbd>Enter</kbd> 发送</span>
-                    <span class="hint-item"><kbd>Shift+Enter</kbd> 换行</span>
-                    <span class="hint-item"><kbd>Ctrl+N</kbd> 新对话</span>
-                    <span class="hint-item"><kbd>Esc</kbd> 关闭弹窗</span>
-                    <span class="hint-item"><kbd>Ctrl+Enter</kbd> 发送</span>
+                    <span class="hint-item"><kbd>Enter</kbd> <span data-i18n="hero.hintEnter">发送</span></span>
+                    <span class="hint-item"><kbd>Shift+Enter</kbd> <span data-i18n="hero.hintShiftEnter">换行</span></span>
+                    <span class="hint-item"><kbd>Ctrl+N</kbd> <span data-i18n="hero.hintCtrlN">新对话</span></span>
+                    <span class="hint-item"><kbd>Esc</kbd> <span data-i18n="hero.hintEsc">关闭弹窗</span></span>
+                    <span class="hint-item"><kbd>Ctrl+Enter</kbd> <span data-i18n="hero.hintCtrlEnter">发送</span></span>
                 </div>
             </div>
         </div>
-        
-        <button id="scroll-to-bottom-btn" aria-label="滚动到底部">
-            <span class="material-symbols-rounded">arrow_downward</span>
-        </button>
 
-        <div id="input-area" role="form" aria-label="消息输入区域">
-            <div id="search-intensity-bar" class="search-intensity-bar" role="group" aria-label="搜索强度">
+        <div id="scroll-nav" class="scroll-nav">
+            <button id="scroll-to-top-btn" class="scroll-nav-btn" data-i18n-aria-label="scrollNav.toTop" data-i18n-title="scrollNav.toTop" aria-label="滚动到顶部" title="滚动到顶部">
+                <span class="material-symbols-rounded">arrow_upward</span>
+            </button>
+            <button id="scroll-to-bottom-btn" class="scroll-nav-btn" data-i18n-aria-label="scrollNav.toBottom" data-i18n-title="scrollNav.toBottom" aria-label="滚动到底部" title="滚动到底部">
+                <span class="material-symbols-rounded">arrow_downward</span>
+            </button>
+        </div>
+
+        <!-- AMC-style text-selection toolbar (Copy / Quote / Search) -->
+        <div id="text-selection-toolbar" class="text-selection-toolbar" hidden>
+            <button type="button" class="text-selection-btn text-selection-copy" data-i18n-title="ui.copy" data-i18n-aria-label="ui.copyTitle" title="复制" aria-label="复制选中文字">
+                <span class="material-symbols-rounded" aria-hidden="true">content_copy</span>
+                <span class="text-selection-label" data-i18n="ui.copy">复制</span>
+            </button>
+            <button type="button" class="text-selection-btn text-selection-quote" data-i18n-title="ui.quote" data-i18n-aria-label="ui.quoteTitle" title="引用到输入框" aria-label="引用选中文字到输入框">
+                <span class="material-symbols-rounded" aria-hidden="true">format_quote</span>
+                <span class="text-selection-label" data-i18n="ui.quote">引用</span>
+            </button>
+            <button type="button" class="text-selection-btn text-selection-search" data-i18n-title="ui.searchSelection" data-i18n-aria-label="ui.searchSelectionTitle" title="用 Google 搜索选中文字" aria-label="用 Google 搜索选中文字">
+                <span class="material-symbols-rounded" aria-hidden="true">search</span>
+                <span class="text-selection-label" data-i18n="ui.searchSelection">搜索</span>
+            </button>
+        </div>
+
+        <div id="input-area" role="form" data-i18n-aria-label="inputArea.roleLabel" aria-label="消息输入区域">
+            <!-- AMC-style suggestion chips — visible only on an empty conversation -->
+            <div id="suggestion-chips" class="suggestion-chips" hidden>
+                <div class="suggestion-chips-track" id="suggestion-chips-track" role="list" data-i18n-aria-label="inputArea.suggestions" aria-label="建议问题"></div>
+                <button type="button" class="suggestion-scroll-arrow suggestion-scroll-left" id="suggestion-scroll-left" data-i18n-aria-label="inputArea.scrollLeft" tabindex="-1">
+                    <span class="material-symbols-rounded" aria-hidden="true">chevron_left</span>
+                </button>
+                <button type="button" class="suggestion-scroll-arrow suggestion-scroll-right" id="suggestion-scroll-right" data-i18n-aria-label="inputArea.scrollRight" tabindex="-1">
+                    <span class="material-symbols-rounded" aria-hidden="true">chevron_right</span>
+                </button>
+            </div>
+            <div id="search-intensity-bar" class="search-intensity-bar" role="group" data-i18n-aria-label="searchIntensity.label" aria-label="搜索强度">
                 <div class="search-intensity-label">
                     <span class="material-symbols-rounded" aria-hidden="true">tune</span>
-                    <span>搜索强度</span>
+                    <span data-i18n="searchIntensity.label">搜索强度</span>
                 </div>
-                <div class="search-intensity-presets" role="radiogroup" aria-label="搜索强度档位">
-                    <button type="button" class="intensity-chip" data-intensity="quick" role="radio" aria-checked="false" title="快速：约 4 源 · 1 轮">快速</button>
-                    <button type="button" class="intensity-chip" data-intensity="balanced" role="radio" aria-checked="true" title="均衡：约 8 源 · 最多 3 轮">均衡</button>
-                    <button type="button" class="intensity-chip" data-intensity="deep" role="radio" aria-checked="false" title="深入：约 12 源 · 最多 5 轮">深入</button>
-                    <button type="button" class="intensity-chip" data-intensity="research" role="radio" aria-checked="false" title="研究：约 20 源 · 最多 8 轮">研究</button>
-                    <button type="button" class="intensity-chip intensity-chip-custom" data-intensity="custom" role="radio" aria-checked="false" title="来自设置的自定义广度/深度" hidden>自定义</button>
+                <div class="search-intensity-presets" role="radiogroup" data-i18n-aria-label="searchIntensity.presets" aria-label="搜索强度档位">
+                    <button type="button" class="intensity-chip" data-intensity="quick" role="radio" aria-checked="false" data-i18n="searchIntensity.quick" data-i18n-title="searchIntensity.quickHint" title="快速：约 8 源 · 最多 3 轮">快速</button>
+                    <button type="button" class="intensity-chip" data-intensity="balanced" role="radio" aria-checked="true" data-i18n="searchIntensity.balanced" data-i18n-title="searchIntensity.balancedHint" title="均衡：约 12 源 · 最多 5 轮">均衡</button>
+                    <button type="button" class="intensity-chip" data-intensity="deep" role="radio" aria-checked="false" data-i18n="searchIntensity.deep" data-i18n-title="searchIntensity.deepHint" title="深入：约 20 源 · 最多 8 轮">深入</button>
+                    <button type="button" class="intensity-chip" data-intensity="research" role="radio" aria-checked="false" data-i18n="searchIntensity.research" data-i18n-title="searchIntensity.researchHint" title="研究：约 30 源 · 最多 10 轮">研究</button>
+                    <button type="button" class="intensity-chip intensity-chip-custom" data-intensity="custom" role="radio" aria-checked="false" data-i18n="searchIntensity.custom" data-i18n-title="settings.customIntensityHint" title="来自设置的自定义广度/深度" hidden>自定义</button>
                 </div>
-                <div id="search-intensity-hint" class="search-intensity-hint" aria-live="polite">约 8 源 · 最多 3 轮</div>
+                <div id="search-intensity-hint" class="search-intensity-hint" aria-live="polite" data-i18n="searchIntensity.balancedHint">约 50 源 · 最多 5 轮</div>
             </div>
             <div id="bridge-status-banner" class="bridge-status-banner" hidden aria-hidden="true">
                 <span class="bridge-status-banner-dot" aria-hidden="true"></span>
-                <span class="bridge-status-banner-text">浏览器扩展未连接，Google / Bing 等搜索均不可用。</span>
-                <button type="button" id="bridge-banner-action" class="bridge-status-banner-action">安装 / 连接扩展</button>
+                <span class="bridge-status-banner-text" data-i18n="bridge.bannerText">浏览器扩展未连接，Google / Bing 等搜索均不可用。</span>
+                <button type="button" id="bridge-banner-action" class="bridge-status-banner-action" data-i18n="bridge.installAction">安装 / 连接扩展</button>
             </div>
             <div id="edit-message-banner" class="edit-message-banner" hidden>
                 <div class="edit-message-banner-copy">
                     <span class="material-symbols-rounded" aria-hidden="true">edit</span>
-                    <span id="edit-message-banner-text">正在编辑消息 · 发送后将从此处重新生成</span>
+                    <span id="edit-message-banner-text" data-i18n="inputArea.editBanner">正在编辑消息 · 发送后将从此处重新生成</span>
                 </div>
-                <button type="button" id="cancel-edit-btn" class="edit-message-cancel-btn" aria-label="取消编辑" title="取消编辑">
+                <button type="button" id="cancel-edit-btn" class="edit-message-cancel-btn" data-i18n-aria-label="inputArea.cancelEdit" data-i18n-title="inputArea.cancelEdit" aria-label="取消编辑" title="取消编辑">
                     <span class="material-symbols-rounded" aria-hidden="true">close</span>
-                    <span>取消</span>
+                    <span data-i18n="common.cancel">取消</span>
                 </button>
             </div>
+            <!-- AMC-style generation status pill — mirrors the send/stop state -->
+            <div id="generation-status" class="generation-status" hidden>
+                <span class="generation-status-icon" aria-hidden="true">
+                    <span class="material-symbols-rounded">auto_awesome</span>
+                </span>
+                <div class="generation-status-copy">
+                    <span id="generation-status-title" class="generation-status-title" data-i18n="chat.searching">正在搜索</span>
+                    <span id="generation-status-subtitle" class="generation-status-subtitle"></span>
+                </div>
+                <button type="button" id="generation-status-stop" class="generation-status-stop" data-i18n="chat.stop">停止</button>
+            </div>
+            <!-- AMC-style slash command menu — anchored above the composer -->
             <div class="input-box">
-                <textarea id="user-input" placeholder="提出问题..." rows="1" aria-label="消息输入" enterkeyhint="send" autofocus></textarea>
+                <div id="slash-command-menu" class="slash-command-menu" hidden>
+                    <div class="slash-command-list" id="slash-command-list" role="listbox" data-i18n-aria-label="composer.menu" aria-label="斜杠命令"></div>
+                </div>
+                <textarea id="user-input" placeholder="提出问题..." rows="1" data-i18n-placeholder="inputArea.placeholder" data-i18n-aria-label="inputArea.messageInput" aria-label="消息输入" enterkeyhint="send" autofocus></textarea>
                 <div class="input-toolbar">
                     <div class="input-toolbar-left">
-                        <button type="button" id="bridge-status-btn" class="toolbar-btn bridge-status-btn" data-state="unknown" aria-label="浏览器桥接状态" title="浏览器桥接状态">
+                        <button type="button" id="bridge-status-btn" class="toolbar-btn bridge-status-btn" data-state="unknown" data-i18n-aria-label="inputArea.bridgeStatus" data-i18n-title="inputArea.bridgeStatus" aria-label="浏览器桥接状态" title="浏览器桥接状态">
                             <span class="bridge-status-dot" aria-hidden="true"></span>
-                            <span id="bridge-status-label">桥接检测中</span>
+                            <span id="bridge-status-label" data-i18n="bridge.statusLabel">桥接检测中</span>
                         </button>
                         <div class="quick-engine-wrapper">
-                            <button id="quick-engine-btn" class="toolbar-btn" aria-label="切换搜索引擎" title="搜索引擎">
+                            <button id="quick-engine-btn" class="toolbar-btn" data-i18n-aria-label="bridge.engineLabel" data-i18n-title="bridge.engineLabel" aria-label="切换搜索引擎" title="搜索引擎">
                                 <span id="quick-engine-icon-container">
                                     <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                         <path d="M21.35 11.1h-8.7v2.9h4.98c-.47 2.3-2.43 3.9-4.98 3.9a5.7 5.7 0 1 1 0-11.4c1.64 0 2.96.62 3.9 1.53l2.1-2.1A8.8 8.8 0 1 0 12.65 21c4.86 0 8.95-3.32 8.95-8.97 0-.58-.05-1.01-.25-1.93Z" fill="#4285F4" stroke="none"></path>
@@ -247,15 +309,8 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="quick-interactive-wrapper">
-                            <button id="quick-interactive-btn" class="toolbar-btn" aria-label="切换交互式深度搜索" title="交互式深度搜索">
-                                <span class="material-symbols-rounded toolbar-symbol" aria-hidden="true">travel_explore</span>
-                                <span>深度搜索</span>
-                                <span class="interactive-status-badge"></span>
-                            </button>
-                        </div>
                         <div class="quick-live-artifacts-wrapper">
-                            <button id="quick-live-artifacts-btn" class="toolbar-btn" aria-label="加载 Live Artifacts 提示并保存设置" title="加载 Live Artifacts 提示并保存" aria-pressed="false">
+                            <button id="quick-live-artifacts-btn" class="toolbar-btn" data-i18n-aria-label="chat.laInactiveHintAria" data-i18n-title="chat.laInactiveHint" aria-label="加载 Live Artifacts 提示并保存设置" title="加载 Live Artifacts 提示并保存" aria-pressed="false">
                                 <span class="material-symbols-rounded toolbar-symbol" aria-hidden="true">auto_awesome</span>
                                 <span>Live Artifacts</span>
                                 <span class="live-artifacts-status-badge"></span>
@@ -263,7 +318,7 @@
                         </div>
                     </div>
                     <div class="input-toolbar-right">
-                        <button id="send-btn" aria-label="发送消息">
+                        <button id="send-btn" data-i18n-aria-label="inputArea.send" aria-label="发送消息">
                             <svg class="send-icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                                 <line x1="12" y1="19" x2="12" y2="5"></line>
                                 <polyline points="5 12 12 5 19 12"></polyline>
@@ -285,34 +340,43 @@
                 <!-- Settings Sidebar -->
                 <aside class="settings-sidebar">
                     <div class="settings-sidebar-header">
-                        <button type="button" class="settings-sidebar-close-btn close-btn" aria-label="关闭设置">
+                        <button type="button" class="settings-sidebar-close-btn close-btn" data-i18n-aria-label="modal.close" aria-label="关闭设置">
                             <span class="material-symbols-rounded">close</span>
                         </button>
-                        <span class="settings-mobile-title">设置</span>
+                        <span class="settings-mobile-title" data-i18n="settings.title">设置</span>
                         <span class="settings-mobile-spacer" aria-hidden="true"></span>
                     </div>
-                    <nav class="settings-tabs" role="tablist" aria-label="设置分类">
+                    <!-- AMC-style settings search -->
+                    <div class="settings-search">
+                        <span class="material-symbols-rounded settings-search-icon" aria-hidden="true">search</span>
+                        <input type="search" id="settings-search-input" class="settings-search-input" data-i18n-placeholder="settings.searchPlaceholder" data-i18n-aria-label="settings.searchPlaceholder" placeholder="搜索设置..." aria-label="搜索设置" autocomplete="off">
+                        <button type="button" id="settings-search-clear" class="settings-search-clear" data-i18n-aria-label="settings.searchClear" aria-label="清除搜索" hidden>
+                            <span class="material-symbols-rounded" aria-hidden="true">close</span>
+                        </button>
+                    </div>
+                    <div id="settings-search-results" class="settings-search-results" hidden></div>
+                    <nav class="settings-tabs" role="tablist" data-i18n-aria-label="settings.tabsLabel" aria-label="设置分类">
                         <div class="settings-tab-group">
                             <button class="settings-tab-btn active" data-tab="general" role="tab" aria-selected="true" aria-controls="tab-general">
                                 <span class="material-symbols-rounded">settings</span>
-                                <span>常规设置</span>
+                                <span data-i18n="settings.tabs.general">常规设置</span>
                             </button>
                             <button class="settings-tab-btn" data-tab="api" role="tab" aria-selected="false" aria-controls="tab-api">
                                 <span class="material-symbols-rounded">key</span>
-                                <span>API 设置</span>
+                                <span data-i18n="settings.tabs.api">API 设置</span>
                             </button>
                             <button class="settings-tab-btn" data-tab="bridge" role="tab" aria-selected="false" aria-controls="tab-bridge">
                                 <span class="material-symbols-rounded">extension</span>
-                                <span>浏览器桥接</span>
+                                <span data-i18n="settings.tabs.bridge">浏览器桥接</span>
                                 <span id="settings-bridge-tab-dot" class="settings-tab-status-dot" data-state="unknown" aria-hidden="true"></span>
                             </button>
                             <button class="settings-tab-btn" data-tab="system" role="tab" aria-selected="false" aria-controls="tab-system">
                                 <span class="material-symbols-rounded">database</span>
-                                <span>系统维护</span>
+                                <span data-i18n="settings.tabs.maintenance">系统维护</span>
                             </button>
                             <button class="settings-tab-btn" data-tab="about" role="tab" aria-selected="false" aria-controls="tab-about">
                                 <span class="material-symbols-rounded">info</span>
-                                <span>关于</span>
+                                <span data-i18n="settings.tabs.about">关于</span>
                             </button>
                         </div>
                     </nav>
@@ -325,24 +389,35 @@
                         <!-- Tab 1: General -->
                         <div id="tab-general" class="settings-panel active" role="tabpanel">
                             <div class="settings-section-heading">
-                                <div class="settings-section-kicker">Interface</div>
-                                <div class="panel-header-title">常规设置</div>
+                                <div class="settings-section-kicker" data-i18n="settings.sectionInterface">Interface</div>
+                                <div class="panel-header-title" data-i18n="settings.tabs.general">常规设置</div>
                             </div>
                             <div class="settings-card">
                                 <div class="form-group settings-field-row">
                                     <div class="settings-field-copy">
-                                        <label for="theme-select">主题</label>
-                                        <span class="field-desc">切换浅色、深色或跟随系统外观。</span>
+                                        <label for="theme-select" data-i18n="settings.theme">主题</label>
+                                        <span class="field-desc" data-i18n="settings.themeDesc">切换浅色、深色或跟随系统外观。</span>
                                     </div>
                                     <select id="theme-select">
-                                        <option value="light">浅色</option>
-                                        <option value="dark">深色</option>
-                                        <option value="auto">跟随系统</option>
+                                        <option value="light" data-i18n="settings.themeLight">浅色</option>
+                                        <option value="dark" data-i18n="settings.themeDark">深色</option>
+                                        <option value="auto" data-i18n="settings.themeAuto">跟随系统</option>
+                                    </select>
+                                </div>
+                                <div class="form-group settings-field-row">
+                                    <div class="settings-field-copy">
+                                        <label for="language-select" data-i18n="settings.language">语言</label>
+                                        <span class="field-desc" data-i18n="settings.languageDesc">选择界面显示语言。</span>
+                                    </div>
+                                    <select id="language-select">
+                                        <option value="zh">中文</option>
+                                        <option value="en">English</option>
+                                        <option value="auto" data-i18n="settings.languageAuto">跟随系统</option>
                                     </select>
                                 </div>
                                 <div class="form-group settings-font-size-group">
                                     <div class="settings-font-size-header">
-                                        <label for="base-font-size-input">阅读字号</label>
+                                        <label for="base-font-size-input" data-i18n="settings.readingFontSize">阅读字号</label>
                                         <span id="base-font-size-value" class="settings-font-size-value">16px</span>
                                     </div>
                                     <input
@@ -356,17 +431,18 @@
                                         aria-valuemax="24"
                                         aria-valuenow="16"
                                         aria-label="阅读字号"
+                                        data-i18n-aria-label="settings.readingFontSize"
                                     >
                                     <div class="settings-font-size-ticks" aria-hidden="true">
                                         <span>12px</span>
                                         <span>18px</span>
                                         <span>24px</span>
                                     </div>
-                                    <span class="field-desc">调整聊天消息正文字号（标题等会按比例缩放）。</span>
+                                    <span class="field-desc" data-i18n="settings.readingFontSizeDesc">调整聊天消息正文字号（标题等会按比例缩放）。</span>
                                 </div>
                                 <div class="form-group settings-font-size-group">
                                     <div class="settings-font-size-header">
-                                        <label for="live-artifacts-font-size-input">Live Artifacts 基础字号</label>
+                                        <label for="live-artifacts-font-size-input" data-i18n="settings.liveArtifactsFontSize">Live Artifacts 基础字号</label>
                                         <span id="live-artifacts-font-size-value" class="settings-font-size-value">16px</span>
                                     </div>
                                     <input
@@ -380,24 +456,25 @@
                                         aria-valuemax="32"
                                         aria-valuenow="16"
                                         aria-label="Live Artifacts 基础字号"
+                                        data-i18n-aria-label="settings.liveArtifactsFontSize"
                                     >
                                     <div class="settings-font-size-ticks" aria-hidden="true">
                                         <span>10px</span>
                                         <span>16px</span>
                                         <span>32px</span>
                                     </div>
-                                    <span class="field-desc">设置内嵌 Live Artifacts 的默认字号。产物内容自带的 font-size 仍可能覆盖它。</span>
+                                    <span class="field-desc" data-i18n="settings.liveArtifactsFontSizeDesc">设置内嵌 Live Artifacts 的默认字号。产物内容自带的 font-size 仍可能覆盖它。</span>
                                 </div>
                                 <div class="form-group settings-field-row">
                                     <div class="settings-field-copy">
-                                        <label for="engine-select">搜索引擎</label>
-                                        <span class="field-desc">默认使用 Google，必要时可切换其它引擎。</span>
+                                        <label for="engine-select" data-i18n="settings.searchEngine">搜索引擎</label>
+                                        <span class="field-desc" data-i18n="settings.searchEngineDesc">默认使用 Google，必要时可切换其它引擎。</span>
                                     </div>
                                     <select id="engine-select">
-                                        <option value="google">Google（默认）</option>
+                                        <option value="google" data-i18n="settings.engineGoogle">Google（默认）</option>
 <option value="bing">Bing</option>
-                                        <option value="sogou">搜狗（中文备用）</option>
-                                        <option value="baidu">百度（中文）</option>
+                                        <option value="sogou" data-i18n="settings.engineSogou">搜狗（中文备用）</option>
+                                        <option value="baidu" data-i18n="settings.engineBaidu">百度（中文）</option>
                                         <option value="yandex">Yandex</option>
                                         <option value="duckduckgo">DuckDuckGo</option>
                                         <option value="brave">Brave Search</option>
@@ -405,49 +482,83 @@
                                 </div>
                                 <div class="form-group settings-field-row engine-check-row">
                                     <div class="settings-field-copy">
-                                        <label for="check-engines-btn">搜索引擎可用性</label>
-                                        <span class="field-desc">实际搜索测试词并检查结果解析状态。</span>
+                                        <label for="check-engines-btn" data-i18n="settings.engineCheckLabel">搜索引擎可用性</label>
+                                        <span class="field-desc" data-i18n="settings.engineCheckDesc">实际搜索测试词并检查结果解析状态。</span>
                                     </div>
                                     <button type="button" id="check-engines-btn" class="engine-check-btn secondary-btn">
                                         <span class="material-symbols-rounded">network_check</span>
-                                        <span>检测</span>
+                                        <span data-i18n="settings.engineCheckBtn">检测</span>
                                     </button>
                                 </div>
                                 <div id="engine-check-results" class="engine-check-results" aria-live="polite"></div>
                                 <div class="form-group toggle-group settings-field-row">
                                     <div class="toggle-info settings-field-copy">
-                                        <label for="interactive-search-input" class="toggle-label">交互式深度搜索 (Beta)</label>
-                                        <span class="toggle-desc">启用后，AI 将根据需要进行多轮搜索与迭代分析。</span>
+                                        <label for="interactive-search-input" class="toggle-label" data-i18n="settings.interactiveSearch">交互式深度搜索 (Beta)</label>
+                                        <span class="toggle-desc" data-i18n="settings.interactiveSearchDesc">启用后，AI 将根据需要进行多轮搜索与迭代分析。</span>
                                     </div>
                                     <label class="ios-switch">
-                                        <input type="checkbox" id="interactive-search-input" checked role="switch" aria-label="交互式深度搜索">
+                                        <input type="checkbox" id="interactive-search-input" checked role="switch" aria-label="交互式深度搜索" data-i18n-aria-label="settings.interactiveSearch">
                                         <span class="ios-slider"></span>
                                     </label>
                                 </div>
                                 <div class="form-group toggle-group settings-field-row">
                                     <div class="toggle-info settings-field-copy">
-                                        <label for="citation-verify-input" class="toggle-label">引用语义复核 (Beta)</label>
-                                        <span class="toggle-desc">回答后用模型复核存疑引用是否被原文支持。默认关闭：会多一次 LLM 调用、增加延迟与成本，失败时自动回退。</span>
+                                        <label for="citation-verify-input" class="toggle-label" data-i18n="settings.citationVerify">引用语义复核 (Beta)</label>
+                                        <span class="toggle-desc" data-i18n="settings.citationVerifyDesc">回答后用模型复核存疑引用是否被原文支持。默认关闭：会多一次 LLM 调用、增加延迟与成本，失败时自动回退。</span>
                                     </div>
                                     <label class="ios-switch">
-                                        <input type="checkbox" id="citation-verify-input" role="switch" aria-label="引用语义复核">
+                                        <input type="checkbox" id="citation-verify-input" role="switch" aria-label="引用语义复核" data-i18n-aria-label="settings.citationVerify">
+                                        <span class="ios-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-group toggle-group settings-field-row">
+                                    <div class="toggle-info settings-field-copy">
+                                        <label for="completion-notification-input" class="toggle-label" data-i18n="settings.completionNotify">搜索完成时发送桌面通知</label>
+                                        <span class="toggle-desc" data-i18n="settings.completionNotifyDesc">后台搜索完成时弹出系统通知（当前标签页在前台时不打扰）。需在浏览器中授权通知权限。</span>
+                                    </div>
+                                    <label class="ios-switch">
+                                        <input type="checkbox" id="completion-notification-input" role="switch" aria-label="搜索完成时发送桌面通知" data-i18n-aria-label="settings.completionNotify">
+                                        <span class="ios-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="form-group toggle-group settings-field-row">
+                                    <div class="toggle-info settings-field-copy">
+                                        <label for="completion-sound-input" class="toggle-label" data-i18n="settings.completionSound">完成时播放提示音</label>
+                                        <span class="toggle-desc" data-i18n="settings.completionSoundDesc">搜索完成时播放一声轻提示音，切到后台也能听到。</span>
+                                    </div>
+                                    <label class="ios-switch">
+                                        <input type="checkbox" id="completion-sound-input" role="switch" aria-label="完成时播放提示音" data-i18n-aria-label="settings.completionSound">
                                         <span class="ios-slider"></span>
                                     </label>
                                 </div>
                             </div>
 
                             <div class="settings-section-heading" style="margin-top: 10px;">
-                                <div class="settings-section-kicker">Generation</div>
+                                <div class="settings-section-kicker" data-i18n="settings.sectionGeneration">Generation</div>
                             </div>
                             <div class="settings-card">
                                 <div class="form-grid">
                                     <div class="form-group">
-                                        <label for="max-results-input">广度 · 每轮结果数</label>
-                                        <input type="number" id="max-results-input" placeholder="50" min="1" max="50" title="对应输入框上方「搜索强度」的广度">
+                                        <label for="max-results-input" data-i18n="settings.maxResults">广度 · 每轮结果数</label>
+                                        <input type="number" id="max-results-input" placeholder="50" min="1" max="50" data-i18n-title="settings.maxResultsTitle" title="对应输入框上方「搜索强度」的广度">
                                     </div>
                                     <div class="form-group">
-                                        <label for="max-iterations-input">深度 · 最大轮次</label>
-                                        <input type="number" id="max-iterations-input" placeholder="5" min="1" max="10" title="对应输入框上方「搜索强度」的深度">
+                                        <label for="max-iterations-input" data-i18n="settings.maxIterations">深度 · 最大轮次</label>
+                                        <input type="number" id="max-iterations-input" placeholder="5" min="1" max="10" data-i18n-title="settings.maxIterationsTitle" title="对应输入框上方「搜索强度」的深度">
+                                    </div>
+                                </div>
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label for="history-window-input" data-i18n="settings.historyWindow">上下文 · 历史窗口</label>
+                                        <input type="number" id="history-window-input" placeholder="12" min="2" max="30" data-i18n-title="settings.historyWindowTitle" title="带入模型的历史对话轮数（条）">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="history-char-budget-input" data-i18n="settings.historyCharBudget">上下文 · 历史字符预算</label>
+                                        <input type="number" id="history-char-budget-input" placeholder="12000" min="2000" max="60000" data-i18n-title="settings.historyCharBudgetTitle" title="历史压缩的总字符上限（从最新往前累计）">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="assistant-turn-char-budget-input" data-i18n="settings.assistantTurnBudget">上下文 · 助手单轮上限</label>
+                                        <input type="number" id="assistant-turn-char-budget-input" placeholder="900" min="200" max="5000" data-i18n-title="settings.assistantTurnBudgetTitle" title="单条助手回答在历史里压缩后的字符上限">
                                     </div>
                                 </div>
                             </div>
@@ -457,23 +568,23 @@
                         <div id="tab-api" class="settings-panel" role="tabpanel">
                             <div class="settings-section-heading api-settings-heading">
                                 <div>
-                                    <div class="settings-section-kicker">Connection</div>
-                                    <div class="panel-header-title">API 设置</div>
+                                    <div class="settings-section-kicker" data-i18n="settings.sectionConnection">Connection</div>
+                                    <div class="panel-header-title" data-i18n="settings.tabs.api">API 设置</div>
                                 </div>
                                 <div id="settings-save-status" class="settings-save-status is-saved" role="status" aria-live="polite">
                                     <span class="material-symbols-rounded">check_circle</span>
-                                    <span>已保存</span>
+                                    <span data-i18n="settings.saveSaved">已保存</span>
                                 </div>
                             </div>
                             <div class="settings-card api-settings-card">
                                 <div class="api-card-header">
                                     <div>
                                         <div class="api-card-title">Providers</div>
-                                        <div id="provider-count-label" class="api-card-subtitle">0 个连接</div>
+                                        <div id="provider-count-label" class="api-card-subtitle" data-i18n="settings.providerCount">0 个连接</div>
                                     </div>
                                     <button type="button" id="add-provider-btn" class="add-model-btn">
                                         <span class="material-symbols-rounded">add</span>
-                                        <span>添加 Provider</span>
+                                        <span data-i18n="settings.addProvider">添加 Provider</span>
                                     </button>
                                 </div>
                                 <div id="provider-list-container" class="provider-list-container"></div>
@@ -481,8 +592,8 @@
                             <div class="settings-card workflow-model-card">
                                 <div class="workflow-model-header">
                                     <div>
-                                        <div class="workflow-model-title">步骤模型</div>
-                                        <div class="workflow-model-subtitle">未指定时跟随聊天栏默认模型</div>
+                                        <div class="workflow-model-title" data-i18n="settings.stepModelTitle">步骤模型</div>
+                                        <div class="workflow-model-subtitle" data-i18n="settings.stepModelSubtitle">未指定时跟随聊天栏默认模型</div>
                                     </div>
                                 </div>
                                 <div id="workflow-step-models-container" class="workflow-step-models-container"></div>
@@ -492,8 +603,8 @@
                         <!-- Tab: Browser Bridge -->
                         <div id="tab-bridge" class="settings-panel" role="tabpanel">
                             <div class="settings-section-heading">
-                                <div class="settings-section-kicker">Chrome Bridge</div>
-                                <div class="panel-header-title">浏览器桥接</div>
+                                <div class="settings-section-kicker" data-i18n="settings.sectionChromeBridge">Chrome Bridge</div>
+                                <div class="panel-header-title" data-i18n="settings.tabs.bridge">浏览器桥接</div>
                             </div>
 
                             <div class="settings-card" id="settings-bridge-hero" data-state="unknown">
@@ -501,83 +612,83 @@
                                     <div class="settings-field-copy">
                                         <div class="bridge-status-label-row">
                                             <span id="settings-bridge-status-dot" class="settings-tab-status-dot bridge-inline-dot" data-state="unknown" aria-hidden="true"></span>
-                                            <label id="settings-bridge-status-title">检测中…</label>
-                                            <span id="settings-bridge-status-badge" class="settings-save-status" data-state="unknown">检测中</span>
+                                            <label id="settings-bridge-status-title" data-i18n="settings.bridgeStatusTitle">检测中…</label>
+                                            <span id="settings-bridge-status-badge" class="settings-save-status" data-state="unknown" data-i18n="bridge.checking">检测中</span>
                                         </div>
-                                        <span id="settings-bridge-status-subtitle" class="field-desc">正在查询桥接状态</span>
+                                        <span id="settings-bridge-status-subtitle" class="field-desc" data-i18n="settings.bridgeStatusSubtitle">正在查询桥接状态</span>
                                     </div>
                                     <div class="bridge-actions-row">
                                         <button type="button" id="settings-bridge-recheck-btn" class="secondary-btn bridge-settings-btn">
                                             <span class="material-symbols-rounded">refresh</span>
-                                            <span>重新检测</span>
+                                            <span data-i18n="settings.bridgeRecheck">重新检测</span>
                                         </button>
                                         <button type="button" id="settings-bridge-download-btn" class="secondary-btn bridge-settings-btn">
                                             <span class="material-symbols-rounded">download</span>
-                                            <span>下载扩展</span>
+                                            <span data-i18n="settings.bridgeDownloadExtension">下载扩展</span>
                                         </button>
                                         <button type="button" id="settings-bridge-install-btn" class="secondary-btn bridge-settings-btn">
                                             <span class="material-symbols-rounded">menu_book</span>
-                                            <span>安装说明</span>
+                                            <span data-i18n="settings.bridgeInstallGuide">安装说明</span>
                                         </button>
                                     </div>
                                 </div>
 
                                 <div id="settings-bridge-update-callout" class="bridge-inline-notice is-warning" hidden aria-hidden="true">
                                     <div class="bridge-inline-notice-copy">
-                                        <div class="bridge-inline-notice-title">扩展不是最新版本</div>
-                                        <p id="settings-bridge-update-text" class="field-desc">请下载最新扩展包并在 Chrome 中重新加载。</p>
+                                        <div class="bridge-inline-notice-title" data-i18n="settings.bridgeOutdatedTitle">扩展不是最新版本</div>
+                                        <p id="settings-bridge-update-text" class="field-desc" data-i18n="settings.bridgeOutdatedText">请下载最新扩展包并在 Chrome 中重新加载。</p>
                                     </div>
                                     <button type="button" id="settings-bridge-update-download-btn" class="secondary-btn bridge-settings-btn">
                                         <span class="material-symbols-rounded">download</span>
-                                        <span>下载最新</span>
+                                        <span data-i18n="settings.bridgeDownloadLatest">下载最新</span>
                                     </button>
                                 </div>
 
                                 <div class="form-group settings-field-row">
                                     <div class="settings-field-copy">
-                                        <label>扩展名称</label>
-                                        <span class="field-desc">当前连接的 Chrome 扩展名称。</span>
+                                        <label data-i18n="settings.bridgeExtensionName">扩展名称</label>
+                                        <span class="field-desc" data-i18n="settings.bridgeExtensionNameDesc">当前连接的 Chrome 扩展名称。</span>
                                     </div>
                                     <span id="settings-bridge-extension-name" class="bridge-field-value">—</span>
                                 </div>
                                 <div class="form-group settings-field-row">
                                     <div class="settings-field-copy">
-                                        <label>当前版本</label>
-                                        <span class="field-desc">已连接扩展上报的版本号。</span>
+                                        <label data-i18n="settings.bridgeCurrentVersion">当前版本</label>
+                                        <span class="field-desc" data-i18n="settings.bridgeCurrentVersionDesc">已连接扩展上报的版本号。</span>
                                     </div>
                                     <span id="settings-bridge-extension-version" class="bridge-field-value">—</span>
                                 </div>
                                 <div class="form-group settings-field-row">
                                     <div class="settings-field-copy">
-                                        <label>服务端最新</label>
-                                        <span class="field-desc">当前 JustSearch 自带的扩展包版本。</span>
+                                        <label data-i18n="settings.bridgeServerLatest">服务端最新</label>
+                                        <span class="field-desc" data-i18n="settings.bridgeServerLatestDesc">当前 JustSearch 自带的扩展包版本。</span>
                                     </div>
                                     <span id="settings-bridge-latest-version" class="bridge-field-value">—</span>
                                 </div>
                                 <div class="form-group settings-field-row">
                                     <div class="settings-field-copy">
-                                        <label>版本状态</label>
-                                        <span class="field-desc">与服务端扩展包比较后的结果。</span>
+                                        <label data-i18n="settings.bridgeVersionStatus">版本状态</label>
+                                        <span class="field-desc" data-i18n="settings.bridgeVersionStatusDesc">与服务端扩展包比较后的结果。</span>
                                     </div>
                                     <span id="settings-bridge-version-status" class="settings-save-status" data-state="unknown">—</span>
                                 </div>
                                 <div class="form-group settings-field-row">
                                     <div class="settings-field-copy">
-                                        <label>期望 WS 地址</label>
-                                        <span class="field-desc">扩展弹窗中的地址应与此一致。</span>
+                                        <label data-i18n="settings.bridgeExpectedWs">期望 WS 地址</label>
+                                        <span class="field-desc" data-i18n="settings.bridgeExpectedWsDesc">扩展弹窗中的地址应与此一致。</span>
                                     </div>
                                     <div class="bridge-value-with-action">
                                         <code id="settings-bridge-ws-url" class="bridge-field-code">ws://127.0.0.1:8000/justsearch</code>
                                         <button type="button" id="settings-bridge-copy-ws-btn" class="secondary-btn bridge-settings-btn compact">
                                             <span class="material-symbols-rounded">content_copy</span>
-                                            <span>复制</span>
+                                            <span data-i18n="common.copy">复制</span>
                                         </button>
                                     </div>
                                 </div>
                                 <div class="form-group settings-field-row">
                                     <div class="settings-field-copy">
-                                        <label>最近检测</label>
-                                        <span class="field-desc">上次从 /api/health 刷新状态的时间。</span>
+                                        <label data-i18n="settings.bridgeLastChecked">最近检测</label>
+                                        <span class="field-desc" data-i18n="settings.bridgeLastCheckedDesc">上次从 /api/health 刷新状态的时间。</span>
                                     </div>
                                     <span id="settings-bridge-last-checked" class="bridge-field-value">—</span>
                                 </div>
@@ -590,97 +701,97 @@
                                 </div>
                                 <div class="form-group settings-field-row bridge-field-stack">
                                     <div class="settings-field-copy">
-                                        <label>安装提示</label>
-                                        <span id="settings-bridge-install-hint" class="field-desc">Chrome → chrome://extensions → 开发者模式 → 加载已解压扩展</span>
+                                        <label data-i18n="settings.bridgeInstallHint">安装提示</label>
+                                        <span id="settings-bridge-install-hint" class="field-desc" data-i18n="settings.bridgeInstallHintDesc">Chrome → chrome://extensions → 开发者模式 → 加载已解压扩展</span>
                                     </div>
                                 </div>
                                 <div class="form-group settings-field-row bridge-field-stack">
                                     <div class="settings-field-copy">
-                                        <label>端口 / Docker 说明</label>
-                                        <span id="settings-bridge-host-tip" class="field-desc">扩展弹窗中的地址须与上方「期望 WS 地址」一致。Docker 部署时注意宿主端口映射。</span>
+                                        <label data-i18n="settings.bridgePortTip">端口 / Docker 说明</label>
+                                        <span id="settings-bridge-host-tip" class="field-desc" data-i18n="settings.bridgePortTipDesc">扩展弹窗中的地址须与上方「期望 WS 地址」一致。Docker 部署时注意宿主端口映射。</span>
                                     </div>
                                 </div>
                             </div>
 
                             <div class="settings-section-heading" style="margin-top: 18px;">
-                                <div class="settings-section-kicker">Preferences</div>
-                                <div class="panel-header-title">体验选项</div>
+                                <div class="settings-section-kicker" data-i18n="settings.sectionPreferences">Preferences</div>
+                                <div class="panel-header-title" data-i18n="settings.sectionPreferencesTitle">体验选项</div>
                             </div>
                             <div class="settings-card">
                                 <div class="form-group toggle-group settings-field-row">
                                     <div class="toggle-info settings-field-copy">
-                                        <label for="bridge-require-before-send-input" class="toggle-label">发送前强制检查桥接</label>
-                                        <span class="toggle-desc">开启后，未连接扩展时会拦截发送并弹出安装引导（推荐）。</span>
+                                        <label for="bridge-require-before-send-input" class="toggle-label" data-i18n="settings.bridgeRequireBeforeSend">发送前强制检查桥接</label>
+                                        <span class="toggle-desc" data-i18n="settings.bridgeRequireBeforeSendDesc">开启后，未连接扩展时会拦截发送并弹出安装引导（推荐）。</span>
                                     </div>
                                     <label class="ios-switch">
-                                        <input type="checkbox" id="bridge-require-before-send-input" checked role="switch" aria-label="发送前强制检查桥接">
+                                        <input type="checkbox" id="bridge-require-before-send-input" checked role="switch" aria-label="发送前强制检查桥接" data-i18n-aria-label="settings.bridgeRequireBeforeSend">
                                         <span class="ios-slider"></span>
                                     </label>
                                 </div>
                                 <div class="form-group toggle-group settings-field-row">
                                     <div class="toggle-info settings-field-copy">
-                                        <label for="bridge-show-banner-input" class="toggle-label">未连接时显示输入区横幅</label>
-                                        <span class="toggle-desc">在输入框上方显示橙色提醒条。</span>
+                                        <label for="bridge-show-banner-input" class="toggle-label" data-i18n="settings.bridgeShowBanner">未连接时显示输入区横幅</label>
+                                        <span class="toggle-desc" data-i18n="settings.bridgeShowBannerDesc">在输入框上方显示橙色提醒条。</span>
                                     </div>
                                     <label class="ios-switch">
-                                        <input type="checkbox" id="bridge-show-banner-input" checked role="switch" aria-label="未连接时显示输入区横幅">
+                                        <input type="checkbox" id="bridge-show-banner-input" checked role="switch" aria-label="未连接时显示输入区横幅" data-i18n-aria-label="settings.bridgeShowBanner">
                                         <span class="ios-slider"></span>
                                     </label>
                                 </div>
                                 <div class="form-group toggle-group settings-field-row">
                                     <div class="toggle-info settings-field-copy">
-                                        <label for="bridge-toast-on-change-input" class="toggle-label">连接状态变化时 Toast</label>
-                                        <span class="toggle-desc">扩展连上或断开时弹出简短提示。</span>
+                                        <label for="bridge-toast-on-change-input" class="toggle-label" data-i18n="settings.bridgeToastOnChange">连接状态变化时 Toast</label>
+                                        <span class="toggle-desc" data-i18n="settings.bridgeToastOnChangeDesc">扩展连上或断开时弹出简短提示。</span>
                                     </div>
                                     <label class="ios-switch">
-                                        <input type="checkbox" id="bridge-toast-on-change-input" checked role="switch" aria-label="连接状态变化时 Toast">
+                                        <input type="checkbox" id="bridge-toast-on-change-input" checked role="switch" aria-label="连接状态变化时 Toast" data-i18n-aria-label="settings.bridgeToastOnChange">
                                         <span class="ios-slider"></span>
                                     </label>
                                 </div>
                                 <div class="form-group settings-field-row">
                                     <div class="settings-field-copy">
-                                        <label for="bridge-poll-interval-select">状态轮询间隔</label>
-                                        <span class="field-desc">仅在页面可见时轮询。选择「手动」后只在打开本页或点击检测时刷新。</span>
+                                        <label for="bridge-poll-interval-select" data-i18n="settings.bridgePollInterval">状态轮询间隔</label>
+                                        <span class="field-desc" data-i18n="settings.bridgePollIntervalDesc">仅在页面可见时轮询。选择「手动」后只在打开本页或点击检测时刷新。</span>
                                     </div>
-                                    <select id="bridge-poll-interval-select" aria-label="桥接状态轮询间隔">
-                                        <option value="3">3 秒</option>
-                                        <option value="5" selected>5 秒</option>
-                                        <option value="15">15 秒</option>
-                                        <option value="0">手动</option>
+                                    <select id="bridge-poll-interval-select" data-i18n-aria-label="settings.bridgePollInterval" aria-label="桥接状态轮询间隔">
+                                        <option value="3" data-i18n-value="settings.poll3s">3 秒</option>
+                                        <option value="5" selected data-i18n-value="settings.poll5s">5 秒</option>
+                                        <option value="15" data-i18n-value="settings.poll15s">15 秒</option>
+                                        <option value="0" data-i18n="settings.bridgePollManual">手动</option>
                                     </select>
                                 </div>
                             </div>
 
                             <div class="settings-section-heading" style="margin-top: 18px;">
-                                <div class="settings-section-kicker">Help</div>
-                                <div class="panel-header-title">安装与排障</div>
+                                <div class="settings-section-kicker" data-i18n="settings.sectionHelp">Help</div>
+                                <div class="panel-header-title" data-i18n="settings.sectionHelpTitle">安装与排障</div>
                             </div>
                             <div class="settings-card">
                                 <div class="form-group settings-field-row bridge-field-stack">
                                     <div class="settings-field-copy">
-                                        <label>安装步骤</label>
-                                        <span class="field-desc">扩展需在本机 Chrome 中加载；Web 设置只展示状态，不能修改扩展连接地址。</span>
+                                        <label data-i18n="settings.bridgeInstallStepsTitle">安装步骤</label>
+                                        <span class="field-desc" data-i18n="settings.bridgeInstallStepsDesc">扩展需在本机 Chrome 中加载；Web 设置只展示状态，不能修改扩展连接地址。</span>
                                     </div>
                                 </div>
                                 <ol class="bridge-help-steps">
                                     <li>
-                                        打开 <code>chrome://extensions</code>
+                                        <span data-i18n="settings.bridgeInstallStep1">打开 <code>chrome://extensions</code></span>
                                         <button type="button" id="settings-bridge-copy-extensions-btn" class="secondary-btn bridge-settings-btn compact">
                                             <span class="material-symbols-rounded">content_copy</span>
-                                            <span>复制</span>
+                                            <span data-i18n="common.copy">复制</span>
                                         </button>
                                     </li>
-                                    <li>开启右上角「开发者模式」</li>
-                                    <li>下载扩展包并解压，或使用仓库中的 <code>extension/</code> 目录</li>
-                                    <li>点击「加载已解压的扩展程序」，选择 <code>justsearch-bridge</code>（或 <code>extension</code>）文件夹</li>
-                                    <li>在扩展弹窗确认绿色「已连接」，地址与上方期望 WS 一致</li>
+                                    <li data-i18n="settings.bridgeInstallStep2">开启右上角「开发者模式」</li>
+                                    <li data-i18n="settings.bridgeInstallStep3">下载扩展包并解压，或使用仓库中的 <code>extension/</code> 目录</li>
+                                    <li data-i18n="settings.bridgeInstallStep4">点击「加载已解压的扩展程序」，选择 <code>justsearch-bridge</code>（或 <code>extension</code>）文件夹</li>
+                                    <li data-i18n="settings.bridgeInstallStep5">在扩展弹窗确认绿色「已连接」，地址与上方期望 WS 一致</li>
                                 </ol>
                                 <div class="form-group settings-field-row bridge-field-stack">
                                     <div class="settings-field-copy">
-                                        <label>常见问题</label>
-                                        <span class="field-desc"><strong>已安装仍未连接：</strong>检查扩展 popup 地址；桥接与 HTTP 服务共用同一端口，默认 8000（本地）或宿主机映射端口（Docker）。</span>
-                                        <span class="field-desc"><strong>标签页顶部黄条：</strong>扩展通过 debugger 控制标签时的正常提示，任务结束后会消失。</span>
-                                        <span class="field-desc"><strong>只能连一个扩展：</strong>后连接的实例会顶替先前连接。</span>
+                                        <label data-i18n="settings.bridgeFaq">常见问题</label>
+                                        <span class="field-desc" data-i18n="settings.bridgeFaqNotConnected"><strong>已安装仍未连接：</strong>检查扩展 popup 地址；桥接与 HTTP 服务共用同一端口，默认 8000（本地）或宿主机映射端口（Docker）。</span>
+                                        <span class="field-desc" data-i18n="settings.bridgeFaqYellowBar"><strong>标签页顶部黄条：</strong>扩展通过 debugger 控制标签时的正常提示，任务结束后会消失。</span>
+                                        <span class="field-desc" data-i18n="settings.bridgeFaqSingleExtension"><strong>只能连一个扩展：</strong>后连接的实例会顶替先前连接。</span>
                                     </div>
                                 </div>
                             </div>
@@ -689,57 +800,57 @@
                         <!-- Tab 4: System Maintenance -->
                         <div id="tab-system" class="settings-panel" role="tabpanel">
                             <div class="settings-section-heading">
-                                <div class="settings-section-kicker">Data</div>
-                                <div class="panel-header-title">系统维护</div>
+                                <div class="settings-section-kicker" data-i18n="settings.sectionData">Data</div>
+                                <div class="panel-header-title" data-i18n="settings.tabs.maintenance">系统维护</div>
                             </div>
                             <div class="settings-card history-transfer-card">
                                 <div class="maintenance-card">
                                     <div class="maintenance-info">
-                                        <div class="maintenance-title">导出聊天记录</div>
-                                        <div class="maintenance-desc">将所有聊天会话和分组导出为 JSON 文件。</div>
+                                        <div class="maintenance-title" data-i18n="settings.exportTitle">导出聊天记录</div>
+                                        <div class="maintenance-desc" data-i18n="settings.exportDesc">将所有聊天会话和分组导出为 JSON 文件。</div>
                                     </div>
                                     <button type="button" id="export-history-btn" class="secondary-btn">
                                         <span class="material-symbols-rounded">download</span>
-                                        <span>导出</span>
+                                        <span data-i18n="settings.export">导出</span>
                                     </button>
                                 </div>
                                 <div class="maintenance-card">
                                     <div class="maintenance-info">
-                                        <div class="maintenance-title">导入聊天记录</div>
-                                        <div class="maintenance-desc">从 JustSearch 或 AMC 的历史 JSON 文件导入，重复会话会跳过。</div>
+                                        <div class="maintenance-title" data-i18n="settings.importTitle">导入聊天记录</div>
+                                        <div class="maintenance-desc" data-i18n="settings.importDesc">从 JustSearch 或 AMC 的历史 JSON 文件导入，重复会话会跳过。</div>
                                     </div>
                                     <input type="file" id="history-import-input" accept="application/json,.json" hidden>
                                     <button type="button" id="import-history-btn" class="secondary-btn">
                                         <span class="material-symbols-rounded">upload</span>
-                                        <span>导入</span>
+                                        <span data-i18n="settings.import">导入</span>
                                     </button>
                                 </div>
                             </div>
                             <div class="settings-danger-zone">
                                 <div class="settings-danger-header">
                                     <span class="material-symbols-rounded">warning</span>
-                                    <span>危险区域</span>
+                                    <span data-i18n="settings.dangerZone">危险区域</span>
                                 </div>
                                 <div class="maintenance-card">
                                     <div class="maintenance-info">
-                                        <div class="maintenance-title">重置应用设置</div>
-                                        <div class="maintenance-desc">将所有的系统设置项恢复为出厂默认值。</div>
+                                        <div class="maintenance-title" data-i18n="settings.resetSettings">重置应用设置</div>
+                                        <div class="maintenance-desc" data-i18n="settings.resetSettingsDesc">将所有的系统设置项恢复为出厂默认值。</div>
                                     </div>
-                                    <button id="reset-settings-btn" class="secondary-btn">恢复默认</button>
+                                    <button id="reset-settings-btn" class="secondary-btn" data-i18n="settings.resetToDefault">恢复默认</button>
                                 </div>
                                 <div class="maintenance-card warning">
                                     <div class="maintenance-info">
-                                        <div class="maintenance-title">清除历史记录</div>
-                                        <div class="maintenance-desc">删除您在此设备上的所有聊天会话历史（不可逆）。</div>
+                                        <div class="maintenance-title" data-i18n="settings.clearHistory">清除历史记录</div>
+                                        <div class="maintenance-desc" data-i18n="settings.clearHistoryDesc">删除您在此设备上的所有聊天会话历史（不可逆）。</div>
                                     </div>
-                                    <button id="clear-history-btn" class="danger-btn">清除历史</button>
+                                    <button id="clear-history-btn" class="danger-btn" data-i18n="settings.clearHistoryBtn">清除历史</button>
                                 </div>
                                 <div class="maintenance-card danger">
                                     <div class="maintenance-info">
-                                        <div class="maintenance-title">清除全部缓存</div>
-                                        <div class="maintenance-desc">清除所有聊天记录、浏览器缓存，并重置所有设置。</div>
+                                        <div class="maintenance-title" data-i18n="settings.clearCache">清除全部缓存</div>
+                                        <div class="maintenance-desc" data-i18n="settings.clearCacheDesc">清除所有聊天记录、浏览器缓存，并重置所有设置。</div>
                                     </div>
-                                    <button id="clear-cache-btn" class="danger-btn fill">清除全部缓存</button>
+                                    <button id="clear-cache-btn" class="danger-btn fill" data-i18n="settings.clearCacheBtn">清除全部缓存</button>
                                 </div>
                             </div>
                         </div>
@@ -748,50 +859,50 @@
                         <div id="tab-about" class="settings-panel" role="tabpanel">
                             <div class="about-hero">
                                 <div class="about-logo">
-                                    <img class="about-logo-img about-logo-light" src="/static/assets/justsearch-logo.png?v=9" alt="JustSearch">
-                                    <img class="about-logo-img about-logo-dark" src="/static/assets/justsearch-logo-dark.png?v=9" alt="JustSearch">
+                                    <img class="about-logo-img about-logo-light" src="/static/assets/justsearch-logo.png?v=12" alt="JustSearch">
+                                    <img class="about-logo-img about-logo-dark" src="/static/assets/justsearch-logo-dark.png?v=12" alt="JustSearch">
                                 </div>
                                 <a class="about-version-pill" href="https://github.com/yeahhe365/JustSearch/releases" target="_blank" rel="noopener noreferrer">
                                     <span id="about-version">v?.?.?</span>
                                     <span class="about-version-separator"></span>
                                     <span class="about-status-dot"></span>
-                                    <span>当前版本</span>
+                                    <span data-i18n="about.currentVersion">当前版本</span>
                                     <span class="material-symbols-rounded">open_in_new</span>
                                 </a>
-                                <p class="about-description">
+                                <p class="about-description" data-i18n="about.description">
                                     JustSearch 是一款基于大语言模型和自动化浏览器技术的 AI 深度搜索助手，可自动搜索、阅读网页并生成带引用的答案。
                                 </p>
                                 <div class="about-action-row">
                                     <a class="about-action-link github-primary" href="https://github.com/yeahhe365/JustSearch" target="_blank" rel="noopener noreferrer">
                                         <svg height="18" viewBox="0 0 16 16" version="1.1" width="18" aria-hidden="true" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"></path></svg>
-                                        <span>在 GitHub 上查看</span>
+                                        <span data-i18n="about.viewOnGithub">在 GitHub 上查看</span>
                                     </a>
                                     <a class="about-action-link" href="https://github.com/yeahhe365/JustSearch/stargazers" target="_blank" rel="noopener noreferrer">
                                         <span class="material-symbols-rounded">star</span>
                                         <span id="about-stars-count">—</span>
-                                        <span>Stars</span>
+                                        <span data-i18n="about.stars">Stars</span>
                                     </a>
                                 </div>
                             </div>
                             <div class="about-meta-grid">
                                 <div class="about-meta-item">
-                                    <span class="about-meta-label">技术栈：</span>
-                                    <span class="about-meta-value">FastAPI / Chrome Bridge</span>
+                                    <span class="about-meta-label" data-i18n="about.stackLabel">技术栈：</span>
+                                    <span class="about-meta-value" data-i18n="about.stackValue">FastAPI / Chrome Bridge</span>
                                 </div>
                                 <span class="about-meta-dot">•</span>
                                 <div class="about-meta-item">
-                                    <span class="about-meta-label">许可证：</span>
-                                    <span class="about-meta-value">MIT License</span>
+                                    <span class="about-meta-label" data-i18n="about.licenseLabel">许可证：</span>
+                                    <span class="about-meta-value" data-i18n="about.licenseValue">MIT License</span>
                                 </div>
                                 <span class="about-meta-dot">•</span>
                                 <div class="about-meta-item">
-                                    <span class="about-meta-label">核心能力：</span>
-                                    <span class="about-meta-value">深度搜索 / 引用溯源</span>
+                                    <span class="about-meta-label" data-i18n="about.coreCapabilityLabel">核心能力：</span>
+                                    <span class="about-meta-value" data-i18n="about.coreCapabilityValue">深度搜索 / 引用溯源</span>
                                 </div>
                             </div>
                         </div>
                     </div>
-                    
+
                 </main>
             </div>
         </div>
@@ -801,15 +912,71 @@
     <div id="confirm-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
         <div class="modal-content" style="width: 360px;">
             <div class="modal-header">
-                <h2 id="confirm-title">确认</h2>
-                <span class="close-btn" id="confirm-close-btn" role="button" tabindex="0" aria-label="关闭">&times;</span>
+                <h2 id="confirm-title" data-i18n="confirm.title">确认</h2>
+                <span class="close-btn" id="confirm-close-btn" role="button" tabindex="0" data-i18n-aria-label="modal.close" aria-label="关闭">&times;</span>
             </div>
             <div class="modal-body">
                 <p id="confirm-message" style="margin: 0; color: var(--text-secondary); line-height: 1.6;"></p>
             </div>
             <div class="modal-actions">
-                <button id="confirm-cancel-btn" class="secondary-btn">取消</button>
-                <button id="confirm-ok-btn" class="save-btn">确定</button>
+                <button id="confirm-cancel-btn" class="secondary-btn" data-i18n="common.cancel">取消</button>
+                <button id="confirm-ok-btn" class="save-btn" data-i18n="common.ok">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Keyboard Shortcuts Help Modal (AMC-aligned HelpModal) -->
+    <div id="shortcuts-help-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="shortcuts-help-title">
+        <div class="modal-content shortcuts-help-content">
+            <div class="modal-header">
+                <h2 id="shortcuts-help-title" data-i18n="shortcuts.title">键盘快捷键</h2>
+                <span class="close-btn shortcuts-help-close" role="button" tabindex="0" data-i18n-aria-label="modal.close" aria-label="关闭">&times;</span>
+            </div>
+            <div class="shortcuts-help-search">
+                <span class="material-symbols-rounded shortcuts-help-search-icon" aria-hidden="true">search</span>
+                <input type="search" id="shortcuts-help-search-input" data-i18n-placeholder="shortcuts.searchPlaceholder" data-i18n-aria-label="shortcuts.searchPlaceholder" placeholder="搜索快捷键..." aria-label="搜索快捷键">
+            </div>
+            <div class="modal-body shortcuts-help-body" id="shortcuts-help-list"></div>
+        </div>
+    </div>
+
+    <!-- Model Manager Modal (AMC-aligned: current models + batch paste) -->
+    <div id="model-manager-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="model-manager-title">
+        <div class="modal-content model-manager-content">
+            <div class="modal-header model-manager-header">
+                <div>
+                    <h2 id="model-manager-title" data-i18n="settings.modelManagerTitle">管理模型</h2>
+                    <p class="model-manager-subtitle" data-i18n="settings.modelManagerSubtitle">编辑当前供应商的模型列表，或批量粘贴添加</p>
+                </div>
+                <button type="button" class="model-manager-close-btn close-btn" data-i18n-aria-label="modal.close" aria-label="关闭">
+                    <span class="material-symbols-rounded">close</span>
+                </button>
+            </div>
+            <div class="modal-body model-manager-body">
+                <section class="model-manager-current">
+                    <div class="model-manager-section-header">
+                        <span data-i18n="settings.modelManagerCurrent">当前模型</span>
+                        <span class="model-manager-count" id="model-manager-count">0</span>
+                    </div>
+                    <label class="model-manager-search-wrap">
+                        <span class="material-symbols-rounded" aria-hidden="true">search</span>
+                        <input type="search" id="model-manager-search" data-i18n-placeholder="settings.modelManagerSearch" data-i18n-aria-label="settings.modelManagerSearch" placeholder="搜索模型..." autocomplete="off" aria-label="搜索模型">
+                    </label>
+                    <div class="model-manager-list" id="model-manager-list"></div>
+                </section>
+                <section class="model-manager-import">
+                    <div class="model-manager-section-header">
+                        <span data-i18n="settings.modelManagerBatch">批量粘贴添加</span>
+                    </div>
+                    <textarea id="model-manager-batch-input" rows="6" data-i18n-placeholder="settings.modelManagerBatchPlaceholder" placeholder="每行一个模型 ID，或粘贴以逗号/空格分隔的列表" spellcheck="false"></textarea>
+                    <div class="model-manager-import-actions">
+                        <button type="button" id="model-manager-add-batch-btn" class="add-model-btn">
+                            <span class="material-symbols-rounded">add</span>
+                            <span data-i18n="common.add">添加</span>
+                        </button>
+                    </div>
+                    <p class="model-manager-batch-message" id="model-manager-batch-message" hidden aria-live="polite"></p>
+                </section>
             </div>
         </div>
     </div>
@@ -818,46 +985,44 @@
     <div id="bridge-install-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="bridge-install-title">
         <div class="modal-content bridge-install-modal-content">
             <div class="modal-header">
-                <h2 id="bridge-install-title">需要安装浏览器桥接扩展</h2>
-                <span class="close-btn" data-bridge-close role="button" tabindex="0" aria-label="关闭">&times;</span>
+                <h2 id="bridge-install-title" data-i18n="bridge.installTitle">需要安装浏览器桥接扩展</h2>
+                <span class="close-btn" data-bridge-close role="button" tabindex="0" data-i18n-aria-label="modal.close" aria-label="关闭">&times;</span>
             </div>
             <div class="modal-body bridge-install-body">
-                <p class="bridge-install-lead">
+                <p class="bridge-install-lead" data-i18n="bridge.installLead">
                     Google、Bing 等搜索与网页阅读均通过本机 <strong>JustSearch Bridge</strong> Chrome 扩展驱动真实浏览器。
                     未连接扩展时无法抓取搜索结果。
                 </p>
-                <div id="bridge-modal-status" class="bridge-modal-status" data-state="disconnected">状态：未连接</div>
+                <div id="bridge-modal-status" class="bridge-modal-status" data-state="disconnected" data-i18n="settings.bridgeStatus">状态：未连接</div>
                 <ol class="bridge-install-steps">
                     <li>
-                        打开 Chrome，地址栏输入
-                        <code>chrome://extensions</code>
-                        <button type="button" id="bridge-copy-extensions-url-btn" class="bridge-inline-btn">复制</button>
+                        <span data-i18n="bridge.installStep1">打开 Chrome，地址栏输入 <code>chrome://extensions</code></span>
+                        <button type="button" id="bridge-copy-extensions-url-btn" class="bridge-inline-btn" data-i18n="common.copy">复制</button>
                     </li>
-                    <li>开启右上角「开发者模式」</li>
+                    <li data-i18n="bridge.installStep2">开启右上角「开发者模式」</li>
                     <li>
-                        下载扩展包并解压，或直接使用仓库中的
-                        <code>extension/</code> 目录
+                        <span data-i18n="bridge.installStep3">下载扩展包并解压，或直接使用仓库中的 <code>extension/</code> 目录</span>
                     </li>
-                    <li>点击「加载已解压的扩展程序」，选择解压后的 <code>justsearch-bridge</code> 文件夹</li>
-                    <li>点击扩展图标，确认状态为绿色「已连接」</li>
+                    <li data-i18n="bridge.installStep4">点击「加载已解压的扩展程序」，选择解压后的 <code>justsearch-bridge</code> 文件夹</li>
+                    <li data-i18n="bridge.installStep5">点击扩展图标，确认状态为绿色「已连接」</li>
                 </ol>
                 <div class="bridge-ws-row">
-                    <label for="bridge-ws-url">默认 WebSocket 地址</label>
+                    <label for="bridge-ws-url" data-i18n="bridge.wsLabel">默认 WebSocket 地址</label>
                     <div class="bridge-ws-controls">
-                        <input id="bridge-ws-url" type="text" readonly value="ws://127.0.0.1:8000/justsearch" aria-label="桥接 WebSocket 地址">
-                        <button type="button" id="bridge-copy-ws-btn" class="secondary-btn">复制</button>
+                        <input id="bridge-ws-url" type="text" readonly value="ws://127.0.0.1:8000/justsearch" data-i18n-aria-label="bridge.wsLabel" aria-label="桥接 WebSocket 地址">
+                        <button type="button" id="bridge-copy-ws-btn" class="secondary-btn" data-i18n="common.copy">复制</button>
                     </div>
-                    <span class="field-desc">若后端端口变更，可在扩展弹出页修改后自动重连。</span>
+                    <span class="field-desc" data-i18n="bridge.wsDesc">若后端端口变更，可在扩展弹出页修改后自动重连。</span>
                 </div>
             </div>
             <div class="modal-actions bridge-install-actions">
-                <button type="button" class="secondary-btn" data-bridge-close>关闭</button>
-                <button type="button" id="bridge-recheck-btn" class="secondary-btn">重新检测</button>
-                <a id="bridge-download-btn" class="save-btn bridge-download-link" href="/api/extension/download" download="justsearch-bridge.zip">下载扩展包</a>
+                <button type="button" class="secondary-btn" data-bridge-close data-i18n="common.close">关闭</button>
+                <button type="button" id="bridge-recheck-btn" class="secondary-btn" data-i18n="settings.bridgeRecheck">重新检测</button>
+                <a id="bridge-download-btn" class="save-btn bridge-download-link" href="/api/extension/download" download="justsearch-bridge.zip" data-i18n="bridge.downloadBundle">下载扩展包</a>
             </div>
         </div>
     </div>
 
-    <script type="module" src="/static/js/main.js?v=75"></script>
+    <script type="module" src="/static/js/main.js?v=85"></script>
 </body>
 </html>

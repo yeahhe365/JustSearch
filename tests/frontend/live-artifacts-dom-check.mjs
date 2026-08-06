@@ -35,6 +35,14 @@ const inlineViewport = container.querySelector('.live-artifact-inline-viewport')
 assert.match(inlineFrame.getAttribute('srcdoc'), /Inline Artifact/);
 assert.match(inlineFrame.getAttribute('srcdoc'), /data-amc-preview-base/);
 assert.match(inlineFrame.getAttribute('srcdoc'), /notifyResize/);
+// The injected bridge must stay a valid script. Its regexes live inside a JS
+// template literal, where '\/' would be unescaped to '/' and break the parse
+// (the '/' starts a comment, silently killing the whole bridge). Guard both
+// the anchor interceptor presence and the escaped-slash form.
+const srcdoc = inlineFrame.getAttribute('srcdoc');
+assert.match(srcdoc, /Generic external links/);
+assert.match(srcdoc, /\\\/\\\//i);
+assert.doesNotMatch(srcdoc, /https\?:\/\/\/i/);
 assert.equal(inlineFrame.getAttribute('scrolling'), 'no');
 assert.equal(
   inlineFrame.getAttribute('sandbox'),

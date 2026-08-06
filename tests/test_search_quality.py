@@ -1336,7 +1336,8 @@ def test_workflow_keeps_partial_live_artifact_answers_in_artifact_format():
         )
     )
 
-    assert result.startswith("<section")
+    assert 'data-justsearch-partial-banner="true"' in result
+    assert "<section" in result
     assert "临时结论" in result
     assert "### 参考资料" not in result
     assert "\n\n---" not in result

@@ -1,6 +1,7 @@
 import { coerceBooleanSetting, state, setBridgeConnected } from './state.js?v=5';
 import { authFetch } from './auth.js?v=1';
 import { showToast } from './toast.js';
+import { t } from './i18n.js?v=1';
 
 const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_WS_URL = 'ws://127.0.0.1:8000/justsearch';
@@ -44,15 +45,15 @@ function bridgeMetaFromHealth(health) {
 function versionStatusLabel(status, latestVersion) {
     switch (status) {
         case 'latest':
-            return '已是最新';
+            return t('bridge.vsLatest');
         case 'outdated':
-            return latestVersion ? `可更新至 v${latestVersion}` : '需要更新';
+            return latestVersion ? t('bridge.vsUpdateAvailable', { version: latestVersion }) : t('bridge.vsNeedsUpdate');
         case 'newer':
-            return '高于服务端包';
+            return t('bridge.vsNewerThanServer');
         case 'disconnected':
-            return latestVersion ? `服务端最新 v${latestVersion}` : '未连接';
+            return latestVersion ? t('bridge.vsServerLatest', { version: latestVersion }) : t('bridge.disconnected');
         default:
-            return latestVersion ? `最新 v${latestVersion}` : '版本未知';
+            return latestVersion ? t('bridge.vsLatestVersion', { version: latestVersion }) : t('bridge.vsVersionUnknown');
     }
 }
 
@@ -92,12 +93,12 @@ function buildHostAccessTip(wsUrl) {
         const parsed = new URL(asHttp);
         if (parsed.port !== pagePort && pagePort !== '') {
             const recommended = `ws://127.0.0.1:${pagePort}${parsed.pathname || '/justsearch'}`;
-            return `检测到页面端口为 ${pagePort}，但 WS 地址填的是 ${parsed.port}。扩展请连接 ${recommended}，桥接与 HTTP 共用同一端口。`;
+            return t('bridge.portMismatch', { pagePort, wsPort: parsed.port, recommended });
         }
     } catch {
         // ignore parse errors
     }
-    return '桥接地址与 HTTP 服务共用同一端口。默认 8000（本地）或宿主机映射端口（Docker）。';
+    return t('bridge.sharedPortTip');
 }
 
 export async function fetchBridgeStatus() {
@@ -201,25 +202,21 @@ export function updateBridgeStatusUI(meta = null) {
         setDotState(statusBtn, connected);
         statusBtn.setAttribute(
             'aria-label',
-            connected ? '浏览器桥接已连接' : '浏览器桥接未连接，点击查看安装说明'
+            connected ? t('bridge.connectedToast') : t('bridge.disconnectedInstall')
         );
         statusBtn.title = connected
-            ? '浏览器桥接已连接'
-            : '扩展未连接 — 点击查看安装说明';
+            ? t('bridge.connectedToast')
+            : t('bridge.disconnectedViewInstall');
     }
     if (statusLabel) {
         if (connected === null || connected === undefined) {
-            statusLabel.textContent = '桥接检测中';
+            statusLabel.textContent = t('bridge.checking');
         } else if (connected && updateAvailable) {
-            statusLabel.textContent = extensionVersion
-                ? `桥接可更新 · v${extensionVersion}`
-                : '桥接可更新';
+            statusLabel.textContent = t('bridge.updateAvailable');
         } else if (connected) {
-            statusLabel.textContent = extensionVersion
-                ? `桥接已连接 · v${extensionVersion}`
-                : '桥接已连接';
+            statusLabel.textContent = t('bridge.connected');
         } else {
-            statusLabel.textContent = '扩展未连接';
+            statusLabel.textContent = t('bridge.notConnected');
         }
     }
     if (banner) {
@@ -230,8 +227,8 @@ export function updateBridgeStatusUI(meta = null) {
     if (modalStatus) {
         modalStatus.dataset.state = connected ? 'connected' : 'disconnected';
         modalStatus.textContent = connected
-            ? '状态：已连接，可以开始搜索'
-            : '状态：未连接，请按下方步骤安装扩展';
+            ? t('bridge.modalConnected')
+            : t('bridge.modalDisconnected');
     }
     if (wsInput && wsUrl) {
         wsInput.value = wsUrl;
@@ -254,19 +251,19 @@ export function updateBridgeStatusUI(meta = null) {
         settingsBadge.classList.remove('is-saved', 'is-pending', 'is-saving', 'is-invalid', 'is-error');
         if (connected === null || connected === undefined) {
             settingsBadge.dataset.state = 'unknown';
-            settingsBadge.textContent = '检测中';
+            settingsBadge.textContent = t('bridge.checking');
             settingsBadge.classList.add('is-pending');
         } else if (!connected) {
             settingsBadge.dataset.state = 'disconnected';
-            settingsBadge.textContent = '未连接';
+            settingsBadge.textContent = t('bridge.disconnected');
             settingsBadge.classList.add('is-invalid');
         } else if (updateAvailable) {
             settingsBadge.dataset.state = 'outdated';
-            settingsBadge.textContent = '可更新';
+            settingsBadge.textContent = t('bridge.updateAvailableShort');
             settingsBadge.classList.add('is-invalid');
         } else {
             settingsBadge.dataset.state = 'connected';
-            settingsBadge.textContent = '已连接';
+            settingsBadge.textContent = t('bridge.connected');
             settingsBadge.classList.add('is-saved');
         }
     }
@@ -279,31 +276,31 @@ export function updateBridgeStatusUI(meta = null) {
     const settingsSubtitle = document.getElementById('settings-bridge-status-subtitle');
     if (settingsTitle) {
         if (connected === null || connected === undefined) {
-            settingsTitle.textContent = '检测中…';
+            settingsTitle.textContent = t('bridge.statusTitleChecking');
         } else if (!connected) {
-            settingsTitle.textContent = '扩展未连接';
+            settingsTitle.textContent = t('bridge.statusTitleNotConnected');
         } else if (updateAvailable) {
-            settingsTitle.textContent = '扩展已连接 · 有新版本';
+            settingsTitle.textContent = t('bridge.statusTitleUpdate');
         } else {
-            settingsTitle.textContent = '扩展已连接';
+            settingsTitle.textContent = t('bridge.statusTitleConnected');
         }
     }
     if (settingsSubtitle) {
         if (connected && updateAvailable && extensionVersion && latestExtensionVersion) {
-            settingsSubtitle.textContent = `当前 v${extensionVersion}，服务端最新 v${latestExtensionVersion}。请重新加载扩展或下载安装包。`;
+            settingsSubtitle.textContent = t('bridge.subtitleUpdate', { extVersion: extensionVersion, latestVersion: latestExtensionVersion });
         } else if (connected && extensionVersion) {
             const name = extensionName || 'JustSearch Bridge';
             const latestNote = latestExtensionVersion && extensionVersionStatus === 'latest'
-                ? ' · 已是最新'
+                ? t('bridge.subtitleLatest')
                 : '';
-            settingsSubtitle.textContent = `${name} v${extensionVersion}${latestNote} · 搜索与读网页经本机 Chrome 执行`;
+            settingsSubtitle.textContent = t('bridge.subtitleConnected', { name, version: extensionVersion, latestNote });
         } else if (connected) {
-            settingsSubtitle.textContent = '搜索与读网页将通过本机 Chrome 扩展执行（等待扩展上报版本…）';
+            settingsSubtitle.textContent = t('bridge.subtitleWaiting');
         } else if (connected === null || connected === undefined) {
-            settingsSubtitle.textContent = '正在查询桥接状态';
+            settingsSubtitle.textContent = t('bridge.subtitleChecking');
         } else {
-            const latestNote = latestExtensionVersion ? `（服务端最新 v${latestExtensionVersion}）` : '';
-            settingsSubtitle.textContent = `安装并连接 JustSearch Bridge 后才能搜索${latestNote}`;
+            const latestNote = latestExtensionVersion ? `（${t('bridge.subtitleServerLatest', { version: latestExtensionVersion })}）` : '';
+            settingsSubtitle.textContent = t('bridge.subtitleInstallNeeded', { latestNote });
         }
     }
 
@@ -316,7 +313,7 @@ export function updateBridgeStatusUI(meta = null) {
     const settingsVersion = document.getElementById('settings-bridge-extension-version');
     if (settingsVersion) {
         settingsVersion.textContent = connected
-            ? (extensionVersion ? `v${extensionVersion}` : '等待上报…')
+            ? (extensionVersion ? `v${extensionVersion}` : t('bridge.waitingReport'))
             : '—';
         settingsVersion.classList.toggle('is-pending', Boolean(connected && !extensionVersion));
         settingsVersion.classList.toggle('is-ready', Boolean(connected && extensionVersion && !updateAvailable));
@@ -352,7 +349,10 @@ export function updateBridgeStatusUI(meta = null) {
         updateCallout.setAttribute('aria-hidden', showUpdate ? 'false' : 'true');
         const updateText = document.getElementById('settings-bridge-update-text');
         if (updateText && showUpdate) {
-            updateText.textContent = `当前 ${extensionVersion ? `v${extensionVersion}` : '未知'}，最新 ${latestExtensionVersion ? `v${latestExtensionVersion}` : '未知'}。请下载最新包后在 chrome://extensions 中重新加载。`;
+            updateText.textContent = t('bridge.updateText', {
+                current: extensionVersion ? `v${extensionVersion}` : t('bridge.unknown'),
+                latest: latestExtensionVersion ? `v${latestExtensionVersion}` : t('bridge.unknown'),
+            });
         }
     }
 
@@ -372,17 +372,20 @@ export function updateBridgeStatusUI(meta = null) {
     if (modalStatus) {
         if (connected && updateAvailable && extensionVersion && latestExtensionVersion) {
             modalStatus.dataset.state = 'disconnected';
-            modalStatus.textContent = `状态：已连接，但扩展可更新（v${extensionVersion} → v${latestExtensionVersion}）`;
+            modalStatus.textContent = t('bridge.modalUpdate', { extVersion: extensionVersion, latestVersion: latestExtensionVersion });
         } else if (connected && extensionVersion) {
             modalStatus.dataset.state = 'connected';
-            modalStatus.textContent = `状态：已连接 · 扩展 v${extensionVersion}${extensionVersionStatus === 'latest' ? ' · 最新' : ''}`;
+            modalStatus.textContent = t('bridge.modalConnectedVersion', {
+                version: extensionVersion,
+                latestNote: extensionVersionStatus === 'latest' ? t('bridge.modalLatest') : '',
+            });
         }
     }
 
     const settingsHint = document.getElementById('settings-bridge-install-hint');
     if (settingsHint) {
         settingsHint.textContent = installHint
-            || 'Chrome → chrome://extensions → 开发者模式 → 加载已解压扩展';
+            || t('settings.bridgeInstallHintDesc');
     }
 
     const settingsTip = document.getElementById('settings-bridge-host-tip');
@@ -393,16 +396,16 @@ export function updateBridgeStatusUI(meta = null) {
             if (updateAvailable) {
                 showToast(
                     latestExtensionVersion
-                        ? `桥接已连接，扩展可更新至 v${latestExtensionVersion}`
-                        : '桥接已连接，扩展有可用更新',
+                        ? t('bridge.toastUpdateVersion', { version: latestExtensionVersion })
+                        : t('bridge.toastUpdate'),
                     'warning',
                     4500
                 );
             } else {
-                showToast('浏览器桥接已连接', 'success');
+                showToast(t('bridge.connectedToast'), 'success');
             }
         } else if (lastKnownConnected === true && connected === false) {
-            showToast('浏览器桥接已断开', 'warning');
+            showToast(t('bridge.disconnectedToast'), 'warning');
         }
     }
     if (connected === true || connected === false) {
@@ -432,7 +435,7 @@ async function copyText(value, successMessage) {
         await navigator.clipboard.writeText(value);
         showToast(successMessage, 'success');
     } catch {
-        showToast('复制失败，请手动选择文本', 'error');
+        showToast(t('bridge.copyFailed'), 'error');
     }
 }
 
@@ -457,10 +460,10 @@ function wireBridgeModalOnce() {
             try {
                 const meta = await fetchBridgeStatus();
                 if (meta.connected) {
-                    showToast('扩展已连接', 'success');
+                    showToast(t('bridge.extConnected'), 'success');
                     closeBridgeInstallModal();
                 } else {
-                    showToast('仍未检测到扩展连接，请确认扩展已加载且状态为绿色', 'warning', 4500);
+                    showToast(t('bridge.extNotDetected'), 'warning', 4500);
                 }
             } finally {
                 recheckBtn.disabled = false;
@@ -472,14 +475,14 @@ function wireBridgeModalOnce() {
     if (copyWsBtn) {
         copyWsBtn.addEventListener('click', async () => {
             const value = document.getElementById('bridge-ws-url')?.value || state.bridgeWsUrl || DEFAULT_WS_URL;
-            await copyText(value, '已复制 WebSocket 地址');
+            await copyText(value, t('bridge.copiedWs'));
         });
     }
 
     const copyExtPathBtn = document.getElementById('bridge-copy-extensions-url-btn');
     if (copyExtPathBtn) {
         copyExtPathBtn.addEventListener('click', async () => {
-            await copyText('chrome://extensions', '已复制 chrome://extensions');
+            await copyText('chrome://extensions', t('bridge.copiedExtensionsUrl'));
         });
     }
 
@@ -491,10 +494,10 @@ function wireBridgeModalOnce() {
             downloadBtn.setAttribute('aria-busy', 'true');
             try {
                 await downloadBridgeExtensionPackage();
-                showToast('扩展包已开始下载', 'success');
+                showToast(t('bridge.downloadStarted'), 'success');
             } catch (error) {
                 console.error('[bridge] download failed', error);
-                showToast('下载失败，请检查网络或认证后重试', 'error');
+                showToast(t('bridge.downloadFailed'), 'error');
             } finally {
                 downloadBtn.removeAttribute('aria-busy');
             }
@@ -515,7 +518,7 @@ export function wireBridgeSettingsPanel() {
             try {
                 const meta = await fetchBridgeStatus();
                 showToast(
-                    meta.connected ? '扩展已连接' : '仍未检测到扩展连接',
+                    meta.connected ? t('bridge.extConnected') : t('bridge.extNotDetected'),
                     meta.connected ? 'success' : 'warning',
                     4000
                 );
@@ -530,10 +533,10 @@ export function wireBridgeSettingsPanel() {
         btn.disabled = true;
         try {
             await downloadBridgeExtensionPackage();
-            showToast('扩展包已开始下载', 'success');
+            showToast(t('bridge.downloadStarted'), 'success');
         } catch (error) {
             console.error('[bridge] settings download failed', error);
-            showToast('下载失败，请检查网络或认证后重试', 'error');
+            showToast(t('bridge.downloadFailed'), 'error');
         } finally {
             btn.disabled = false;
         }
@@ -559,14 +562,14 @@ export function wireBridgeSettingsPanel() {
             const value = document.getElementById('settings-bridge-ws-url')?.textContent?.trim()
                 || state.bridgeWsUrl
                 || DEFAULT_WS_URL;
-            await copyText(value, '已复制 WebSocket 地址');
+            await copyText(value, t('bridge.copiedWs'));
         });
     }
 
     const copyExtBtn = document.getElementById('settings-bridge-copy-extensions-btn');
     if (copyExtBtn) {
         copyExtBtn.addEventListener('click', async () => {
-            await copyText('chrome://extensions', '已复制 chrome://extensions');
+            await copyText('chrome://extensions', t('bridge.copiedExtensionsUrl'));
         });
     }
 }
@@ -615,7 +618,7 @@ export function warnIfBridgeDisconnected(contextLabel = '') {
     if (state.bridgeConnected !== false) return;
     const suffix = contextLabel ? `（${contextLabel}）` : '';
     showToast(
-        `搜索依赖 Chrome 扩展桥接，当前未连接${suffix}。可在设置 → 浏览器桥接中查看详情。`,
+        t('bridge.searchNeedsBridge', { context: suffix }),
         'warning',
         4500
     );
@@ -646,7 +649,7 @@ export function startBridgeStatusPolling() {
         statusBtn.dataset.wired = '1';
         statusBtn.addEventListener('click', () => {
             if (state.bridgeConnected) {
-                showToast('浏览器桥接已连接', 'info');
+                showToast(t('bridge.connectedToast'), 'info');
             } else {
                 openBridgeInstallModal();
             }

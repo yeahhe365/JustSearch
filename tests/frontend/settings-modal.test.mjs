@@ -28,6 +28,9 @@ function installBrowserGlobals() {
             <span id="live-artifacts-font-size-value">16px</span>
             <input id="max-results-input" type="number">
             <input id="max-iterations-input" type="number">
+            <input id="history-window-input" type="number">
+            <input id="history-char-budget-input" type="number">
+            <input id="assistant-turn-char-budget-input" type="number">
             <input id="interactive-search-input" type="checkbox" checked>
             <input id="max-concurrent-pages-input" type="number">
             <div id="provider-list-container"></div>
@@ -113,14 +116,15 @@ test('compact model display names do not become API model ids', async () => {
 
     __settingsModalTestHooks.renderProviderList(providers, 'gateway');
 
-    const nameInput = document.querySelector('.model-name-input');
+    // 'gateway' is not a catalog entry, so it renders as a generic custom row.
+    const gatewayCard = () => document.querySelector('.provider-card[data-live-provider-id="gateway"]');
+    const nameInput = gatewayCard().querySelector('.model-name-input');
     nameInput.value = '5.5';
     nameInput.dispatchEvent(new Event('input', { bubbles: true }));
 
-    assert.equal(
-        __settingsModalTestHooks.collectProvidersForm()[0].model_id,
-        'gpt-5.5::5.5',
-    );
+    const collected = __settingsModalTestHooks.collectProvidersForm();
+    const gateway = collected.find(p => p.id === 'gateway');
+    assert.equal(gateway.model_id, 'gpt-5.5::5.5');
 
     __settingsModalTestHooks.renderProviderList(
         [
@@ -132,7 +136,7 @@ test('compact model display names do not become API model ids', async () => {
         'gateway',
     );
 
-    const rows = Array.from(document.querySelectorAll('.model-row'));
+    const rows = Array.from(gatewayCard().querySelectorAll('.model-row'));
     assert.equal(rows[0].querySelector('.model-id-input').value, 'gpt-5.5');
     assert.equal(rows[0].querySelector('.model-name-input').value, '5.5');
     assert.equal(rows[1].querySelector('.model-id-input').value, 'qwen2.5:7b');
@@ -148,7 +152,7 @@ test('compact model display names do not become API model ids', async () => {
         'gateway',
     );
 
-    const fallbackRows = Array.from(document.querySelectorAll('.model-row'));
+    const fallbackRows = Array.from(gatewayCard().querySelectorAll('.model-row'));
     assert.equal(fallbackRows[0].querySelector('.model-id-input').value, 'foo::');
     assert.equal(fallbackRows[0].querySelector('.model-name-input').value, '');
     assert.equal(fallbackRows[1].querySelector('.model-id-input').value, 'org/foo::');
@@ -202,16 +206,17 @@ test('provider rendering tolerates non-string settings values and escapes markup
         );
     });
 
-    const card = document.querySelector('.provider-card');
+    const card = document.querySelector('.provider-card[data-live-provider-id="7"]');
     assert.ok(card);
     assert.equal(card.querySelector('.provider-id-input').value, '7');
     assert.equal(card.querySelector('.provider-card-name').textContent, '<img src=x onerror=alert(1)>Gateway');
     assert.equal(card.querySelector('.provider-base-url-input').value, '<script>alert(1)</script>');
     assert.equal(card.querySelector('.model-id-input').value, 'gpt-5.5');
     assert.equal(card.querySelector('.model-name-input').value, '<b>Alias</b>');
-    assert.equal(card.querySelector('img'), null);
-    assert.equal(card.querySelector('script'), null);
-    assert.equal(card.querySelector('b'), null);
+    // Untrusted markup must be rendered as text — the only <img> is the provider logo.
+    assert.equal(card.querySelectorAll('script').length, 0);
+    assert.equal(card.querySelectorAll('b').length, 0);
+    assert.equal(card.querySelectorAll('img').length, 1);
 });
 
 test('engine check results render untrusted response fields as text', async () => {
@@ -297,4 +302,128 @@ test('settings form coerces string boolean toggles when filling form', async () 
         workflow_step_models: {},
     });
     assert.equal(checkbox.checked, true);
+});
+
+test('enable toggle reflects in collected providers, disables default radio, updates badge', async () => {
+    installBrowserGlobals();
+    const { __settingsModalTestHooks } = await import('../../backend/static/js/modules/settings-modal.js?test=enabled-toggle');
+    __settingsModalTestHooks.renderProviderList([
+        {
+            id: 'deepseek',
+            name: 'DeepSeek',
+            api_key: 'sk-test',
+            base_url: 'https://api.deepseek.com/v1',
+            model_id: 'deepseek-v4-flash',
+        },
+    ], 'deepseek');
+
+    const card = document.querySelector('.provider-card[data-live-provider-id="deepseek"]');
+    const enableInput = card.querySelector('.provider-enable-input');
+    const radio = card.querySelector('input[name="default-provider-radio"]');
+    assert.equal(enableInput.checked, true);
+    assert.equal(radio.disabled, false);
+    assert.equal(card.querySelector('.provider-status-badge').dataset.state, 'ready');
+
+    // Toggle off → enabled:false collected, radio disabled, badge hidden.
+    enableInput.checked = false;
+    enableInput.dispatchEvent(new Event('change', { bubbles: true }));
+    const disabled = __settingsModalTestHooks.collectProvidersForm().find(p => p.id === 'deepseek');
+    assert.equal(disabled.enabled, false);
+    assert.equal(radio.disabled, true);
+    assert.equal(card.querySelector('.provider-status-badge').hidden, true);
+
+    // Toggle back on → enabled:true, ready badge.
+    enableInput.checked = true;
+    enableInput.dispatchEvent(new Event('change', { bubbles: true }));
+    const reEnabled = __settingsModalTestHooks.collectProvidersForm().find(p => p.id === 'deepseek');
+    assert.equal(reEnabled.enabled, true);
+    assert.equal(card.querySelector('.provider-status-badge').dataset.state, 'ready');
+});
+
+test('validateSettingsForm requires an enabled provider and an enabled default', async () => {
+    installBrowserGlobals();
+    const { __settingsModalTestHooks } = await import('../../backend/static/js/modules/settings-modal.js?test=validate-enabled');
+    const base = (enabled) => ({ id: 'deepseek', name: 'DeepSeek', api_key: '', base_url: 'https://api.deepseek.com/v1', model_id: 'deepseek-v4-flash', enabled });
+
+    assert.equal(
+        __settingsModalTestHooks.validateSettingsForm({
+            providers: [base(false), { ...base(true), id: 'openai' }],
+            default_provider_id: 'openai',
+        }).ok,
+        true,
+    );
+
+    // All providers disabled → reject.
+    assert.equal(
+        __settingsModalTestHooks.validateSettingsForm({
+            providers: [base(false)],
+            default_provider_id: 'deepseek',
+        }).ok,
+        false,
+    );
+
+    // Default provider disabled while another is enabled → reject.
+    assert.equal(
+        __settingsModalTestHooks.validateSettingsForm({
+            providers: [base(false), { ...base(true), id: 'openai' }],
+            default_provider_id: 'deepseek',
+        }).ok,
+        false,
+    );
+});
+
+test('model manager modal batch paste adds deduped models back to the provider card', async () => {
+    installBrowserGlobals();
+    const modal = document.createElement('div');
+    modal.id = 'model-manager-modal';
+    modal.className = 'modal';
+    modal.innerHTML = `
+        <div class="modal-content">
+            <div class="model-manager-header">
+                <h2 id="model-manager-title">管理模型</h2>
+                <button type="button" class="model-manager-close-btn close-btn"></button>
+            </div>
+            <div class="model-manager-body">
+                <section class="model-manager-current">
+                    <span class="model-manager-count" id="model-manager-count">0</span>
+                    <input type="search" id="model-manager-search">
+                    <div class="model-manager-list" id="model-manager-list"></div>
+                </section>
+                <section class="model-manager-import">
+                    <textarea id="model-manager-batch-input"></textarea>
+                    <button type="button" id="model-manager-add-batch-btn"></button>
+                    <p id="model-manager-batch-message" hidden></p>
+                </section>
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+
+    const { __settingsModalTestHooks } = await import('../../backend/static/js/modules/settings-modal.js?test=manager-modal');
+    __settingsModalTestHooks.renderProviderList([
+        {
+            id: 'deepseek',
+            name: 'DeepSeek',
+            api_key: 'sk',
+            base_url: 'https://api.deepseek.com/v1',
+            model_id: 'deepseek-v4-flash',
+        },
+    ], 'deepseek');
+    const card = document.querySelector('.provider-card[data-live-provider-id="deepseek"]');
+    const hiddenInput = card.querySelector('.provider-model-input');
+
+    __settingsModalTestHooks.openModelManagerForCard(card);
+    assert.equal(modal.classList.contains('active'), true);
+
+    document.getElementById('model-manager-batch-input').value = 'qwen3-max, gpt-4.1\nclaude-fable-5, qwen3-max';
+    document.getElementById('model-manager-add-batch-btn').click();
+
+    const collected = hiddenInput.value.split(',').map(s => s.trim());
+    assert.deepEqual(collected.slice().sort(), ['claude-fable-5', 'deepseek-v4-flash', 'gpt-4.1', 'qwen3-max']);
+    assert.equal(new Set(collected).size, collected.length, 'duplicates must be deduped');
+    assert.equal(document.getElementById('model-manager-batch-message').hidden, false);
+
+    // Pasting only existing models adds nothing new.
+    document.getElementById('model-manager-batch-input').value = 'qwen3-max';
+    document.getElementById('model-manager-add-batch-btn').click();
+    assert.equal(hiddenInput.value.split(',').map(s => s.trim()).length, 4);
 });

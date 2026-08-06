@@ -12,7 +12,9 @@ from ..database import (
     list_chats, load_chat_history, save_chat_history,
     delete_chat, get_chat_path, delete_all_chats, get_session,
     list_chat_groups, create_chat_group, update_chat_group,
-    delete_chat_group, move_chat_to_group, _format_utc_timestamp,
+    delete_chat_group, move_chat_to_group, set_chat_pinned,
+    duplicate_chat, fork_chat_from,
+    _format_utc_timestamp,
     export_history_package, import_history_package, normalize_route_safe_id,
 )
 
@@ -288,6 +290,46 @@ async def rename_chat_endpoint(session_id: str, body: object = Body(default=None
         raise HTTPException(status_code=404, detail="Chat not found")
     await save_chat_history(session_id, history_data.get("messages", []), title=new_title)
     return {"status": "ok", "title": new_title}
+
+
+@router.patch("/api/history/{session_id}/pin")
+async def pin_chat_endpoint(session_id: str, body: object = Body(default=None)):
+    """Toggle a chat's pinned flag. Does not change updated_at (no date-bucket jump)."""
+    session_id = _require_route_safe_id(session_id, "session_id")
+    body = _require_body_dict(body)
+    is_pinned = body.get("is_pinned")
+    if not isinstance(is_pinned, bool):
+        raise HTTPException(status_code=400, detail="is_pinned must be a boolean")
+    summary = await set_chat_pinned(session_id, is_pinned)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return {"status": "ok", **summary}
+
+
+@router.post("/api/history/{session_id}/duplicate")
+async def duplicate_chat_endpoint(session_id: str):
+    """Deep-copy a chat into a new independent session. Does not switch to it."""
+    session_id = _require_route_safe_id(session_id, "session_id")
+    summary = await duplicate_chat(session_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return {"status": "ok", **summary}
+
+
+@router.post("/api/history/{session_id}/fork")
+async def fork_chat_endpoint(session_id: str, body: object = Body(default=None)):
+    """Create a new session from the prefix up to and including a message index."""
+    session_id = _require_route_safe_id(session_id, "session_id")
+    body = _require_body_dict(body)
+    upto = body.get("upto_message_index")
+    try:
+        upto_index = int(upto)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="upto_message_index must be an integer")
+    summary = await fork_chat_from(session_id, upto_index)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return {"status": "ok", **summary}
 
 
 @router.get("/api/history/{session_id}/export")
