@@ -2915,6 +2915,18 @@ function postInlineArtifactStream(frame, html, options = {}) {
     // pushes (streaming:false) run the full chain once, in-place.
     const isFinal = options.streaming === false;
     const adaptedHtml = processArtifactHtmlForDisplay(html, { streaming: !isFinal });
+    // Phase 3: while the tab is hidden, do NOT postMessage — Chrome throttles
+    // hidden tabs and the bridge rAF is frozen, so pushes are wasted. Record the
+    // latest content and mark the frame dirty; the visibilitychange handler
+    // flushes exactly one final push when the tab comes back.
+    const applyLatest = () => {
+        frame.dataset.liveArtifactPendingStreamHtml = adaptedHtml;
+        frame.dataset.liveArtifactDirty = '1';
+    };
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        applyLatest();
+        return;
+    }
     // Skip identical re-posts (rAF can re-enter with unchanged buffer).
     if (frame.dataset.liveArtifactPendingStreamHtml === adaptedHtml) {
         // Still re-send once so late-loading bridge can catch up.
@@ -2929,7 +2941,7 @@ function postInlineArtifactStream(frame, html, options = {}) {
         }
         return;
     }
-    frame.dataset.liveArtifactPendingStreamHtml = adaptedHtml;
+    applyLatest();
     const send = () => {
         try {
             frame.contentWindow?.postMessage({
@@ -2954,6 +2966,23 @@ function postInlineArtifactStream(frame, html, options = {}) {
         setTimeout(send, 150);
         setTimeout(send, 400);
     }
+}
+
+/**
+ * Phase 3: when the tab becomes visible again, push exactly the latest content
+ * to every Live Artifact frame that accumulated changes while hidden. Frames are
+ * marked dirty by postInlineArtifactStream (which skips postMessage while
+ * document.hidden) — here we re-send once and clear the flag.
+ */
+function flushDirtyArtifactFrames() {
+    if (typeof document === 'undefined') return;
+    document.querySelectorAll('.live-artifact-inline-iframe').forEach((frame) => {
+        if (frame.dataset?.liveArtifactDirty !== '1') return;
+        const html = frame.dataset.liveArtifactPendingStreamHtml || frame.dataset.liveArtifactProbeHtml || '';
+        if (!html) return;
+        frame.dataset.liveArtifactDirty = '0';
+        postInlineArtifactStream(frame, html);
+    });
 }
 
 function normalizeArtifactSources(sources) {
@@ -3951,6 +3980,9 @@ function initLiveArtifactVisibilityRecovery() {
 
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) return;
+        // Phase 3: push the latest content to any frame that accumulated changes
+        // while hidden (postInlineArtifactStream skipped the postMessages).
+        flushDirtyArtifactFrames();
         // After any background stay Chrome may have discarded the in-viewport
         // srcdoc documents. Ping only those (Phase 2.2 already unmounted the
         // off-screen ones) with a short 300ms window so a dead frame is
@@ -4205,6 +4237,7 @@ export const __liveArtifactsTestHooks = {
     findArtifactFrameByMessageSource,
     forceOpenAllDetailsInHtml,
     forceReloadIframeDocument,
+    flushDirtyArtifactFrames,
     handleArtifactFrameMessage,
     injectPreviewBaseFontSize,
     injectPreviewBaseStyles,

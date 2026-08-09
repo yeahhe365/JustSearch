@@ -2654,3 +2654,48 @@ test('Phase 2.2: a streaming artifact is not unloaded off-screen', () => {
     assert.ok(container.querySelector('.live-artifact-inline-iframe'), 'streaming artifact is NOT unloaded');
     assert.notEqual(container.dataset.artifactUnloaded, '1', 'streaming container not flagged unloaded');
 });
+
+test('Phase 3: hidden tab defers stream pushes, visible flush delivers the latest once', () => {
+    installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
+    const hooks = __liveArtifactsTestHooks;
+    const container = document.getElementById('message');
+
+    renderLiveArtifactsForMessage(container, '<section><h2>Alpha</h2></section>', {
+        messageId: 'bg-flush',
+        isStreaming: true,
+    });
+    const frame = container.querySelector('.live-artifact-inline-iframe');
+    assert.ok(frame, 'streaming frame mounted');
+    const posts = [];
+    Object.defineProperty(frame, 'contentWindow', {
+        value: { postMessage(data) { posts.push(data); } },
+        configurable: true,
+    });
+
+    // Going "hidden": a stream update must NOT postMessage; it marks the frame dirty.
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    renderLiveArtifactsForMessage(container, '<section><h2>Beta hidden update</h2></section>', {
+        messageId: 'bg-flush',
+        isStreaming: true,
+    });
+    const postsWhileHidden = posts.length;
+    assert.equal(frame.dataset.liveArtifactDirty, '1', 'frame marked dirty while hidden');
+    assert.ok(
+        (frame.dataset.liveArtifactPendingStreamHtml || '').includes('Beta hidden update'),
+        'latest content recorded for later flush',
+    );
+
+    // Coming back visible: flush delivers exactly the latest content.
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    hooks.flushDirtyArtifactFrames();
+    const flushPosts = posts.slice(postsWhileHidden);
+    assert.ok(
+        flushPosts.some((msg) => (
+            msg && msg.channel === 'justsearch-live-artifacts'
+            && msg.event === 'stream-render'
+            && /Beta hidden update/.test(msg.html || '')
+        )),
+        'visible flush pushes the latest content',
+    );
+    assert.equal(frame.dataset.liveArtifactDirty, '0', 'dirty flag cleared after flush');
+});
