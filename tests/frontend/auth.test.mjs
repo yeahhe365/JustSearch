@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import {
     buildAuthenticatedUrl,
     buildAuthHeaders,
-    buildBrowserWebSocketUrl,
     clearAuthRetryFlag,
     handleUnauthorizedResponse,
     initializeAuth,
@@ -29,63 +28,6 @@ test('buildAuthHeaders adds bearer token when available', () => {
         Authorization: 'Bearer secret-token',
     });
     assert.deepEqual(buildAuthHeaders(''), {});
-});
-
-test('buildBrowserWebSocketUrl appends token and protocol correctly', () => {
-    const result = buildBrowserWebSocketUrl(
-        { protocol: 'https:', host: 'example.com' },
-        'session-1',
-        'secret-token',
-    );
-
-    assert.equal(
-        result,
-        'wss://example.com/ws/browser/session-1?token=secret-token',
-    );
-});
-
-test('buildBrowserWebSocketUrl uses current auth token by default', () => {
-    const stored = new Map();
-    initializeAuth({
-        __JUSTSEARCH_BOOTSTRAP__: { authEnabled: true },
-        localStorage: {
-            getItem: (key) => stored.get(key) || '',
-            setItem: (key, value) => stored.set(key, value),
-        },
-        location: {
-            href: 'https://example.com/?token=query-token',
-            pathname: '/',
-            search: '?token=query-token',
-            hash: '',
-        },
-        history: {
-            state: null,
-            replaceState: () => {},
-        },
-    });
-
-    const result = buildBrowserWebSocketUrl(
-        { protocol: 'https:', host: 'example.com' },
-        'session-2',
-    );
-
-    assert.equal(
-        result,
-        'wss://example.com/ws/browser/session-2?token=query-token',
-    );
-});
-
-test('buildBrowserWebSocketUrl encodes session id path segment', () => {
-    const result = buildBrowserWebSocketUrl(
-        { protocol: 'https:', host: 'example.com' },
-        'session?x=1#frag',
-        'secret-token',
-    );
-
-    assert.equal(
-        result,
-        'wss://example.com/ws/browser/session%3Fx%3D1%23frag?token=secret-token',
-    );
 });
 
 test('buildAuthenticatedUrl appends token when available', () => {

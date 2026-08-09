@@ -38,16 +38,6 @@ export function buildAuthHeaders(token, headers = {}) {
     return merged;
 }
 
-export function buildBrowserWebSocketUrl(locationLike, sessionId, token = getAuthToken()) {
-    const protocol = locationLike.protocol === 'https:' ? 'wss:' : 'ws:';
-    const encodedSessionId = encodeURIComponent(String(sessionId ?? ''));
-    const url = new URL(`${protocol}//${locationLike.host}/ws/browser/${encodedSessionId}`);
-    if (token) {
-        url.searchParams.set('token', token);
-    }
-    return url.toString();
-}
-
 export function buildAuthenticatedUrl(path, token = getAuthToken()) {
     if (!token) {
         return path;

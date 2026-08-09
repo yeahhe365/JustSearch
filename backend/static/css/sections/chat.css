@@ -51,16 +51,8 @@
 }
 
 [data-theme="dark"] .model-select-wrapper {
-    /* Onyx / Dark theme values */
-    --amc-bg-trigger: transparent;
-    --amc-bg-trigger-hover: var(--theme-bg-tertiary);
-    --amc-bg-dropdown: var(--theme-bg-primary);
-    --amc-border: var(--theme-border-secondary);
-    --amc-border-hover: var(--theme-border-secondary);
-    --amc-text-primary: var(--theme-text-primary);
-    --amc-text-secondary: var(--theme-text-secondary);
-    --amc-text-tertiary: var(--theme-text-tertiary);
-    --amc-selected-accent: var(--theme-bg-accent);
+    /* Only the shadow differs from the Pearl values above; all other
+       --amc-* tokens alias --theme-* which already flip with the theme. */
     --amc-shadow: var(--shadow-xl), 0 10px 40px rgba(0, 0, 0, 0.4);
 }
 

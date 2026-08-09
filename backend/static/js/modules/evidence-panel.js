@@ -16,6 +16,7 @@ const frameContexts = new Map();
 const FRAME_CONTEXTS_MAX = 100;
 
 import { t } from './i18n.js?v=1';
+import { escapeHtml, getSafeUrl } from './utils.js?v=14';
 
 function ensurePanel() {
     if (panelEl) return panelEl;
@@ -176,23 +177,6 @@ function verificationLabel(verification) {
     return null;
 }
 
-function getSafeUrl(url) {
-    try {
-        const raw = String(url || '').trim();
-        if (!raw) return '';
-        let candidate = raw;
-        if (raw.startsWith('//')) candidate = `https:${raw}`;
-        else if (!/^[a-z][a-z0-9+.-]*:/i.test(raw) && /^[^\s/?#]+\.[^\s]+/.test(raw)) {
-            candidate = `https://${raw}`;
-        }
-        const parsed = new URL(candidate);
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
-        return candidate;
-    } catch {
-        return '';
-    }
-}
-
 /**
  * Build Chrome Text Fragment URL when quote is short enough.
  * Best-effort; browsers may ignore if text not found.
@@ -212,14 +196,6 @@ function buildTextFragmentUrl(url, quote) {
     } catch {
         return safe;
     }
-}
-
-function escapeHtml(value) {
-    return String(value ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
 }
 
 export function openEvidencePanel({
@@ -307,7 +283,6 @@ function renderClaimCard(ev) {
     const status = statusLabel(ev?.status);
     const quote = ev?.quote || '';
     const claimText = ev?.claim || '';
-    const method = ev?.method || '';
     const vLabel = verificationLabel(ev?.verification);
     let statusHint = '';
     if (status.className === 'missing') {

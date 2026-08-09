@@ -883,72 +883,6 @@
     color: var(--error);
 }
 
-/* --- Form Elements --- */
-.form-group {
-    margin-bottom: 18px;
-}
-
-.form-group label {
-    display: block;
-    margin-bottom: 6px;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-secondary);
-}
-
-.form-group input,
-.form-group select {
-    width: 100%;
-    padding: 10px 12px;
-    border-radius: var(--radius-sm);
-    border: 1.5px solid var(--border);
-    background-color: var(--bg-input);
-    color: var(--text-primary);
-    box-sizing: border-box;
-    font-size: 14px;
-    transition: all var(--transition-fast);
-}
-
-.form-group input:focus,
-.form-group select:focus {
-    border-color: var(--primary);
-    box-shadow: 0 0 0 3px var(--primary-light);
-    outline: none;
-}
-
-.password-input-wrapper {
-    position: relative;
-    display: flex;
-    align-items: center;
-}
-
-.password-input-wrapper input {
-    padding-right: 44px;
-}
-
-.password-toggle-btn {
-    position: absolute;
-    right: 4px;
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-sm);
-    transition: all var(--transition-fast);
-}
-
-.password-toggle-btn:hover {
-    color: var(--primary);
-}
-
-.password-toggle-btn span {
-    font-size: 20px;
-}
-
 /* --- Modal Buttons --- */
 .modal-actions {
     display: flex;
@@ -2554,10 +2488,6 @@
     background-color: rgba(239, 68, 68, 0.1);
     color: var(--danger-color, #ef4444);
     border-color: rgba(239, 68, 68, 0.2);
-}
-
-.provider-card-quick-actions {
-    display: none;
 }
 
 .model-settings-group {

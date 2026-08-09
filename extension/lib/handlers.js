@@ -11,7 +11,6 @@ const CURSOR_ARRIVAL_TIMEOUT_MS = 1500;
 
 // 注入点:由 background.js 在注册 handler 前设置,避免循环依赖。
 let _cursorOverlays = null;
-let _nextCursorMoveSequence = 1;
 
 export function setCursorOverlayController(controller) {
   _cursorOverlays = controller;
@@ -254,12 +253,6 @@ export function registerHandlers(bridge) {
     }
     await waiter.promise;
     return { ok: true, arrived: true };
-  });
-
-  // content script 上报光标到达(notification:后端→扩展)。本地等待器也由
-  // background.js 的 AGENT_CURSOR_ARRIVED 直接 resolve,此处保持通知通道对称。
-  bridge.registerNotificationHandler("cursorArrived", async ({ sessionId, turnId, moveSequence } = {}) => {
-    notifyCursorArrived({ sessionId, turnId, moveSequence });
   });
 
   bridge.registerRequestHandler("detachTab", async ({ tabId } = {}) => {

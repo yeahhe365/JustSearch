@@ -100,33 +100,6 @@ export class TabGroupStore {
     return (await this.findManagedGroupContainingTabs(tabIds))?.chromeGroupId ?? null;
   }
 
-  async reconcileManagedGroupForTabs(sessionId, groupId, tabIds) {
-    await this.ensureInit();
-    const group = this.groupMetadata.get(groupId);
-    if (!group || !(await this.readGroup(groupId)) || !(await this.hasTabInGroup(groupId, tabIds))) {
-      return false;
-    }
-    const changed = this.syncSessionTitle(group, sessionId);
-    await this.reconcileGroupPresentation(groupId);
-    if (changed) await this.saveToStorage();
-    return true;
-  }
-
-  async setSessionGroupTitle(sessionId, title, activeAgentTabIds) {
-    await this.ensureInit();
-    const normalized = normalizeTitle(title);
-    let changed = this.sessionGroupTitles.get(sessionId) !== normalized;
-    if (normalized) this.sessionGroupTitles.set(sessionId, normalized);
-    else this.sessionGroupTitles.delete(sessionId);
-
-    const group = await this.findManagedGroupContainingTabs(activeAgentTabIds);
-    if (group) {
-      changed = this.syncSessionTitle(group, sessionId) || changed;
-      await this.reconcileGroupPresentation(group.chromeGroupId);
-    }
-    if (changed) await this.saveToStorage();
-  }
-
   // --- private methods ---
 
   async loadFromStorage() {
@@ -289,15 +262,6 @@ export class TabGroupStore {
       }
     }
     return null;
-  }
-
-  async hasTabInGroup(groupId, tabIds) {
-    for (const tabId of tabIds) {
-      try {
-        if ((await chrome.tabs.get(tabId)).groupId === groupId) return true;
-      } catch {}
-    }
-    return false;
   }
 }
 

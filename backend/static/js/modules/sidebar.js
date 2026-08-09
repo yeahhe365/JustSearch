@@ -3,27 +3,11 @@ import { elements } from './ui.js?v=43';
 import { updateActiveHistoryItem, getCachedHistory, openHistorySearch } from './history-view.js?v=28';
 import { detachCurrentStream } from './chat.js?v=56';
 import { t } from './i18n.js?v=1';
-import { encodePathSegment } from './utils.js?v=13';
+import { encodePathSegment, safeGetLocalStorageItem, safeSetLocalStorageItem } from './utils.js?v=14';
 
 let popoverEl = null;
 let popoverTimeout = null;
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'sidebarCollapsed';
-
-function safeGetLocalStorageItem(key, fallback = '') {
-    try {
-        return localStorage.getItem(key) ?? fallback;
-    } catch {
-        return fallback;
-    }
-}
-
-function safeSetLocalStorageItem(key, value) {
-    try {
-        localStorage.setItem(key, String(value));
-    } catch {
-        // Storage can be unavailable in private browsing or embedded contexts.
-    }
-}
 
 function removeRecentChatsPopover() {
     if (popoverEl) {
@@ -235,7 +219,7 @@ export function setupSidebar(loadChat) {
             const currentTheme = document.documentElement.getAttribute('data-theme');
             const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
 
-            const { applyTheme } = await import('./utils.js?v=13');
+            const { applyTheme } = await import('./utils.js?v=14');
             applyTheme(newTheme);
             updateThemeIcon();
 

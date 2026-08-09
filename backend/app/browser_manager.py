@@ -44,15 +44,6 @@ class BrowserManager:
         self.engine_config = load_selectors(None)  # full config dict (all engines)
         self.current_engine_config = self.engine_config.get(engine, load_selectors(engine))
 
-    async def start(self):
-        # 桥接客户端是单例,扩展连上即就绪。这里只确认一下。
-        client = get_bridge_client()
-        await client.init(wait_timeout=0.0)
-
-    async def stop(self):
-        """No-op: 浏览器由桥接扩展管理,后端只持客户端单例。"""
-        return None
-
     def _search_cache_key(self, query: str) -> str:
         """Include max_results so different result limits do not share a cache entry."""
         return f"{self.engine}:{query}:{self.max_results}"
@@ -62,7 +53,6 @@ class BrowserManager:
         query: str,
         log_func=None,
         session_id: str = None,
-        allow_fallback: bool = True,
         use_cache: bool = True,
     ) -> List[Dict]:
         """

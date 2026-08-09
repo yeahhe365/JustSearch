@@ -6,7 +6,7 @@ import {
     createForkMessageButton,
     createMessageActionRail,
     createRegenerateButton
-} from './utils.js?v=13';
+} from './utils.js?v=14';
 import { extractSources, hasCitationSources, linkCitationsInElement, normalizeCitationSources, renderWithCitations } from './source-renderer.js?v=12';
 import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=53';
 import { bindCitationEvidenceClicks } from './evidence-panel.js?v=5';
@@ -434,6 +434,49 @@ function createMessageActions({ role, content, msgDiv, messageIndex, actionCallb
     return createMessageActionRail(buttons, normalizedRole === 'assistant' ? t('ui.assistantActions') : t('ui.userActions'));
 }
 
+/**
+ * Render an assistant answer's body element: Markdown + citations + Live
+ * Artifacts iframe, with citation evidence bindings. Shared by the streaming
+ * path (chat.js renderCurrentAssistantAnswer) and the history path
+ * (appendMessage) so the two cannot drift apart.
+ */
+export function renderAssistantAnswerBody(bodyEl, content, {
+    sources,
+    citations = [],
+    isStreaming = false,
+    messageId = null,
+} = {}) {
+    const resolvedSources = hasCitationSources(sources) ? sources : extractSources(content);
+    // AMC-aligned Live Artifacts path: native HTML → iframe; when the mode is
+    // on, Markdown / mixed answers are coerced into one themed iframe so
+    // clipped parent-page HTML (thin gray bars) cannot appear.
+    const suppressUnfencedInlineArtifact = !state.liveArtifactsMode && hasCitationSources(resolvedSources);
+    const liveArtifactOptions = {
+        suppressUnfencedInlineArtifact,
+        liveArtifactsMode: Boolean(state.liveArtifactsMode),
+    };
+    // Probe once and reuse — avoids double extract/buildSrcdoc every stream frame.
+    const inlineArtifact = getInlineLiveArtifact(
+        content,
+        messageId,
+        isStreaming,
+        liveArtifactOptions,
+    );
+    if (!inlineArtifact) {
+        bodyEl.innerHTML = renderWithCitations(content, resolvedSources);
+    }
+    renderLiveArtifactsForMessage(bodyEl, content, {
+        messageId,
+        isStreaming,
+        sources: resolvedSources,
+        citations,
+        inlineArtifact,
+        ...liveArtifactOptions,
+    });
+    linkCitationsInElement(bodyEl, resolvedSources);
+    bindCitationEvidenceClicks(bodyEl, { sources: resolvedSources, citations });
+}
+
 export function appendMessage(role, content, logs = null, sources = null, stats = null, messageIndex = null, timestamp = null, actionCallbacks = {}) {
     const normalizedRole = normalizeMessageRole(role);
     const { msgDiv, contentDiv, sideColumn } = createMessageShell(role, {
@@ -452,40 +495,15 @@ export function appendMessage(role, content, logs = null, sources = null, stats 
 
     if (normalizedRole === 'assistant') {
         contentDiv.classList.add('markdown-body');
-        const resolvedSources = hasCitationSources(sources) ? sources : extractSources(content);
         const answerBody = document.createElement('div');
         answerBody.className = 'message-answer-body';
         answerBody.dataset.liveArtifactsMessageId = `history-${messageIndex ?? Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        // Live Artifacts 模式下保留内联 HTML 走 iframe 预览（样式完整、引用照常链接）；
-        // 仅在该模式关闭时，遇到意外 HTML 才退回带引用的 Markdown 渲染。
-        // AMC-aligned: Live Artifacts mode always prefers a single themed iframe
-        // (native HTML or Markdown coerced to HTML). Only fall back to bubble
-        // Markdown when the mode is off and there is no standalone HTML artifact.
-        const suppressUnfencedInlineArtifact = !state.liveArtifactsMode && hasCitationSources(resolvedSources);
-        const liveArtifactOptions = {
-            suppressUnfencedInlineArtifact,
-            liveArtifactsMode: Boolean(state.liveArtifactsMode),
-        };
-        // Probe once and reuse — avoids double extract/buildSrcdoc on history render.
-        const inlineArtifact = getInlineLiveArtifact(
-            content,
-            answerBody.dataset.liveArtifactsMessageId,
-            false,
-            liveArtifactOptions,
-        );
-        if (!inlineArtifact) {
-            answerBody.innerHTML = renderWithCitations(content, resolvedSources);
-        }
-        renderLiveArtifactsForMessage(answerBody, content, {
-            messageId: answerBody.dataset.liveArtifactsMessageId,
-            isStreaming: false,
-            sources: resolvedSources,
+        renderAssistantAnswerBody(answerBody, content, {
+            sources,
             citations,
-            inlineArtifact,
-            ...liveArtifactOptions,
+            isStreaming: false,
+            messageId: answerBody.dataset.liveArtifactsMessageId,
         });
-        linkCitationsInElement(answerBody, resolvedSources);
-        bindCitationEvidenceClicks(answerBody, { sources: resolvedSources, citations });
         contentDiv.appendChild(answerBody);
     } else {
         renderUserMessageContent(content, contentDiv);

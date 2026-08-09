@@ -7,14 +7,7 @@
 // ===========================================================================
 
 import { t } from './i18n.js?v=1';
-
-function escapeHtml(value) {
-    return String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
+import { escapeHtml } from './utils.js?v=14';
 
 export function setupSettingsSearch({ modalEl, root = document }) {
     const input = root.getElementById('settings-search-input');

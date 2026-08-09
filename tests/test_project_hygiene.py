@@ -1175,7 +1175,7 @@ def test_sidebar_stylesheet_changes_are_cache_busted():
     assert "from './modules/sidebar.js?v=25'" in main_source
     assert "from './modules/model-selector.js?v=16'" in main_source
     assert "from './modules/api.js?v=14'" in main_source
-    assert "import('./modules/utils.js?v=13')" in main_source
+    assert "import('./modules/utils.js?v=14')" in main_source
     assert "search-intensity.js?v=3" in (PROJECT_ROOT / "backend/static/js/modules/chat.js").read_text(encoding="utf-8")
     assert "from './modules/shortcuts-help.js?v=2'" in main_source
     assert "from './modules/provider-catalog.js?v=2'" in main_source
@@ -1268,7 +1268,6 @@ def test_live_artifacts_are_integrated_with_chat_rendering():
     assert "function injectPreviewSecurityPolicy" in live_artifacts_js
     assert "function injectPreviewBaseFontSize" in live_artifacts_js
     assert "function injectPreviewTheme" in live_artifacts_js
-    assert "export function refreshLiveArtifactFontSizes" in live_artifacts_js
     assert "export function refreshLiveArtifactPreviews" in live_artifacts_js
     assert "--amc-live-artifact-font-size" in live_artifacts_js
     assert "data-amc-live-artifact-theme" in live_artifacts_js
@@ -1292,10 +1291,12 @@ def test_live_artifacts_are_integrated_with_chat_rendering():
     assert "data-artifact-view=\"code\"" in live_artifacts_js
     assert "sandbox=\"allow-scripts allow-forms allow-modals allow-popups\"" in live_artifacts_js
     assert "sourceLink.tagName === 'A'" in live_artifacts_js
-    assert "renderLiveArtifactsForMessage(contentWrapper" in chat_source
+    assert "renderLiveArtifactsForMessage(bodyEl" in ui_source
+    assert "export function renderAssistantAnswerBody" in ui_source
     assert "function renderCurrentAssistantAnswer(isStreaming)" in chat_source
+    assert "renderAssistantAnswerBody(contentWrapper" in chat_source
     assert "renderCurrentAssistantAnswer(true)" in chat_source
-    assert "renderLiveArtifactsForMessage(answerBody" in ui_source
+    assert "renderAssistantAnswerBody(answerBody" in ui_source
 
 
 def test_thinking_box_uses_amc_style_spinner():
@@ -1535,9 +1536,9 @@ def test_message_side_actions_follow_amc_interaction_pattern():
     assert "edit-message-banner" in (
         PROJECT_ROOT / "backend/static/index.html"
     ).read_text(encoding="utf-8")
-    assert "from './utils.js?v=13'" in chat_source
-    assert "from './utils.js?v=13'" in ui_source
-    assert "from './utils.js?v=13'" in source_renderer
+    assert "from './utils.js?v=14'" in chat_source
+    assert "from './utils.js?v=14'" in ui_source
+    assert "from './utils.js?v=14'" in source_renderer
     assert ".message-row" in responsive_css
     assert ".message-side" in responsive_css
     assert ".message-avatar" in responsive_css

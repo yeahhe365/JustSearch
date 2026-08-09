@@ -7,6 +7,7 @@ import {
     shouldSkipTextNode,
 } from './citation-occurrences.js?v=1';
 import { setFrameEvidenceContext } from './evidence-panel.js?v=5';
+import { escapeHtml, getSafeUrl } from './utils.js?v=14';
 
 const ARTIFACT_LANGUAGES = new Set(['html', 'svg']);
 const SUPPORTING_LANGUAGES = new Set(['css', 'javascript', 'js']);
@@ -309,14 +310,6 @@ function resolveLiveArtifactsModeFlag(options = {}) {
         return options.liveArtifactsMode;
     }
     return Boolean(state?.liveArtifactsMode);
-}
-
-/**
- * Rebuild open Live Artifact iframe srcdocs when base font size or app theme changes.
- * Mirrors AMC injecting --amc-live-artifact-font-size and transparent theme tokens.
- */
-export function refreshLiveArtifactFontSizes(settings) {
-    refreshLiveArtifactPreviews(settings);
 }
 
 /**
@@ -660,18 +653,9 @@ function renderMarkdownHtmlForArtifact(markdownText) {
     } catch {
         // fall through
     }
-    return `<pre style="white-space:pre-wrap;margin:0;">${escapeHtmlBasic(text)}</pre>`;
+    return `<pre style="white-space:pre-wrap;margin:0;">${escapeHtml(text)}</pre>`;
 }
 
-function escapeHtmlBasic(value) {
-    return String(value || '').replace(/[&<>"']/g, (char) => ({
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#39;',
-    }[char]));
-}
 
 /**
  * Force every <details> open in preview HTML so collapsible secondary content is
@@ -1314,7 +1298,7 @@ function replaceCitationTextNode(node, sourceById, tracker) {
 
         ids.forEach((id, index) => {
             const source = sourceById.get(id);
-            const safeUrl = source ? getSafeSourceUrl(source.url) : '';
+            const safeUrl = source ? getSafeUrl(source.url) : '';
             if (source && safeUrl) {
                 group.appendChild(createArtifactCitationLink(id, source, safeUrl, tracker, groupIndex, index));
                 linkedCount += 1;
@@ -2583,6 +2567,34 @@ function estimateArtifactHeightFromMarkup(html) {
     );
 }
 
+/**
+ * Shared height probe for inline artifacts: measure collapsed + (optional)
+ * details-open layouts and fall back to a markup estimate when both collapse
+ * to the min box. Preview HTML forces details open (forceOpenAllDetailsInHtml);
+ * the parent probe seeds the height and the iframe bridge later corrects it.
+ * Never max with inflated text estimates — that left a large empty gap under
+ * the real content. The text estimate is only used when layout probes collapse.
+ */
+function probeInlineArtifactHeight(html, viewport, container) {
+    const width = resolveInlineFrameWidth(viewport, container);
+    const hasDetails = /<details(?:\s|\/>|>)/i.test(html);
+    const collapsed = measureArtifactContentHeight(html, width);
+    const expanded = hasDetails
+        ? measureArtifactContentHeight(html, width, { forceOpenDetails: true })
+        : collapsed;
+    const estimated = (hasDetails && expanded <= INLINE_ARTIFACT_MIN_HEIGHT + 8)
+        ? estimateArtifactHeightFromMarkup(html)
+        : 0;
+    return {
+        width,
+        hasDetails,
+        collapsed,
+        expanded,
+        estimated,
+        fullHeight: Math.max(collapsed, expanded, estimated),
+    };
+}
+
 function syncInlineArtifactFrameHeight(viewport, frame, artifact, container) {
     const cacheKey = getArtifactHeightCacheKey(artifact);
     // Measure the SAME HTML the srcdoc renders. buildSrcdoc applies
@@ -2596,20 +2608,7 @@ function syncInlineArtifactFrameHeight(viewport, frame, artifact, container) {
         forceOpenAllDetailsInHtml(sanitizeClippingStylesInHtml(rawHtml)),
         sources,
     );
-    const width = resolveInlineFrameWidth(viewport, container);
-    const hasDetails = /<details(?:\s|\/>|>)/i.test(contentHtml);
-    // Preview HTML forces details open (see forceOpenAllDetailsInHtml). Parent probe
-    // seeds height; iframe bridge then corrects. Do NOT max with inflated text
-    // estimates — that left a large empty gap under the real content.
-    const collapsed = measureArtifactContentHeight(contentHtml, width);
-    const expanded = hasDetails
-        ? measureArtifactContentHeight(contentHtml, width, { forceOpenDetails: true })
-        : collapsed;
-    // Only use text estimate when layout probes collapse to the min box.
-    const estimated = (hasDetails && expanded <= INLINE_ARTIFACT_MIN_HEIGHT + 8)
-        ? estimateArtifactHeightFromMarkup(contentHtml)
-        : 0;
-    const fullHeight = Math.max(collapsed, expanded, estimated);
+    const { hasDetails, collapsed, expanded, fullHeight } = probeInlineArtifactHeight(contentHtml, viewport, container);
     if (frame) {
         frame.dataset.liveArtifactCollapsedHeight = String(collapsed);
         // Store pure expanded probe (not inflated) as anti-clip floor for under-reports.
@@ -2680,19 +2679,9 @@ function attachLiveArtifactFrameLoadHandler(frame, viewport, container) {
         } else if (frame.dataset.liveArtifactStreaming === 'true' && frame.dataset.liveArtifactProbeHtml) {
             postInlineArtifactStream(frame, frame.dataset.liveArtifactProbeHtml);
         }
-        scheduleInlineArtifactFrameResize(frame, viewport);
         const html = frame.dataset.liveArtifactProbeHtml || '';
         if (!html) return;
-        const width = resolveInlineFrameWidth(viewport, container);
-        const hasDetails = /<details(?:\s|\/>|>)/i.test(html);
-        const height = measureArtifactContentHeight(html, width);
-        const expanded = hasDetails
-            ? measureArtifactContentHeight(html, width, { forceOpenDetails: true })
-            : height;
-        const estimated = (hasDetails && expanded <= INLINE_ARTIFACT_MIN_HEIGHT + 8)
-            ? estimateArtifactHeightFromMarkup(html)
-            : 0;
-        const fullHeight = Math.max(height, expanded, estimated);
+        const { hasDetails, collapsed: height, expanded, fullHeight } = probeInlineArtifactHeight(html, viewport, container);
         frame.dataset.liveArtifactCollapsedHeight = String(height);
         frame.dataset.liveArtifactExpandedHeight = String(Math.max(height, expanded));
         frame.dataset.liveArtifactHasDetails = hasDetails ? 'true' : 'false';
@@ -2803,7 +2792,6 @@ function renderInlineArtifactFrame(container, artifact) {
     }
     // Streaming content path: postMessage into the stable shell (retries + load handler).
     syncPendingStreamToFrame(frame, artifact);
-    scheduleInlineArtifactFrameResize(frame, viewport);
 }
 
 const finalHeightSweepTimers = new WeakMap(); // frame -> Set<number>
@@ -2917,25 +2905,6 @@ function normalizeArtifactSources(sources) {
         .filter(source => source.title || source.url);
 }
 
-function getSafeSourceUrl(url) {
-    try {
-        const raw = String(url || '').trim();
-        if (!raw) return '';
-
-        let candidate = raw;
-        if (raw.startsWith('//')) {
-            candidate = `https:${raw}`;
-        } else if (!/^[a-z][a-z0-9+.-]*:/i.test(raw) && /^[^\s/?#]+\.[^\s]+/.test(raw)) {
-            candidate = `https://${raw}`;
-        }
-
-        const parsed = new URL(candidate);
-        return ['http:', 'https:'].includes(parsed.protocol) ? candidate : '';
-    } catch {
-        return '';
-    }
-}
-
 function getSourceHost(url) {
     try {
         return new URL(url).hostname.replace(/^www\./, '');
@@ -2991,7 +2960,7 @@ function renderLiveArtifactSources(container, artifact, sources) {
     const list = document.createElement('div');
     list.className = 'live-artifact-source-list';
     selected.forEach((source) => {
-        const safeUrl = getSafeSourceUrl(source.url);
+        const safeUrl = getSafeUrl(source.url);
         const item = safeUrl ? document.createElement('a') : document.createElement('span');
         item.className = safeUrl ? 'live-artifact-source-chip' : 'live-artifact-source-chip is-disabled';
         if (safeUrl) {
@@ -3274,124 +3243,7 @@ function applyInlineArtifactFrameHeight(viewport, frame, height, {
     return nextHeight;
 }
 
-function measureInlineArtifactDocumentHeight(doc) {
-    if (!doc) return INLINE_ARTIFACT_MIN_HEIGHT;
-    const body = doc.body;
-    const root = doc.documentElement;
-    if (!body || !root) return INLINE_ARTIFACT_MIN_HEIGHT;
 
-    const skip = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'TEMPLATE']);
-    const restored = [];
-    const neutralizeSize = (el) => {
-        if (!(el instanceof doc.defaultView?.HTMLElement)) return;
-        restored.push([el, el.style.height, el.style.minHeight, el.style.maxHeight]);
-        el.style.setProperty('height', 'auto', 'important');
-        el.style.setProperty('min-height', '0', 'important');
-        el.style.setProperty('max-height', 'none', 'important');
-    };
-
-    try {
-        [root, body].forEach((el) => {
-            el.style.setProperty('height', 'auto', 'important');
-            el.style.setProperty('min-height', '0', 'important');
-            el.style.setProperty('max-height', 'none', 'important');
-            el.style.setProperty('overflow-y', 'visible', 'important');
-        });
-        Array.from(body.children).forEach((el) => {
-            if (!(el instanceof Element) || skip.has(el.tagName)) return;
-            neutralizeSize(el);
-        });
-
-        const scrollY = doc.defaultView?.pageYOffset || root.scrollTop || body.scrollTop || 0;
-        let contentBottom = 0;
-        const visit = (el) => {
-            if (!(el instanceof Element) || skip.has(el.tagName)) return;
-            let style;
-            try { style = doc.defaultView?.getComputedStyle(el); } catch {}
-            if (style) {
-                if (style.display === 'none' || style.visibility === 'hidden') return;
-                if (style.position === 'fixed') return;
-            }
-            const rect = el.getBoundingClientRect();
-            if (!rect || (rect.width === 0 && rect.height === 0 && el.childElementCount === 0)) return;
-            let marginBottom = 0;
-            try {
-                marginBottom = parseFloat(style?.marginBottom) || 0;
-            } catch {
-                marginBottom = 0;
-            }
-            contentBottom = Math.max(contentBottom, rect.bottom + scrollY + marginBottom);
-        };
-        Array.from(body.children).forEach(visit);
-        doc.querySelectorAll('details[open]').forEach((details) => {
-            visit(details);
-            Array.from(details.children).forEach(visit);
-        });
-
-        const bodyStyle = doc.defaultView?.getComputedStyle(body);
-        const paddingBottom = parseFloat(bodyStyle?.paddingBottom) || 0;
-        const borderBottom = parseFloat(bodyStyle?.borderBottomWidth) || 0;
-
-        if (contentBottom > 0) {
-            return Math.max(
-                INLINE_ARTIFACT_MIN_HEIGHT,
-                Math.ceil(contentBottom + paddingBottom + borderBottom),
-            );
-        }
-        // Empty/sparse documents: fall back to scrollHeight only (not offsetHeight —
-        // offsetHeight equals the iframe viewport once a height is set, ratcheting).
-        return Math.max(
-            INLINE_ARTIFACT_MIN_HEIGHT,
-            Math.ceil(body.scrollHeight || 0),
-            Math.ceil(root.scrollHeight || 0),
-        );
-    } catch {
-        return INLINE_ARTIFACT_MIN_HEIGHT;
-    } finally {
-        for (let i = restored.length - 1; i >= 0; i -= 1) {
-            const [el, height, minHeight, maxHeight] = restored[i];
-            el.style.height = height;
-            el.style.minHeight = minHeight;
-            el.style.maxHeight = maxHeight;
-        }
-        // Restore root/body shell styles too (they were not in `restored`).
-        try {
-            [root, body].forEach((el) => {
-                el.style.removeProperty('height');
-                el.style.removeProperty('min-height');
-                el.style.removeProperty('max-height');
-                el.style.removeProperty('overflow-y');
-            });
-        } catch {}
-    }
-}
-
-function resizeInlineArtifactFrame(frame, viewport) {
-    if (!frame || !viewport) return;
-    try {
-        const doc = frame.contentDocument;
-        // Sandboxed frames without allow-same-origin cannot be read; bridge postMessage handles those.
-        if (!doc) return;
-        applyInlineArtifactFrameHeight(viewport, frame, measureInlineArtifactDocumentHeight(doc));
-    } catch {
-        // Keep last good height; bridge resize events remain the primary path.
-    }
-}
-
-function scheduleInlineArtifactFrameResize(frame, viewport) {
-    if (!frame || !viewport) return;
-    const run = () => resizeInlineArtifactFrame(frame, viewport);
-    run();
-    if (typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(() => {
-            run();
-            requestAnimationFrame(run);
-        });
-    }
-    setTimeout(run, 50);
-    setTimeout(run, 250);
-    setTimeout(run, 1000);
-}
 
 function decorateCodeBlocks(codeBlocks, artifacts) {
     artifacts.forEach((artifact) => {
@@ -3539,7 +3391,6 @@ function handleArtifactFrameMessage(event) {
                     console.warn('[Live Artifacts] ready-height sync failed', err);
                 }
             }
-            scheduleInlineArtifactFrameResize(frame, viewport);
         }
         return;
     }
@@ -3650,7 +3501,7 @@ function findArtifactFrameByMessageSource(source) {
 }
 
 function openArtifactSourceUrl(url) {
-    const safeUrl = getSafeSourceUrl(url);
+    const safeUrl = getSafeUrl(url);
     if (!safeUrl) {
         showToast(t('liveArtifacts.invalidSourceUrl'), 'warning', 4000);
         return;
@@ -4127,7 +3978,6 @@ export const __liveArtifactsTestHooks = {
     mapHardcodedColorForDarkTheme,
     materializeLiveArtifactThemeVars,
     measureArtifactContentHeight,
-    measureInlineArtifactDocumentHeight,
     normalizePreviewDiagnostic,
     normalizePreviewableMarkdownContent,
     parseLiveArtifactInteractionSpec,

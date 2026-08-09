@@ -31,11 +31,6 @@ bridge.setRequestLifecycleHandlers({
   },
 });
 
-// Session 停止时清理(目前 handler 内已就地清理,留作扩展点)。
-cursorOverlays.setSessionStoppedHandler(async (sessionIds) => {
-  // 预留:未来可在此做 session 级别的 debugger/lease 清理。
-});
-
 // 状态变化时同步到 storage(popup 读)。
 transport.onStatusChange((status) => {
   publishStatus(status).catch(() => {});

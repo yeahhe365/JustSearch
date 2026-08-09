@@ -72,6 +72,30 @@ def _format_source_markdown_item(source: object) -> str:
     return f"- [{text}]({safe_url})"
 
 
+def _chat_to_markdown(chat_data: dict, msg_heading: str) -> list[str]:
+    """Render a chat's messages as Markdown lines (user/assistant/sources).
+
+    Shared by export_chat (single) and export_all_chats (batch); ``msg_heading``
+    is the heading level for each message (``"##"`` for single export, ``"###"``
+    for batch where a per-chat ``## <title>`` header already precedes).
+    """
+    lines: list[str] = []
+    for msg in chat_data.get("messages", []):
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "user":
+            lines.append(f"{msg_heading} 👤 用户\n\n{content}\n")
+        elif role == "assistant":
+            lines.append(f"{msg_heading} 🤖 助手\n\n{content}\n")
+            sources = msg.get("sources", [])
+            if sources:
+                lines.append("### 参考资料\n")
+                for src in sources:
+                    lines.append(_format_source_markdown_item(src))
+                lines.append("")
+    return lines
+
+
 def _require_route_safe_id(value: object, field_name: str) -> str:
     normalized = normalize_route_safe_id(value)
     if not normalized:
@@ -226,22 +250,9 @@ async def export_all_chats(format: str = "markdown"):
         chat_data = await load_chat_history(chat_summary["id"])
         if not chat_data:
             continue
-        messages = chat_data.get("messages", [])
         title = chat_data.get("title", "对话")
         md_lines.append(f"\n---\n\n## {title}\n")
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "user":
-                md_lines.append(f"### 👤 用户\n\n{content}\n")
-            elif role == "assistant":
-                md_lines.append(f"### 🤖 助手\n\n{content}\n")
-                sources = msg.get("sources", [])
-                if sources:
-                    md_lines.append("### 参考资料\n")
-                    for src in sources:
-                        md_lines.append(_format_source_markdown_item(src))
-                    md_lines.append("")
+        md_lines.extend(_chat_to_markdown(chat_data, "###"))
 
     return Response(
         content="\n".join(md_lines),
@@ -361,19 +372,7 @@ async def export_chat(session_id: str, format: str = "markdown"):
 
     # Markdown export (default)
     md_lines = [f"# {title}\n"]
-    for msg in messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        if role == "user":
-            md_lines.append(f"## 👤 用户\n\n{content}\n")
-        elif role == "assistant":
-            md_lines.append(f"## 🤖 助手\n\n{content}\n")
-            sources = msg.get("sources", [])
-            if sources:
-                md_lines.append("### 参考资料\n")
-                for src in sources:
-                    md_lines.append(_format_source_markdown_item(src))
-                md_lines.append("")
+    md_lines.extend(_chat_to_markdown(data, "##"))
 
     return Response(
         content="\n".join(md_lines),

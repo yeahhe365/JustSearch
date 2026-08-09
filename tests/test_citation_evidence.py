@@ -5,8 +5,6 @@ harness. Deterministic matching only; the LLM verifier is mocked where needed.
 
 from __future__ import annotations
 
-from collections import Counter
-
 import pytest
 
 from backend.app.citation_evidence import (
@@ -14,13 +12,12 @@ from backend.app.citation_evidence import (
     STATUS_MISSING,
     STATUS_RELATED,
     STATUS_VERIFIED,
+    _find_evidence_for_claim,
     apply_verification_verdicts,
     build_citation_evidences,
     build_snippet,
     client_source_payload,
-    extract_citation_claims,
     extract_citation_occurrences,
-    find_quote_in_content,
     normalize_display_status,
     select_verification_candidates,
     split_atomic_claims,
@@ -165,19 +162,6 @@ def test_atomic_split_preserves_dates_and_decimals():
 # Legacy compatibility wrappers
 # ---------------------------------------------------------------------------
 
-def test_extract_citation_claims_legacy_shape():
-    answer = (
-        "GPT-5 于 2025年8月7日正式发布 [1]。\n"
-        "Claude Opus 4.8 发布于 2026年5月28日 [2][3]。"
-    )
-    claims = extract_citation_claims(answer)
-    assert len(claims) >= 2
-    first = claims[0]
-    assert 1 in first["marker_ids"]
-    markers = {mid for c in claims for mid in c["marker_ids"]}
-    assert {1, 2, 3}.issubset(markers)
-
-
 def test_normalize_display_status_maps_legacy():
     assert normalize_display_status("matched") == STATUS_LIKELY
     assert normalize_display_status("weak") == STATUS_RELATED
@@ -264,7 +248,7 @@ def test_gold_corpus_support_precision():
     """No adversarial negative may reach verified-literal or likely."""
     false_positives = []
     for case in _GOLD_CORPUS:
-        hit = find_quote_in_content(case["content"], case["claim"])
+        hit = _find_evidence_for_claim(case["claim"], case["content"])
         status = normalize_display_status(hit["status"])
         if case["expect_not_verified"] and _rank(status) > _rank(case["expect_at_most"]):
             false_positives.append((case["id"], status, hit["method"], hit["score"]))
@@ -277,7 +261,7 @@ def test_gold_corpus_recall_on_positives():
     for case in _GOLD_CORPUS:
         if "positive" not in case["tags"]:
             continue
-        hit = find_quote_in_content(case["content"], case["claim"])
+        hit = _find_evidence_for_claim(case["claim"], case["content"])
         status = normalize_display_status(hit["status"])
         if _rank(status) < _rank(STATUS_LIKELY):
             failures.append((case["id"], status, hit["score"]))
@@ -289,7 +273,7 @@ def test_gold_corpus_quote_localization():
     for case in _GOLD_CORPUS:
         if "positive" not in case["tags"]:
             continue
-        hit = find_quote_in_content(case["content"], case["claim"])
+        hit = _find_evidence_for_claim(case["claim"], case["content"])
         assert hit["quote"], case["id"]
 
 
@@ -312,7 +296,7 @@ def _evaluate_corpus(cases):
     fp = 0
     abstain = 0
     for c in cases:
-        hit = find_quote_in_content(c["content"], c["claim"])
+        hit = _find_evidence_for_claim(c["claim"], c["content"])
         status = normalize_display_status(hit["status"])
         is_support = status in (STATUS_VERIFIED, STATUS_LIKELY)
         if is_support:
@@ -464,7 +448,7 @@ def test_anchor_offset_drift_after_normalization():
         + "&amp; 另一段。  "
         + "Orion launched on August 7, 2025 with record results."
     )
-    hit = find_quote_in_content(content, "Orion launched on August 7, 2025.")
+    hit = _find_evidence_for_claim("Orion launched on August 7, 2025.", content)
     assert "August 7, 2025" in hit["quote"]
     assert normalize_display_status(hit["status"]) != STATUS_MISSING
 

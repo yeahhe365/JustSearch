@@ -566,10 +566,6 @@ body.live-artifacts-open .live-artifacts-panel {
 }
 
 @media (max-width: 640px) {
-    .live-artifacts-panel {
-        width: 100vw;
-    }
-
     .live-artifacts-panel-header,
     .live-artifacts-toolbar {
         padding-inline: 14px;

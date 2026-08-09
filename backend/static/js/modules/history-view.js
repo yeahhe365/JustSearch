@@ -15,7 +15,7 @@ import { state } from './state.js?v=5';
 import { showToast } from './toast.js';
 import { elements, showConfirm } from './ui.js?v=43';
 import { t } from './i18n.js?v=1';
-import { encodePathSegment } from './utils.js?v=13';
+import { encodePathSegment } from './utils.js?v=14';
 
 let _fullHistory = [];
 let _chatGroups = [];

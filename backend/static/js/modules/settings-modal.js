@@ -25,9 +25,12 @@ import * as API from './api.js?v=14';
 import {
     clampBaseFontSize,
     clampLiveArtifactsFontSize,
+    escapeHtml,
     resolveBaseFontSize,
     resolveLiveArtifactsFontSize,
-} from './utils.js?v=13';
+    safeGetLocalStorageItem,
+    safeSetLocalStorageItem,
+} from './utils.js?v=14';
 import {
     applyBridgePreferencesFromSettings,
     fetchBridgeStatus,
@@ -55,22 +58,6 @@ const SETTINGS_LAST_TAB_STORAGE_KEY = 'justsearch_settings_last_tab';
 let isApplyingSettingsForm = false;
 let requestSettingsAutoSave = () => {};
 let flushSettingsAutoSave = () => Promise.resolve(false);
-
-function safeGetLocalStorageItem(key, fallback = '') {
-    try {
-        return localStorage.getItem(key) ?? fallback;
-    } catch {
-        return fallback;
-    }
-}
-
-function safeSetLocalStorageItem(key, value) {
-    try {
-        localStorage.setItem(key, String(value));
-    } catch {
-        // Storage can be unavailable in private browsing or embedded contexts.
-    }
-}
 
 export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSettingsSaved, onLanguageChanged }) {
     const settingsBtn = document.getElementById('settings-btn');
@@ -154,7 +141,10 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
         await API.fetchSettings();
         await populateSettingsForm(rememberCurrentSettingsPayload);
         wireBridgeSettingsPanel();
-        fetchBridgeStatus().catch(() => {});
+        // switchTab('bridge') 已经拉过桥接状态；只有从非 bridge 标签页打开时才补一次。
+        if (lastTab !== 'bridge') {
+            fetchBridgeStatus().catch(() => {});
+        }
     };
 
     settingsBtn.addEventListener('click', openSettings);
@@ -524,17 +514,11 @@ async function populateSettingsForm(onFilled) {
         onFilled();
     }
 
-    const starsCountElement = document.getElementById('github-stars-count');
     const aboutStarsCountElement = document.getElementById('about-stars-count');
-    if (starsCountElement || aboutStarsCountElement) {
+    if (aboutStarsCountElement) {
         const stats = await API.fetchGitHubStats();
         if (stats && stats.stars !== undefined) {
-            if (starsCountElement) {
-                starsCountElement.textContent = stats.stars;
-            }
-            if (aboutStarsCountElement) {
-                aboutStarsCountElement.textContent = stats.stars;
-            }
+            aboutStarsCountElement.textContent = stats.stars;
         }
     }
 }
@@ -1764,17 +1748,6 @@ function createEmptyProvider() {
         base_url: '',
         model_id: '',
     };
-}
-
-function escapeHtml(str) {
-    const value = String(str ?? '');
-    if (!value) return '';
-    return value
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
 }
 
 export const __settingsModalTestHooks = {

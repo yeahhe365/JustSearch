@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from urllib.parse import urlparse
+
+from ..citation_evidence import useful_char_count
 
 
 logger = logging.getLogger(__name__)
@@ -360,12 +361,6 @@ _JS_STRUCTURED_FALLBACK = r"""(() => {
         title: title,
     };
 })()"""
-
-
-def useful_char_count(text: str) -> int:
-    if not text:
-        return 0
-    return len(re.sub(r"\s+", "", text))
 
 
 def is_spa_like_url(url: str) -> bool:

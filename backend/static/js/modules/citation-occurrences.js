@@ -12,8 +12,6 @@
  * evidence records.
  */
 
-const CITATION_GROUP_RE = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
-
 /**
  * Skip text-node parents that must never become citation anchors. Mirrors the
  * backend masker (fenced/inline code, script/style, pre, existing links).
@@ -67,7 +65,7 @@ export function createOccurrenceTracker() {
  * Assign canonical data-evidence-* attributes to one marker anchor inside a
  * citation group. `groupIndex` is shared by all markers in the same group;
  * `markerIndex` is the position within that group. The caller obtains the group
- * index once per parsed `[n, m]` match (see CITATION_GROUP_RE) and passes it in.
+ * index once per parsed `[n, m]` match and passes it in.
  * Returns the occurrence metadata that was assigned.
  */
 export function assignOccurrenceAttributes(anchor, tracker, marker, groupIndex, markerIndex) {
@@ -82,5 +80,3 @@ export function assignOccurrenceAttributes(anchor, tracker, marker, groupIndex, 
     anchor.dataset.evidenceMarkerOccurrenceIndex = String(markerOccurrenceIndex);
     return { occurrenceId, occurrenceIndex, groupIndex, markerIndex, markerOccurrenceIndex };
 }
-
-export { CITATION_GROUP_RE };

@@ -25,15 +25,6 @@
     overflow: hidden;
 }
 
-[data-theme="dark"] #sidebar {
-    --sb-bg: var(--theme-bg-secondary);
-    --sb-bg-hover: var(--theme-bg-tertiary);
-    --sb-text-primary: var(--theme-text-primary);
-    --sb-text-secondary: var(--theme-text-secondary);
-    --sb-border: var(--theme-border-primary);
-    --sb-icon: var(--theme-text-secondary);
-}
-
 #sidebar.collapsed {
     width: 60px;
     padding: 16px 0;
@@ -888,8 +879,6 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    width: 100%;
-    text-align: left;
     font-size: 14px;
     transition: background-color var(--transition-fast), color var(--transition-fast);
 }

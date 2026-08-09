@@ -471,7 +471,7 @@ def test_search_web_returns_empty_when_bridge_extract_yields_nothing(monkeypatch
     monkeypatch.setattr(browser_manager, "get_bridge_client", lambda: FakeBridge())
 
     manager = BrowserManager(engine="brave", max_results=3)
-    assert asyncio.run(manager.search_web("FastAPI CORS", allow_fallback=False, use_cache=False)) == []
+    assert asyncio.run(manager.search_web("FastAPI CORS", use_cache=False)) == []
 
 
 def test_search_web_with_session_extracts_results_via_bridge(monkeypatch):
@@ -529,7 +529,6 @@ def test_search_web_with_session_extracts_results_via_bridge(monkeypatch):
     results = asyncio.run(
         manager.search_web(
             "FastAPI CORS",
-            allow_fallback=False,
             session_id="session-1",
             log_func=logs.append,
             use_cache=False,
@@ -574,7 +573,7 @@ def test_search_web_navigate_failure_returns_empty(monkeypatch):
     monkeypatch.setattr(browser_manager, "get_bridge_client", lambda: FakeBridge())
 
     manager = BrowserManager(engine="google", max_results=3)
-    assert asyncio.run(manager.search_web("FastAPI CORS", allow_fallback=False, use_cache=False)) == []
+    assert asyncio.run(manager.search_web("FastAPI CORS", use_cache=False)) == []
 
 
 def test_search_web_cache_is_isolated_from_returned_results(monkeypatch):
@@ -649,8 +648,8 @@ def test_search_web_cache_is_isolated_from_returned_results(monkeypatch):
     ]
 
 
-def test_search_web_can_check_preferred_engine_without_fallback_or_cache(monkeypatch):
-    # 桥接重构后 search_web 走 bridge + TabPool。验证 allow_fallback=False 时不回退。
+def test_search_web_check_preferred_engine_without_cache(monkeypatch):
+    # 桥接重构后 search_web 走 bridge + TabPool，验证偏好引擎的完整搜索流程。
     class FakeTabPool:
         def __init__(self, client):
             pass
@@ -713,7 +712,6 @@ def test_search_web_can_check_preferred_engine_without_fallback_or_cache(monkeyp
     results = asyncio.run(
         manager.search_web(
             "JustSearch test",
-            allow_fallback=False,
             use_cache=False,
         )
     )

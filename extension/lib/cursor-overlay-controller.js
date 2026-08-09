@@ -22,7 +22,6 @@ export class CursorOverlayController {
     this.listenersRegistered = false;
     this.lastBrowserControlActive = false;
     this.onBrowserControlActivityChanged = onBrowserControlActivityChanged;
-    this.onSessionStoppedHandler = null;
     this.registerObservationListeners();
     void this.refreshActiveTabs();
   }
@@ -37,10 +36,6 @@ export class CursorOverlayController {
       if (session.isRunning || session.activeRequests > 0) return true;
     }
     return false;
-  }
-
-  setSessionStoppedHandler(handler) {
-    this.onSessionStoppedHandler = handler;
   }
 
   async startSession(sessionId, turnId, options = {}) {
@@ -101,11 +96,6 @@ export class CursorOverlayController {
       .filter(([, session]) => session.isRunning)
       .map(([sessionId]) => sessionId);
     await this.stopSessions(active);
-    if (active.length > 0) {
-      try {
-        await this.onSessionStoppedHandler?.(active);
-      } catch {}
-    }
     return active;
   }
 

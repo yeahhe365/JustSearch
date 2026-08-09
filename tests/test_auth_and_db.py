@@ -4772,7 +4772,6 @@ def test_check_search_engines_reports_availability(monkeypatch):
             query,
             log_func=None,
             session_id=None,
-            allow_fallback=True,
             use_cache=True,
         ):
             calls.append(
@@ -4780,7 +4779,6 @@ def test_check_search_engines_reports_availability(monkeypatch):
                     "engine": self.engine,
                     "max_results": self.max_results,
                     "query": query,
-                    "allow_fallback": allow_fallback,
                     "use_cache": use_cache,
                 }
             )
@@ -4830,14 +4828,12 @@ def test_check_search_engines_reports_availability(monkeypatch):
                 "engine": "duckduckgo",
                 "max_results": 3,
                 "query": "JustSearch test",
-                "allow_fallback": False,
                 "use_cache": False,
             },
             {
                 "engine": "bing",
                 "max_results": 3,
                 "query": "JustSearch test",
-                "allow_fallback": False,
                 "use_cache": False,
             },
         ]
@@ -4976,7 +4972,6 @@ def test_check_search_engines_reports_recent_failure_reason(monkeypatch):
             query,
             log_func=None,
             session_id=None,
-            allow_fallback=True,
             use_cache=True,
         ):
             return []

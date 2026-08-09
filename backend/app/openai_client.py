@@ -1,5 +1,7 @@
 """OpenAI SDK client construction for JustSearch."""
 
+import httpx
+
 from openai import AsyncOpenAI
 
 from .version import __version__
@@ -25,15 +27,10 @@ def create_openai_client(
     """
     client_timeout = timeout
     if timeout is not None and connect_timeout is not None:
-        try:
-            import httpx
-
-            client_timeout = httpx.Timeout(
-                timeout,
-                connect=float(connect_timeout),
-            )
-        except Exception:
-            client_timeout = timeout
+        client_timeout = httpx.Timeout(
+            timeout,
+            connect=float(connect_timeout),
+        )
 
     return AsyncOpenAI(
         api_key=api_key or LOCAL_PROVIDER_API_KEY,

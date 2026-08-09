@@ -3,24 +3,9 @@
  */
 
 import { t } from './i18n.js?v=1';
+import { safeGetLocalStorageItem, safeSetLocalStorageItem } from './utils.js?v=14';
 
 export const SELECTED_MODEL_STORAGE_KEY = 'justsearch_selected_model';
-
-function safeGetLocalStorageItem(key, fallback = '') {
-    try {
-        return localStorage.getItem(key) ?? fallback;
-    } catch {
-        return fallback;
-    }
-}
-
-function safeSetLocalStorageItem(key, value) {
-    try {
-        localStorage.setItem(key, String(value));
-    } catch {
-        /* private mode / quota — ignore */
-    }
-}
 
 /**
  * @returns {{ providerId: string, modelId: string } | null}
@@ -363,16 +348,10 @@ export function syncCustomModelSelect() {
 
 function getModelIconSvg(value) {
     const normalized = (value || '').toLowerCase();
-    if (normalized.includes('gemini')) {
+    if (normalized.includes('gemini') || normalized.includes('gpt') || normalized.includes('openai') || normalized.includes('claude') || normalized.includes('anthropic') || normalized.includes('deepseek')) {
+        const iconClass = normalized.includes('gemini') ? 'icon-gemini' : 'icon-gpt-claude';
         return `
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="model-item-icon-svg icon-gemini">
-            <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275Z"/>
-            <path d="m5 3 1 2.5L8.5 6 6 7 5 9.5 4 7 1.5 6 4 5.5Z"/>
-            <path d="m19 17 1 2.5 2.5.5-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1Z"/>
-        </svg>`;
-    } else if (normalized.includes('gpt') || normalized.includes('openai') || normalized.includes('claude') || normalized.includes('anthropic') || normalized.includes('deepseek')) {
-        return `
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="model-item-icon-svg icon-gpt-claude">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="model-item-icon-svg ${iconClass}">
             <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275Z"/>
             <path d="m5 3 1 2.5L8.5 6 6 7 5 9.5 4 7 1.5 6 4 5.5Z"/>
             <path d="m19 17 1 2.5 2.5.5-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1Z"/>

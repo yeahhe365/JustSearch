@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from .auth import authorize_websocket
+from .auth import _LOOPBACK_HOSTS, authorize_websocket
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,6 @@ _WS_PATH = os.getenv("JUSTSEARCH_BRIDGE_WS_PATH", DEFAULT_WS_PATH).strip() or DE
 _REQUEST_TIMEOUT_MS = int(os.getenv("BRIDGE_REQUEST_TIMEOUT_MS", str(DEFAULT_REQUEST_TIMEOUT_MS)))
 # 绑定 0.0.0.0（Docker 部署需要）时,跳过来源 loopback 校验——
 # 端口映射已限定 127.0.0.1 暴露,来源一定是宿主机 loopback 上的 docker-proxy。
-_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
 _REQUIRE_LOOPBACK = _WS_HOST in _LOOPBACK_HOSTS
 
 
@@ -59,7 +58,6 @@ class ExtensionConnection:
         self.extension_name: Optional[str] = None
         self.extension_version: Optional[str] = None
         self.extension_last_hello_at: Optional[float] = None
-        self._reader_task: Optional[asyncio.Task] = None
         self._closed = False
         # JSON-RPC 客户端侧:pending 请求的 Future。
         self._next_id = 1
@@ -102,11 +100,6 @@ class ExtensionConnection:
             logger.debug("[bridge] extension reader exited: %s", e)
         finally:
             self._reject_all("extension disconnected")
-
-    def start_serve(self) -> asyncio.Task:
-        """Start the serve loop as a background task and store reference."""
-        self._reader_task = asyncio.create_task(self.serve())
-        return self._reader_task
 
     def _on_message(self, msg: dict) -> asyncio.Task:
         return asyncio.create_task(self._handle_message(msg))
@@ -247,9 +240,7 @@ async def handle_extension_websocket(websocket: WebSocket) -> None:
     async with _connection_lock:
         prev = _extension_connection
         if prev is not None:
-            # 顶掉旧连接：先取消旧连接的 reader task，再关闭 websocket。
-            if prev._reader_task and not prev._reader_task.done():
-                prev._reader_task.cancel()
+            # 顶掉旧连接：直接关闭旧 websocket，serve 循环随之退出。
             try:
                 await prev.websocket.close(code=4000, reason="replaced by new connection")
             except Exception:
@@ -476,16 +467,6 @@ class TabPool:
         self._pending_close = []
         if ids:
             await self.client.finalize_tabs(ids, session_id=session_id)
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        # 兜底:把还没 release 的也关掉。
-        for tab_id in list(self._acquired):
-            self._pending_close.append(tab_id)
-        self._acquired.clear()
-        await self.close_all_pending()
 
 
 # ---------------------------------------------------------------------------

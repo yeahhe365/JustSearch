@@ -1,6 +1,6 @@
 import { state, setSettings } from './state.js?v=5';
 import { authFetch } from './auth.js?v=1';
-import { applyFontSizes, applyTheme, encodePathSegment } from './utils.js?v=13';
+import { applyFontSizes, applyTheme, encodePathSegment } from './utils.js?v=14';
 import { t } from './i18n.js?v=1';
 
 async function readResponseJson(response) {
@@ -60,11 +60,7 @@ function applyAppearanceSettings(settings) {
     // Rebuild open Live Artifact previews when LA base size or theme changes.
     import('./live-artifacts.js?v=53')
         .then((mod) => {
-            if (typeof mod.refreshLiveArtifactPreviews === 'function') {
-                mod.refreshLiveArtifactPreviews(settings);
-            } else if (typeof mod.refreshLiveArtifactFontSizes === 'function') {
-                mod.refreshLiveArtifactFontSizes(settings);
-            }
+            mod.refreshLiveArtifactPreviews(settings);
         })
         .catch(() => {
             // Live Artifacts module may be unavailable in some test harnesses.

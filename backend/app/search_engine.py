@@ -2,16 +2,12 @@ import logging
 import os
 import json
 import time
-import copy
 
 logger = logging.getLogger(__name__)
 
 # Cache for selector config with hot-reload support
 _config_cache: dict = {}
 _config_mtime: float = 0.0
-
-# Optional per-engine base_url overrides via env (engine -> env var names).
-_SEARCH_URL_ENV_OVERRIDES: dict[str, tuple[str, ...]] = {}
 
 _FALLBACK_SELECTOR_CONFIG = {
     "google": {
@@ -106,21 +102,6 @@ def _normalize_selector_config(raw_config: dict) -> dict:
     return normalized
 
 
-def _apply_env_overrides(config: dict) -> dict:
-    """Return selector config with deployment-specific search URLs applied."""
-    result = copy.deepcopy(config)
-    for engine, env_names in _SEARCH_URL_ENV_OVERRIDES.items():
-        engine_config = result.get(engine)
-        if not isinstance(engine_config, dict):
-            continue
-        for env_name in env_names:
-            override = os.getenv(env_name, "").strip()
-            if override:
-                engine_config["base_url"] = override
-                break
-    return result
-
-
 def load_selectors(engine: str = "google") -> dict:
     """Load search engine CSS selectors from config file.
     
@@ -145,7 +126,7 @@ def load_selectors(engine: str = "google") -> dict:
     except (OSError, json.JSONDecodeError, ValueError) as e:
         logger.error("[SearchEngine] 加载搜索引擎配置失败: %s", e)
     
-    config = _apply_env_overrides(_config_cache or _FALLBACK_SELECTOR_CONFIG)
+    config = _config_cache or _FALLBACK_SELECTOR_CONFIG
 
     if engine is None:
         return config

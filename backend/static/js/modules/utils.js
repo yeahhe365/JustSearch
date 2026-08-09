@@ -1,28 +1,40 @@
-// 初始化 markdown-it with highlight.js
 import { t } from './i18n.js?v=1';
 
-const mdInstance = window.markdownit({
-    html: true,
-    linkify: true,
-    typographer: true,
-    highlight: function (str, lang) {
-        if (lang && window.hljs && hljs.getLanguage(lang)) {
-            try {
-                return hljs.highlight(str, { language: lang, ignoreIllegals: true }).value;
-            } catch (__) {}
-        }
-        if (window.hljs) {
-            try {
-                return hljs.highlightAuto(str).value;
-            } catch (__) {}
-        }
-        return mdInstance.utils.escapeHtml(str);
+// markdown-it 实例惰性创建：真实浏览器中 window.markdownit 由 index.html
+// 引入；jsdom 测试可能在 import 之后才设置 mock。惰性化让 utils.js 顶层
+// 无副作用，任何测试时序下都能安全 import。
+let mdInstance = null;
+function getMdInstance() {
+    if (mdInstance) return mdInstance;
+    if (typeof window === 'undefined' || typeof window.markdownit !== 'function') {
+        return null;
     }
-});
+    mdInstance = window.markdownit({
+        html: true,
+        linkify: true,
+        typographer: true,
+        highlight: function (str, lang) {
+            if (lang && window.hljs && hljs.getLanguage(lang)) {
+                try {
+                    return hljs.highlight(str, { language: lang, ignoreIllegals: true }).value;
+                } catch (__) {}
+            }
+            if (window.hljs) {
+                try {
+                    return hljs.highlightAuto(str).value;
+                } catch (__) {}
+            }
+            return mdInstance.utils.escapeHtml(str);
+        }
+    });
+    return mdInstance;
+}
 
 export const md = {
     render: (text) => {
-        const rawHtml = mdInstance.render(text);
+        const instance = getMdInstance();
+        if (!instance) return String(text ?? '');
+        const rawHtml = instance.render(text);
         const sanitized = window.DOMPurify.sanitize(rawHtml, {
             ADD_ATTR: ['target'],
             FORBID_TAGS: ['style', 'form', 'input'],
@@ -42,8 +54,8 @@ function extractLangFromAttrs(attrs) {
     return m ? m[1] : 'TEXT';
 }
 
-function escapeHtml(value) {
-    return String(value).replace(/[&<>"']/g, (char) => ({
+export function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({
         '&': '&amp;',
         '<': '&lt;',
         '>': '&gt;',
@@ -52,9 +64,33 @@ function escapeHtml(value) {
     }[char]));
 }
 
+/**
+ * Normalize a candidate URL to a safe http(s) absolute URL, or ''.
+ * Shared by source/evidence/live-artifacts renderers.
+ */
+export function getSafeUrl(url) {
+    try {
+        const raw = String(url || '').trim();
+        if (!raw) return '';
+        let candidate = raw;
+        if (raw.startsWith('//')) {
+            candidate = `https:${raw}`;
+        } else if (!/^[a-z][a-z0-9+.-]*:/i.test(raw) && /^[^\s/?#]+\.[^\s]+/.test(raw)) {
+            candidate = `https://${raw}`;
+        }
+        const parsed = new URL(candidate);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+        return candidate;
+    } catch {
+        return '';
+    }
+}
+
 // 全局事件委托：处理代码块复制按钮
-document.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-action="copy-code"]');
+// Guard: 顶层不触碰 document，jsdom 下某些测试在 import 后才安装全局。
+if (typeof document !== 'undefined') {
+    document.addEventListener('click', async (e) => {
+        const btn = e.target.closest('[data-action="copy-code"]');
     if (!btn) return;
     const pre = btn.closest('pre');
     const code = pre ? pre.querySelector('code') : null;
@@ -73,7 +109,8 @@ document.addEventListener('click', async (e) => {
             btn.style.color = '';
         }, 2000);
     } catch (err) { console.error('Copy failed:', err); }
-});
+    });
+}
 
 const THEME_STORAGE_KEY = 'justsearch_theme';
 
@@ -162,11 +199,7 @@ export function applyTheme(theme) {
     // Mirrors AMC re-injecting --amc-live-artifact-* when themeId changes.
     import('./live-artifacts.js?v=53')
         .then((mod) => {
-            if (typeof mod.refreshLiveArtifactPreviews === 'function') {
-                mod.refreshLiveArtifactPreviews({ theme: document.documentElement.getAttribute('data-theme') });
-            } else if (typeof mod.refreshLiveArtifactFontSizes === 'function') {
-                mod.refreshLiveArtifactFontSizes();
-            }
+            mod.refreshLiveArtifactPreviews({ theme: document.documentElement.getAttribute('data-theme') });
         })
         .catch(() => {
             // Live Artifacts module may be unavailable in some test harnesses.
@@ -319,4 +352,20 @@ export function createExportMessageButton(contentGetter) {
     });
     btn.dataset.action = 'export-message';
     return btn;
+}
+
+export function safeGetLocalStorageItem(key, fallback = '') {
+    try {
+        return localStorage.getItem(key) ?? fallback;
+    } catch {
+        return fallback;
+    }
+}
+
+export function safeSetLocalStorageItem(key, value) {
+    try {
+        localStorage.setItem(key, String(value));
+    } catch {
+        // Storage can be unavailable in private browsing or embedded contexts.
+    }
 }

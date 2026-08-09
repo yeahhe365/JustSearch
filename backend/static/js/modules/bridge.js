@@ -3,7 +3,6 @@ import { authFetch } from './auth.js?v=1';
 import { showToast } from './toast.js';
 import { t } from './i18n.js?v=1';
 
-const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_WS_URL = 'ws://127.0.0.1:8000/justsearch';
 const DEFAULT_DOWNLOAD_URL = '/api/extension/download';
 
@@ -38,6 +37,23 @@ function bridgeMetaFromHealth(health) {
         isLatest: bridge.is_latest === null || bridge.is_latest === undefined
             ? null
             : Boolean(bridge.is_latest),
+        checkedAt: Date.now(),
+    };
+}
+
+function bridgeMetaFailed() {
+    return {
+        connected: false,
+        wsUrl: state.bridgeWsUrl || DEFAULT_WS_URL,
+        downloadUrl: state.bridgeDownloadUrl || DEFAULT_DOWNLOAD_URL,
+        installHint: '',
+        extensionName: '',
+        extensionVersion: '',
+        extensionInstanceId: '',
+        latestExtensionVersion: lastMeta?.latestExtensionVersion || '',
+        extensionVersionStatus: 'unknown',
+        updateAvailable: false,
+        isLatest: null,
         checkedAt: Date.now(),
     };
 }
@@ -105,20 +121,7 @@ export async function fetchBridgeStatus() {
     try {
         const res = await authFetch('/api/health');
         if (!res.ok) {
-            const meta = {
-                connected: false,
-                wsUrl: state.bridgeWsUrl || DEFAULT_WS_URL,
-                downloadUrl: state.bridgeDownloadUrl || DEFAULT_DOWNLOAD_URL,
-                installHint: '',
-                extensionName: '',
-                extensionVersion: '',
-                extensionInstanceId: '',
-                latestExtensionVersion: lastMeta?.latestExtensionVersion || '',
-                extensionVersionStatus: 'unknown',
-                updateAvailable: false,
-                isLatest: null,
-                checkedAt: Date.now(),
-            };
+            const meta = bridgeMetaFailed();
             setBridgeConnected(false);
             lastCheckedAt = meta.checkedAt;
             lastMeta = meta;
@@ -134,20 +137,7 @@ export async function fetchBridgeStatus() {
         return meta;
     } catch (error) {
         console.warn('[bridge] health check failed', error);
-        const meta = {
-            connected: false,
-            wsUrl: state.bridgeWsUrl || DEFAULT_WS_URL,
-            downloadUrl: state.bridgeDownloadUrl || DEFAULT_DOWNLOAD_URL,
-            installHint: '',
-            extensionName: '',
-            extensionVersion: '',
-            extensionInstanceId: '',
-            latestExtensionVersion: lastMeta?.latestExtensionVersion || '',
-            extensionVersionStatus: 'unknown',
-            updateAvailable: false,
-            isLatest: null,
-            checkedAt: Date.now(),
-        };
+        const meta = bridgeMetaFailed();
         setBridgeConnected(false);
         lastCheckedAt = meta.checkedAt;
         lastMeta = meta;
@@ -246,7 +236,6 @@ export function updateBridgeStatusUI(meta = null) {
     const settingsBadge = document.getElementById('settings-bridge-status-badge');
     setDotState(settingsDot, connected);
     setDotState(tabDot, connected);
-    if (settingsHero) setDotState(settingsHero, connected);
     if (settingsBadge) {
         settingsBadge.classList.remove('is-saved', 'is-pending', 'is-saving', 'is-invalid', 'is-error');
         if (connected === null || connected === undefined) {

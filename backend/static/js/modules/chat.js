@@ -13,12 +13,10 @@ import {
     setIsProcessing,
     setLiveArtifactsMode,
 } from './state.js?v=5';
-import { createCopyButton, createMessageActionRail, createRegenerateButton, encodePathSegment } from './utils.js?v=13';
+import { createCopyButton, createMessageActionRail, createRegenerateButton, encodePathSegment } from './utils.js?v=14';
 import { updateActiveHistoryItem } from './history-view.js?v=28';
-import { createDynamicLogContainer, createLogEntry, scrollToBottom, appendMessage, renderMessages, createMessageShell } from './ui.js?v=43';
-import { extractSources, hasCitationSources, linkCitationsInElement, renderWithCitations } from './source-renderer.js?v=12';
-import { getInlineLiveArtifact, renderLiveArtifactsForMessage } from './live-artifacts.js?v=53';
-import { bindCitationEvidenceClicks } from './evidence-panel.js?v=5';
+import { createDynamicLogContainer, createLogEntry, scrollToBottom, appendMessage, renderMessages, createMessageShell, renderAssistantAnswerBody } from './ui.js?v=43';
+import { hasCitationSources } from './source-renderer.js?v=12';
 import {
     applyIntensityPresetToSettings,
     getIntensityPreset,
@@ -130,6 +128,18 @@ export function detachCurrentStream(uiElements = {}) {
 /**
  * 设置聊天处理器：发送消息、加载/删除对话、输入框自动调整等。
  */
+// 搜索引擎 → 显示名（含 i18n 文案）。quick 切换与状态栏共用，避免漂移。
+// 提升到模块级：syncQuickSettingsFromState（页面初始化即调用）也引用它。
+const ENGINE_NAMES = {
+    'duckduckgo': 'DuckDuckGo',
+    'google': 'Google',
+    'bing': 'Bing',
+    'sogou': t('engine.sogou'),
+    'brave': 'Brave Search',
+    'baidu': t('engine.baidu'),
+    'yandex': 'Yandex',
+};
+
 export function setupChatHandler(elements, renderHistory) {
     // 记录最后一条用户消息，用于重新生成
     let lastUserMessage = '';
@@ -146,10 +156,6 @@ export function setupChatHandler(elements, renderHistory) {
         userScrolled = (scrollHeight - scrollTop - clientHeight) > 100;
     };
     elements.chatContainer.addEventListener('scroll', scrollHandler);
-
-    // Track registered listeners for cleanup
-    const _cleanupListeners = [];
-    _cleanupListeners.push(() => elements.chatContainer.removeEventListener('scroll', scrollHandler));
 
     async function refreshHistory() {
         const [history, groups] = await Promise.all([
@@ -585,7 +591,6 @@ export function setupChatHandler(elements, renderHistory) {
         // baked srcdoc with the streaming shell (STREAM_PREVIEW_ROOT). Bumping
         // this on bake invalidates any in-flight scheduled streaming render.
         let streamRenderSeq = 0;
-        let reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
         function scheduleStreamRender(isStreaming) {
             if (!ownsView()) return;
@@ -609,39 +614,11 @@ export function setupChatHandler(elements, renderHistory) {
         }
 
         function renderCurrentAssistantAnswer(isStreaming) {
-            const resolvedSources = hasCitationSources(currentSources)
-                ? currentSources
-                : extractSources(currentAnswerBuffer);
-            // AMC-aligned Live Artifacts path: native HTML → iframe; when the mode
-            // is on, Markdown / mixed answers are coerced into one themed iframe so
-            // clipped parent-page HTML (thin gray bars) cannot appear.
-            const suppressUnfencedInlineArtifact = !state.liveArtifactsMode && hasCitationSources(resolvedSources);
-            const liveArtifactOptions = {
-                suppressUnfencedInlineArtifact,
-                liveArtifactsMode: Boolean(state.liveArtifactsMode),
-            };
-            // Probe once and reuse — avoids double extract/buildSrcdoc every stream frame.
-            const inlineArtifact = getInlineLiveArtifact(
-                currentAnswerBuffer,
-                liveArtifactMessageId,
+            renderAssistantAnswerBody(contentWrapper, currentAnswerBuffer, {
+                sources: currentSources,
+                citations: currentCitations,
                 isStreaming,
-                liveArtifactOptions,
-            );
-            if (!inlineArtifact) {
-                contentWrapper.innerHTML = renderWithCitations(currentAnswerBuffer, resolvedSources);
-            }
-            renderLiveArtifactsForMessage(contentWrapper, currentAnswerBuffer, {
                 messageId: liveArtifactMessageId,
-                isStreaming,
-                sources: resolvedSources,
-                citations: currentCitations,
-                inlineArtifact,
-                ...liveArtifactOptions,
-            });
-            linkCitationsInElement(contentWrapper, resolvedSources);
-            bindCitationEvidenceClicks(contentWrapper, {
-                sources: resolvedSources,
-                citations: currentCitations,
             });
         }
 
@@ -1049,7 +1026,6 @@ export function setupChatHandler(elements, renderHistory) {
         }
     };
     document.addEventListener('keydown', keydownHandler);
-    _cleanupListeners.push(() => document.removeEventListener('keydown', keydownHandler));
 
     // 模型切换提示
     const modelSelect = document.getElementById('model-select');
@@ -1097,7 +1073,6 @@ export function setupChatHandler(elements, renderHistory) {
             }
         };
         document.addEventListener('click', clickOutsideHandler);
-        _cleanupListeners.push(() => document.removeEventListener('click', clickOutsideHandler));
 
         // 键盘导航：在按钮与选项间用方向键移动焦点
         function moveHighlight(current, dir) {
@@ -1201,16 +1176,7 @@ export function setupChatHandler(elements, renderHistory) {
         getStatusText: () => {
             if (!state.settings) return null;
             const preset = matchIntensityPreset(state.settings.max_results, state.settings.max_iterations);
-            const engineNames = {
-                'duckduckgo': 'DuckDuckGo',
-                'google': 'Google',
-                'bing': 'Bing',
-                'sogou': t('engine.sogou'),
-                'brave': 'Brave',
-                'baidu': t('engine.baidu'),
-                'yandex': 'Yandex',
-            };
-            const engine = engineNames[state.settings.search_engine] || state.settings.search_engine || 'Google';
+            const engine = ENGINE_NAMES[state.settings.search_engine] || state.settings.search_engine || 'Google';
             return { title: t('chat.searching'), subtitle: `${preset?.label || t('searchIntensity.custom')} · ${engine}` };
         },
     });
@@ -1322,17 +1288,8 @@ export function syncQuickSettingsFromState() {
     if (!state.settings) return;
     
     const engine = state.settings.search_engine || 'google';
-    const engineNames = {
-        'duckduckgo': 'DuckDuckGo',
-        'google': 'Google',
-        'bing': 'Bing',
-        'sogou': t('engine.sogou'),
-        'brave': 'Brave Search',
-        'baidu': t('engine.baidu'),
-        'yandex': 'Yandex',
-    };
     if (quickEngineName) {
-        quickEngineName.textContent = engineNames[engine] || engine;
+        quickEngineName.textContent = ENGINE_NAMES[engine] || engine;
     }
     
     if (quickEngineDropdown) {

@@ -1,4 +1,4 @@
-import { md } from './utils.js?v=13';
+import { getSafeUrl, md } from './utils.js?v=14';
 import { t } from './i18n.js?v=1';
 import {
     assignOccurrenceAttributes,
@@ -7,28 +7,6 @@ import {
 } from './citation-occurrences.js?v=1';
 
 const _faviconCache = new Map();
-
-function getSafeExternalUrl(url) {
-    try {
-        const rawUrl = String(url || '').trim();
-        if (!rawUrl) return '';
-
-        let candidate = rawUrl;
-        if (rawUrl.startsWith('//')) {
-            candidate = `https:${rawUrl}`;
-        } else if (!/^[a-z][a-z0-9+.-]*:/i.test(rawUrl) && /^[^\s/?#]+\.[^\s]+/.test(rawUrl)) {
-            candidate = `https://${rawUrl}`;
-        }
-
-        const parsedUrl = new URL(candidate);
-        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-            return '';
-        }
-        return candidate;
-    } catch {
-        return '';
-    }
-}
 
 function getFaviconUrl(url) {
     try {
@@ -153,7 +131,7 @@ export function linkCitationsInElement(root, sources) {
             ids.forEach((id, idx) => {
                 const source = sourceById.get(id);
                 if (source) {
-                    const safeUrl = getSafeExternalUrl(source.url);
+                    const safeUrl = getSafeUrl(source.url);
                     const anchor = document.createElement('a');
                     // href kept as fallback / middle-click; primary click opens evidence panel.
                     anchor.href = safeUrl || '#';
@@ -233,7 +211,7 @@ export function renderWithCitations(text, sources) {
             li.id = `ref-${source.id ?? idx + 1}`;
             li.value = Number(source.id) || idx + 1;
 
-            const safeUrl = getSafeExternalUrl(source.url);
+            const safeUrl = getSafeUrl(source.url);
             const faviconUrl = getFaviconUrl(safeUrl);
             if (faviconUrl) {
                 const img = document.createElement('img');

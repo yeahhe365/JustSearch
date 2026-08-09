@@ -177,7 +177,7 @@ function showHomeState() {
 function setupSystemThemeListener() {
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
         if ((state.settings.theme || 'light') === 'auto') {
-            import('./modules/utils.js?v=13').then(m => m.applyTheme('auto'));
+            import('./modules/utils.js?v=14').then(m => m.applyTheme('auto'));
         }
     });
 }

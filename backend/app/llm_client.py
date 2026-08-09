@@ -1732,6 +1732,8 @@ class LLMClient:
             }
         return out
 
+    # canvas_mode is a deprecated alias for live_artifacts_mode (kept for API
+    # contract compatibility; the web frontend stopped sending it).
     async def generate_answer(self, query: str, sources: List[Dict], history: Optional[List[Dict[str, str]]] = None, stream_callback: Optional[Callable[[str], None]] = None, live_artifacts_mode: bool = False, canvas_mode: bool = False) -> Dict[str, Any]:
         """
         [09] AI Model: Generation & Evaluation

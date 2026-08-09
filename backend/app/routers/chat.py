@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -34,8 +34,8 @@ from ..citation_evidence import (
     build_citation_evidences,
     client_source_payload,
     select_verification_candidates,
-    strip_source_content_for_storage,
 )
+from .settings import _clamp_int
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +95,8 @@ class ChatRequest(BaseModel):
     max_iterations: Optional[int] = None
     interactive_search: Optional[bool] = None
     live_artifacts_mode: Optional[bool] = None
+    # Deprecated alias for live_artifacts_mode (kept for API contract compatibility;
+    # the web frontend stopped sending this field). Do not use in new code.
     canvas_mode: Optional[bool] = None
     # AMC-style resend/edit: drop this message index and everything after it
     # before running the workflow and saving the new user+assistant turn.
@@ -170,15 +172,6 @@ def _safe_step_model_meta(step_model_configs: dict[str, dict[str, str]]) -> dict
     }
 
 
-def _client_source_payload(
-    sources: list[dict[str, Any]],
-    *,
-    query_hint: str | None = None,
-) -> list[dict[str, Any]]:
-    """SSE-safe source payload with snippet/excerpt (no full crawl body)."""
-    return client_source_payload(sources, query_hint=query_hint)
-
-
 async def _run_citation_verification(
     workflow: SearchWorkflow,
     citations: list[dict[str, Any]],
@@ -229,14 +222,6 @@ async def _run_citation_verification(
     return apply_verification_verdicts(citations, verdicts)
 
 
-def _bounded_int(value, default: int, minimum: int, maximum: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        parsed = default
-    return max(minimum, min(maximum, parsed))
-
-
 def _coerce_bool(value, default: bool = False) -> bool:
     if value is None:
         return default
@@ -278,7 +263,7 @@ def _resolve_search_engine(requested: str | None, saved: str | None) -> str:
 
 
 @router.post("/api/chat")
-async def chat_endpoint(http_request: Request, request: ChatRequest):
+async def chat_endpoint(request: ChatRequest):
     # Set request ID for log correlation
     import uuid
     set_request_id(uuid.uuid4().hex[:8])
@@ -316,13 +301,13 @@ async def chat_endpoint(http_request: Request, request: ChatRequest):
     workflow_step_models = await _resolve_workflow_step_models(defaults, provider_id, api_key, model)
 
     search_engine = _resolve_search_engine(request.search_engine, defaults.get("search_engine", "google"))
-    max_results = _bounded_int(
+    max_results = _clamp_int(
         request.max_results if request.max_results is not None else defaults.get("max_results", 50),
         default=50,
         minimum=1,
         maximum=50,
     )
-    max_iterations = _bounded_int(
+    max_iterations = _clamp_int(
         request.max_iterations if request.max_iterations is not None else defaults.get("max_iterations", 5),
         default=5,
         minimum=1,
@@ -436,7 +421,7 @@ async def chat_endpoint(http_request: Request, request: ChatRequest):
             accumulated_sources[:] = list(sources or [])
             queue.put_nowait({
                 "type": "sources",
-                "content": _client_source_payload(accumulated_sources, query_hint=query_text),
+                "content": client_source_payload(accumulated_sources, query_hint=query_text),
             })
 
         def stats_callback(stats):
@@ -492,7 +477,7 @@ async def chat_endpoint(http_request: Request, request: ChatRequest):
                     workflow, citations, accumulated_sources
                 )
 
-            slim_sources = strip_source_content_for_storage(
+            slim_sources = client_source_payload(
                 accumulated_sources, query_hint=query_text
             )
 

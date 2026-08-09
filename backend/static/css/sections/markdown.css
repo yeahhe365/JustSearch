@@ -400,26 +400,3 @@ code.hljs {
     object-fit: contain;
     vertical-align: middle;
 }
-
-.reference-item {
-    margin-bottom: 8px;
-    font-size: 14px;
-    line-height: 1.5;
-    padding: 6px 10px;
-    border-radius: var(--radius-sm);
-    transition: background-color var(--transition-fast);
-}
-
-.reference-item:hover {
-    background-color: var(--primary-light);
-}
-
-.reference-item:target,
-.reference-item.highlight-ref {
-    animation: highlight 2s ease-out;
-}
-
-@keyframes highlight {
-    0% { background-color: var(--primary-light); }
-    100% { background-color: transparent; }
-}

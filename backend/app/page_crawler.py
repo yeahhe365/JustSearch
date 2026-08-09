@@ -142,7 +142,6 @@ _interactive_sem = asyncio.Semaphore(_INTERACTIVE_CONCURRENCY)
 # If main text is already long, skip click-to-expand (saves time + CDP stress).
 _INTERACTIVE_SKIP_MIN_CHARS = 8000
 
-# Keep in sync with extension/lib/handlers.js GET_VISIBLE_ELEMENTS_JS
 INTERACTIVE_ELEMENTS_JS = r"""(() => {
     const items = [];
     let idCounter = 0;
@@ -243,8 +242,7 @@ DOM_CLICK_JS_TMPL = r"""(() => {
 
 def _js_str(s: str) -> str:
     """JSON-encode a string for safe embedding in evaluate() expressions."""
-    import json as _json
-    return _json.dumps(s if s is not None else "")
+    return json.dumps(s if s is not None else "")
 
 
 async def run_interactive_mode(bridge, tab_id: int, query: str, llm_client, log_func=None,
@@ -533,28 +531,6 @@ async def crawl_page(url: str, log_func=None,
                 if content:
                     if log_func:
                         log_func(f"浏览器: YouTube 视频信息提取成功")
-                    return content
-            except Exception:
-                pass
-
-        # Special handling for Bilibili — extract video metadata
-        if "bilibili.com/video/" in final_url:
-            try:
-                content = await bridge.evaluate(tab_id, r"""() => {
-                    const parts = [];
-                    const title = document.querySelector('h1.video-info-title, h1');
-                    if (title) parts.push('标题: ' + title.innerText);
-                    const author = document.querySelector('.up-info__detail a.username, .up-name');
-                    if (author) parts.push('UP主: ' + author.innerText);
-                    const views = document.querySelector('.view-text, .video-data-list .view');
-                    if (views) parts.push('播放: ' + views.innerText);
-                    const desc = document.querySelector('.desc-info-text, .basic-desc-info');
-                    if (desc) parts.push('\n简介:\n' + desc.innerText.substring(0, 3000));
-                    return parts.length > 0 ? parts.join('\n') : null;
-                }""", timeout_ms=15000)
-                if content:
-                    if log_func:
-                        log_func(f"浏览器: Bilibili 视频信息提取成功")
                     return content
             except Exception:
                 pass

@@ -9,7 +9,6 @@ export class JsonRpcBridge {
     this._nextId = 1;
     this._pending = new Map();        // id -> { resolve, reject, timeoutId }
     this._requestHandlers = new Map();   // method -> async fn(params) -> result
-    this._notificationHandlers = new Map(); // method -> async fn(params)
     this._onRequestStarted = null;
     this._onRequestCompleted = null;
 
@@ -20,10 +19,6 @@ export class JsonRpcBridge {
   // 后端 → 扩展:注册本地能处理的请求方法。
   registerRequestHandler(method, fn) {
     this._requestHandlers.set(method, fn);
-  }
-
-  registerNotificationHandler(method, fn) {
-    this._notificationHandlers.set(method, fn);
   }
 
   // 请求生命周期钩子:每个进入的 RPC 请求开始/结束时触发,用于追踪 session 活跃度
@@ -53,11 +48,6 @@ export class JsonRpcBridge {
         reject(err);
       }
     });
-  }
-
-  // 扩展 → 后端:发通知,不等响应。
-  sendNotification(method, params = {}) {
-    this.transport.sendMessage({ jsonrpc: "2.0", method, params });
   }
 
   async _onMessage(msg) {
@@ -98,16 +88,6 @@ export class JsonRpcBridge {
         if (completion) completion(sessionId);
       }
       return;
-    }
-
-    // 通知:调用本地 handler,不回响应。
-    if (typeof msg.method === "string" && msg.id === undefined) {
-      try {
-        const handler = this._notificationHandlers.get(msg.method);
-        if (handler) await handler(msg.params ?? {});
-      } catch (err) {
-        console.warn("[JustSearch Bridge] notification handler error:", err);
-      }
     }
   }
 

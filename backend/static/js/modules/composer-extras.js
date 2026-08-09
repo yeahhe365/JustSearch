@@ -14,6 +14,7 @@
 // ===========================================================================
 import { abortActiveStream } from './state.js?v=5';
 import { t } from './i18n.js?v=1';
+import { INTENSITY_PRESETS } from './search-intensity.js';
 
 // --- Suggestion data (search-domain prompts) -------------------------------
 export const SUGGESTIONS = Object.freeze([
@@ -26,13 +27,22 @@ export const SUGGESTIONS = Object.freeze([
     { icon: 'monitoring', textKey: 'composer.suggestion7' },
 ]);
 
-// --- Slash command data (map to search-intensity presets) -------------------
-export const SLASH_COMMANDS = Object.freeze([
-    { id: 'quick', icon: 'bolt', labelKey: 'searchIntensity.quick', hintKey: 'searchIntensity.quickHint' },
-    { id: 'balanced', icon: 'balance', labelKey: 'searchIntensity.balanced', hintKey: 'searchIntensity.balancedHint' },
-    { id: 'deep', icon: 'travel_explore', labelKey: 'searchIntensity.deep', hintKey: 'searchIntensity.deepHint' },
-    { id: 'research', icon: 'science', labelKey: 'searchIntensity.research', hintKey: 'searchIntensity.researchHint' },
-]);
+// --- Slash command data (derived from search-intensity presets) ------------
+const SLASH_COMMAND_ICONS = Object.freeze({
+    quick: 'bolt',
+    balanced: 'balance',
+    deep: 'travel_explore',
+    research: 'science',
+});
+
+export const SLASH_COMMANDS = Object.freeze(
+    INTENSITY_PRESETS.map((preset) => ({
+        id: preset.id,
+        icon: SLASH_COMMAND_ICONS[preset.id] || 'bolt',
+        labelKey: preset.labelKey,
+        hintKey: preset.hintKey,
+    })),
+);
 
 export function getSlashCommandLabel(c) { return t(c.labelKey); }
 export function getSlashCommandHint(c) { return t(c.hintKey); }

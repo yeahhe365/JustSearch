@@ -11,10 +11,6 @@ Phase-2 approach (occurrence-aware, conservative):
 4. Honest four-level status: verified-literal | likely | related | missing.
 5. Optional bounded semantic verification is layered on by the chat router; this
    module remains deterministic and directly testable.
-
-Legacy compatibility: ``extract_citation_claims`` and ``find_quote_in_content``
-keep their original signatures so existing callers/tests keep working; the legacy
-3-level statuses are normalized to the 4-level set by callers that need it.
 """
 
 from __future__ import annotations
@@ -51,7 +47,6 @@ _VERIFIED_ANCHOR = 0.90
 _LIKELY_SUBJECT = 0.55
 # A literal span must be this long to count as a meaningful proposition.
 _LITERAL_CJK_MIN = 8
-_LITERAL_LATIN_MIN_TOKENS = 4
 
 # Feature weights.
 _W_LATIN = 1.0
@@ -79,20 +74,6 @@ _CITATION_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 _HTML_TAG_STRUCTURE_RE = re.compile(r"</?[a-zA-Z][\w\-]*(\s[^>]*)?/?>")
 
 # --- date / number anchor patterns ------------------------------------------
-_DATE_PATTERNS = [
-    re.compile(r"20\d{2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日?"),
-    re.compile(r"20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}"),
-    re.compile(
-        r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
-        r"\s+\d{1,2},?\s+20\d{2}",
-        re.I,
-    ),
-    re.compile(
-        r"\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)"
-        r"\s+20\d{2}",
-        re.I,
-    ),
-]
 # Numbers with optional unit. Captures the numeric value and a trailing unit so
 # we can compare dimensions instead of bare digits.
 _NUMBER_UNIT_RE = re.compile(
@@ -126,10 +107,6 @@ _CRITICAL_NUMBER_RE = re.compile(
 _TOKEN_RE = re.compile(r"[\w一-鿿]+", re.U)
 _CJK_RUN_RE = re.compile(r"[一-鿿]+")
 _LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
-_MONTHS = [
-    "", "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-]
 
 # Negation / polarity markers (scoped to the local predicate window).
 _NEGATION_RE = re.compile(
@@ -378,11 +355,6 @@ def client_source_payload(
     return payload
 
 
-def strip_source_content_for_storage(sources: list[dict[str, Any]] | None, query_hint: str | None = None) -> list[dict[str, Any]]:
-    """Persist slim sources (snippet/excerpt) without full page bodies."""
-    return client_source_payload(sources, query_hint=query_hint)
-
-
 # --- mixed-language tokenization -------------------------------------------
 
 def _cjk_ngrams(run: str) -> dict[str, float]:
@@ -421,31 +393,6 @@ def _tokenize_features(text: str) -> dict[str, float]:
 
 
 # --- structured anchor extraction (with units) ------------------------------
-
-def _extract_anchors(claim: str) -> list[str]:
-    """Backward-compatible anchor string list (date/number surface forms + expansions)."""
-    anchors: list[str] = []
-    for pat in _DATE_PATTERNS:
-        anchors.extend(pat.findall(claim))
-    anchors.extend(_CRITICAL_NUMBER_RE.findall(claim))
-    for m in re.finditer(r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?", claim):
-        y, mo, d = m.group(1), int(m.group(2)), int(m.group(3))
-        anchors.append(f"{y}-{mo:02d}-{d:02d}")
-        anchors.append(f"{y}/{mo}/{d}")
-        anchors.append(f"{y}-{mo}-{d}")
-        anchors.append(f"{mo}/{d}/{y}")
-        if 1 <= mo <= 12:
-            anchors.append(f"{_MONTHS[mo]} {d}, {y}")
-            anchors.append(f"{_MONTHS[mo]} {d} {y}")
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    for a in anchors:
-        key = _clean_ws(a)
-        if key and key not in seen:
-            seen.add(key)
-            cleaned.append(key)
-    return cleaned
-
 
 def _extract_structured_anchors(text: str) -> list[dict[str, Any]]:
     """Return [{value, unit, dimension, kind, surface}] for critical anchors."""
@@ -522,11 +469,6 @@ def _normalize_unit(unit: str) -> str:
     if u in _CURRENCY_ALIASES:
         return _CURRENCY_ALIASES[u]
     return u
-
-
-def _unit_conflict(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    """Backward-compat: two anchors share a value-ish number but disagree on dimension/unit."""
-    return _anchor_conflict(a, b)
 
 
 # --- subject / polarity / boilerplate detection -----------------------------
@@ -620,7 +562,6 @@ def _shares_predicate(claim: str, candidate_lower: str) -> bool:
         is_substantive = (
             (len(tok) >= 3 and re.fullmatch(r"[a-z0-9]+", tok))
             or bool(_CJK_RUN_RE.fullmatch(tok))
-            or tok in claim_feats
         )
         if is_substantive and tok in candidate_lower:
             shared += 1
@@ -746,26 +687,6 @@ def extract_citation_occurrences(answer: str) -> list[dict[str, Any]]:
             marker_counts[mid] = mo + 1
             occurrence_index += 1
     return occurrences
-
-
-def extract_citation_claims(answer: str) -> list[dict[str, Any]]:
-    """Backward-compatible: [{marker_ids, claim, offset, atoms?}]."""
-    out: list[dict[str, Any]] = []
-    # Group consecutive occurrences that came from the same citation group.
-    by_group: dict[int, list[dict[str, Any]]] = {}
-    for occ in extract_citation_occurrences(answer):
-        by_group.setdefault(occ["group_index"], []).append(occ)
-    for group in by_group.values():
-        if not group:
-            continue
-        first = group[0]
-        out.append({
-            "marker_ids": [int(o["marker"]) for o in group],
-            "claim": first["claim"],
-            "offset": first["marker_start"],
-            "atoms": first["atoms"],
-        })
-    return out
 
 
 # --- candidate segmentation & scoring ---------------------------------------
@@ -1121,7 +1042,6 @@ def _find_evidence_for_claim(claim: str, content: str) -> dict[str, Any]:
     if not deduped:
         deduped = [{"text": text[:_QUOTE_WINDOW], "start": 0, "end": min(len(text), _QUOTE_WINDOW), "coherent": False}]
 
-    source_lower = _normalize_text(text)
     best: dict[str, Any] | None = None
     for cand in deduped:
         result = _score_candidate(claim_data, cand, text)
@@ -1140,24 +1060,6 @@ _STATUS_RANK = {STATUS_MISSING: 0, STATUS_RELATED: 1, STATUS_LIKELY: 2, STATUS_V
 
 def _status_rank(status: str) -> int:
     return _STATUS_RANK.get(normalize_display_status(status), 0)
-
-
-def find_quote_in_content(content: str, claim: str) -> dict[str, Any]:
-    """Locate best quote window for a claim inside source content (compat signature).
-
-    Returns the new 4-level status set. Legacy callers that compared against
-    ``matched`` should use ``normalize_display_status`` or update expectations.
-    """
-    result = _find_evidence_for_claim(claim, content)
-    # Keep the legacy return shape (no signals/reasons on this compat path).
-    return {
-        "quote": result["quote"],
-        "score": result["score"],
-        "status": result["status"],
-        "method": result["method"],
-        "char_start": result["char_start"],
-        "char_end": result["char_end"],
-    }
 
 
 def build_citation_evidences(

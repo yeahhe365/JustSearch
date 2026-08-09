@@ -11,7 +11,6 @@ export const INTENSITY_PRESETS = Object.freeze([
         max_results: 8,
         max_iterations: 3,
         hintKey: 'searchIntensity.quickHint',
-        descriptionKey: 'searchIntensity.quickDesc',
     },
     {
         id: 'balanced',
@@ -19,7 +18,6 @@ export const INTENSITY_PRESETS = Object.freeze([
         max_results: 12,
         max_iterations: 5,
         hintKey: 'searchIntensity.balancedHint',
-        descriptionKey: 'searchIntensity.balancedDesc',
     },
     {
         id: 'deep',
@@ -27,7 +25,6 @@ export const INTENSITY_PRESETS = Object.freeze([
         max_results: 20,
         max_iterations: 8,
         hintKey: 'searchIntensity.deepHint',
-        descriptionKey: 'searchIntensity.deepDesc',
     },
     {
         id: 'research',
@@ -35,7 +32,6 @@ export const INTENSITY_PRESETS = Object.freeze([
         max_results: 30,
         max_iterations: 10,
         hintKey: 'searchIntensity.researchHint',
-        descriptionKey: 'searchIntensity.researchDesc',
     },
 ]);
 
@@ -111,18 +107,6 @@ export function applyIntensityPresetToSettings(settings, presetId) {
         max_results: preset.max_results,
         max_iterations: preset.max_iterations,
     };
-}
-
-export function syncIntensityControls(root = document) {
-    const bar = root.getElementById?.('search-intensity-bar') || root.querySelector?.('#search-intensity-bar');
-    if (!bar) return null;
-
-    const chips = Array.from(bar.querySelectorAll('.intensity-chip[data-intensity]'));
-    const hintEl = root.getElementById?.('search-intensity-hint') || bar.querySelector('#search-intensity-hint');
-    const customChip = bar.querySelector('.intensity-chip[data-intensity="custom"]');
-
-    // settings may be injected via data attributes for tests; prefer live state values from caller.
-    return { bar, chips, hintEl, customChip };
 }
 
 /**

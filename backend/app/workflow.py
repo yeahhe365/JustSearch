@@ -6,12 +6,14 @@ import time
 from typing import List, Dict, Callable, Any, Optional
 from .llm_client import LLMClient, ensure_live_artifact_answer
 from .browser_manager import BrowserManager
+from .providers import WORKFLOW_MODEL_STEP_IDS
 from .crawler.redirects import decode_bing_redirect_url
 
 logger = logging.getLogger(__name__)
-_WORKFLOW_LLM_STEPS = ("analysis", "relevance", "interaction", "answer")
 
 class SearchWorkflow:
+    # canvas_mode is a deprecated alias for live_artifacts_mode (kept for API
+    # contract compatibility; the web frontend stopped sending it).
     def __init__(self, api_key: str, base_url: str, model: str, search_engine: str = "google", max_results: int = 50, max_iterations: int = 5, interactive_search: bool = True, session_id: str = None, step_model_configs: Optional[dict] = None, live_artifacts_mode: bool = False, canvas_mode: Optional[bool] = None, history_options: Optional[dict] = None):
         self.llm = LLMClient(api_key, base_url, model, **(history_options or {}))
         self.step_llms = self._build_step_llms(
@@ -24,7 +26,6 @@ class SearchWorkflow:
         # Pass the search engine preference to the browser manager
         self.browser = BrowserManager(engine=search_engine, max_results=max_results)
         self.max_iterations = max_iterations
-        self.history = []
         self.interactive_search = interactive_search
         self.session_id = session_id
         self.live_artifacts_mode = bool(live_artifacts_mode or canvas_mode)
@@ -54,7 +55,7 @@ class SearchWorkflow:
         }
         clients = {}
         hist_opts = history_options or {}
-        for step_id in _WORKFLOW_LLM_STEPS:
+        for step_id in WORKFLOW_MODEL_STEP_IDS:
             config = step_model_configs.get(step_id) if isinstance(step_model_configs, dict) else None
             api_key = str((config or {}).get("api_key") or default_api_key)
             base_url = str((config or {}).get("base_url") or default_base_url)

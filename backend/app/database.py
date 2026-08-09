@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import Boolean, Column, String, Text, DateTime, Integer, ForeignKey, JSON, select, delete, update, text, Index
+from sqlalchemy import Boolean, Column, String, Text, DateTime, Integer, ForeignKey, JSON, select, delete, update, text
 from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy.sql import func
 
@@ -163,6 +163,25 @@ class ChatMessage(Base):
     created_at = Column(DateTime, default=func.now())
 
     session = relationship("ChatSession", back_populates="messages")
+
+
+def _message_from_dict(msg, session_id, *, created_at=None):
+    """Build a ChatMessage row from a message dict, normalizing JSON field types.
+
+    Shared by save/duplicate/fork/import so every path keeps the same
+    isinstance normalization (logs/sources/stats/citations can arrive as
+    ``None`` or wrong types from older exports and must not crash the insert).
+    """
+    return ChatMessage(
+        session_id=session_id,
+        role=str(msg.get("role", "user")),
+        content=str(msg.get("content", "")),
+        logs=msg.get("logs") if isinstance(msg.get("logs"), list) else [],
+        sources=msg.get("sources") if isinstance(msg.get("sources"), list) else [],
+        stats=msg.get("stats") if isinstance(msg.get("stats"), dict) else {},
+        citations=msg.get("citations") if isinstance(msg.get("citations"), list) else [],
+        created_at=created_at if created_at is not None else _utc_now(),
+    )
 
 
 class Settings(Base):
@@ -431,15 +450,7 @@ async def save_chat_history(session_id: str, messages: list, title: Optional[str
             session.add(sess)
             # New session – insert all messages
             for msg in messages:
-                session.add(ChatMessage(
-                    session_id=session_id,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content", ""),
-                    logs=msg.get("logs") if isinstance(msg.get("logs"), list) else [],
-                    sources=msg.get("sources") if isinstance(msg.get("sources"), list) else [],
-                    stats=msg.get("stats") if isinstance(msg.get("stats"), dict) else {},
-                    citations=msg.get("citations") if isinstance(msg.get("citations"), list) else [],
-                ))
+                session.add(_message_from_dict(msg, session_id))
             await session.commit()
             return
 
@@ -484,15 +495,7 @@ async def save_chat_history(session_id: str, messages: list, title: Optional[str
         new_msgs = messages[existing_count:]
         if new_msgs:
             for msg in new_msgs:
-                session.add(ChatMessage(
-                    session_id=session_id,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content", ""),
-                    logs=msg.get("logs") if isinstance(msg.get("logs"), list) else [],
-                    sources=msg.get("sources") if isinstance(msg.get("sources"), list) else [],
-                    stats=msg.get("stats") if isinstance(msg.get("stats"), dict) else {},
-                    citations=msg.get("citations") if isinstance(msg.get("citations"), list) else [],
-                ))
+                session.add(_message_from_dict(msg, session_id))
 
         await session.commit()
 
@@ -717,6 +720,43 @@ def _session_summary_from_row(row) -> Dict[str, Any]:
     }
 
 
+async def _copy_session(
+    source: dict,
+    messages: list,
+    title: str,
+) -> Optional[Dict[str, Any]]:
+    """Create a new independent session from ``source``, copying ``messages``.
+
+    Shared by duplicate_chat (copies all messages) and fork_chat_from (copies
+    a prefix). The new session gets a fresh id, inherits the source's group_id,
+    and starts unpinned.
+    """
+    now = _utc_now()
+    new_id = await _new_session_id()
+    async with await get_session() as session:
+        sess = ChatSession(
+            id=new_id,
+            title=title,
+            group_id=source.get("group_id"),
+            is_pinned=False,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(sess)
+        for msg in messages:
+            session.add(_message_from_dict(msg, new_id, created_at=now))
+        await session.commit()
+
+        row = (await session.execute(
+            select(ChatSession.id, ChatSession.title, ChatSession.group_id,
+                   ChatSession.is_pinned, ChatSession.updated_at)
+            .where(ChatSession.id == new_id)
+        )).first()
+        if row is None:
+            return None
+        return _session_summary_from_row(row)
+
+
 async def duplicate_chat(session_id: str, new_title: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Deep-copy a chat into a new independent session.
 
@@ -729,40 +769,8 @@ async def duplicate_chat(session_id: str, new_title: Optional[str] = None) -> Op
     if not source:
         return None
     messages = source.get("messages", [])
-    now = _utc_now()
-    new_id = await _new_session_id()
     title = (new_title or f"{source.get('title') or '新对话'}（副本）").strip()
-    async with await get_session() as session:
-        sess = ChatSession(
-            id=new_id,
-            title=title,
-            group_id=source.get("group_id"),
-            is_pinned=False,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(sess)
-        for msg in messages:
-            session.add(ChatMessage(
-                session_id=new_id,
-                role=str(msg.get("role", "user")),
-                content=str(msg.get("content", "")),
-                logs=msg.get("logs") if isinstance(msg.get("logs"), list) else [],
-                sources=msg.get("sources") if isinstance(msg.get("sources"), list) else [],
-                stats=msg.get("stats") if isinstance(msg.get("stats"), dict) else {},
-                citations=msg.get("citations") if isinstance(msg.get("citations"), list) else [],
-                created_at=now,
-            ))
-        await session.commit()
-
-        row = (await session.execute(
-            select(ChatSession.id, ChatSession.title, ChatSession.group_id,
-                   ChatSession.is_pinned, ChatSession.updated_at)
-            .where(ChatSession.id == new_id)
-        )).first()
-        if row is None:
-            return None
-        return _session_summary_from_row(row)
+    return await _copy_session(source, messages, title)
 
 
 async def fork_chat_from(
@@ -789,40 +797,8 @@ async def fork_chat_from(
     prefix = messages[: idx + 1]
     if not prefix:
         return None
-    now = _utc_now()
-    new_id = await _new_session_id()
     title = (new_title or f"{source.get('title') or '新对话'}（分叉）").strip()
-    async with await get_session() as session:
-        sess = ChatSession(
-            id=new_id,
-            title=title,
-            group_id=source.get("group_id"),
-            is_pinned=False,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(sess)
-        for msg in prefix:
-            session.add(ChatMessage(
-                session_id=new_id,
-                role=str(msg.get("role", "user")),
-                content=str(msg.get("content", "")),
-                logs=msg.get("logs") if isinstance(msg.get("logs"), list) else [],
-                sources=msg.get("sources") if isinstance(msg.get("sources"), list) else [],
-                stats=msg.get("stats") if isinstance(msg.get("stats"), dict) else {},
-                citations=msg.get("citations") if isinstance(msg.get("citations"), list) else [],
-                created_at=now,
-            ))
-        await session.commit()
-
-        row = (await session.execute(
-            select(ChatSession.id, ChatSession.title, ChatSession.group_id,
-                   ChatSession.is_pinned, ChatSession.updated_at)
-            .where(ChatSession.id == new_id)
-        )).first()
-        if row is None:
-            return None
-        return _session_summary_from_row(row)
+    return await _copy_session(source, prefix, title)
 
 
 async def delete_message(
@@ -935,15 +911,7 @@ async def replace_messages_from(
         for m in msgs[from_index:]:
             await session.delete(m)
         for msg in new_messages:
-            session.add(ChatMessage(
-                session_id=session_id,
-                role=msg.get("role", "user"),
-                content=msg.get("content", ""),
-                logs=msg.get("logs") if isinstance(msg.get("logs"), list) else [],
-                sources=msg.get("sources") if isinstance(msg.get("sources"), list) else [],
-                stats=msg.get("stats") if isinstance(msg.get("stats"), dict) else {},
-                citations=msg.get("citations") if isinstance(msg.get("citations"), list) else [],
-            ))
+            session.add(_message_from_dict(msg, session_id))
         if title:
             sess.title = title
         sess.updated_at = _utc_now()
@@ -1128,14 +1096,9 @@ async def import_history_package(payload: dict) -> Dict[str, int]:
                 updated_at=chat["updated_at"],
             ))
             for message in chat["messages"]:
-                session.add(ChatMessage(
-                    session_id=chat["id"],
-                    role=message["role"],
-                    content=message["content"],
-                    logs=message["logs"],
-                    sources=message["sources"],
-                    stats=message["stats"],
-                    citations=message.get("citations") if isinstance(message.get("citations"), list) else [],
+                session.add(_message_from_dict(
+                    message,
+                    chat["id"],
                     created_at=message["created_at"],
                 ))
             existing_session_ids.add(chat["id"])

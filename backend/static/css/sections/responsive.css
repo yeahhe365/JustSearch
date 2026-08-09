@@ -171,10 +171,6 @@
         max-width: 100%;
     }
 
-    .hero-suggestions {
-        gap: 6px !important;
-    }
-
     .suggestion-chip {
         font-size: 12px;
         padding: 4px 10px;
@@ -209,8 +205,6 @@
     }
 
     /* 装饰性动画直接关闭；功能性指示器(spinner/进度条)保留但被上方通用规则压到几乎无 */
-    .hero-logo,
-    .logo-text,
     .log-container:not(.completed)::after,
     #chat-container {
         animation: none !important;
@@ -232,44 +226,4 @@
     #sidebar {
         padding-bottom: env(safe-area-inset-bottom);
     }
-}
-
-/* ========================================
-   Search Progress Bar
-   ======================================== */
-.search-progress-bar {
-    position: sticky;
-    top: 0;
-    z-index: 5;
-    height: 3px;
-    background-color: var(--border-light);
-    border-radius: 2px;
-    overflow: hidden;
-    margin-bottom: 8px;
-}
-
-.search-progress-bar .progress-fill {
-    height: 100%;
-    width: 0%;
-    background: linear-gradient(90deg, var(--primary), #8b5cf6, var(--primary));
-    background-size: 200% 100%;
-    border-radius: 2px;
-    transition: width 0.5s ease;
-    animation: progressPulse 2s ease-in-out infinite, progressShimmer 1.5s linear infinite;
-}
-
-@keyframes progressShimmer {
-    0% { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
-}
-
-@keyframes progressPulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.7; }
-}
-
-.search-progress-bar.done .progress-fill {
-    width: 100% !important;
-    background: var(--success);
-    animation: none;
 }

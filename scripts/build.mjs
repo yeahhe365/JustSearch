@@ -95,6 +95,9 @@ async function buildCss() {
         const file = join(STATIC, 'css', 'sections', name);
         if (existsSync(file)) css += `/* === ${name} (inlined) === */\n${readFileSync(file, 'utf8')}\n`;
     }
+    // Generated from css/sections/*.css (build.mjs). Do not hand-edit —
+    // this file is rewritten on every build; sections are the single source.
+    css = `/* GENERATED — do not hand-edit. Source: backend/static/css/sections/*.css */\n${css}`;
     // Keep the dev-served style.css in sync with sections so the app works
     // even before a production build (sections remain the single source).
     writeFileSync(join(STATIC, 'css', 'style.css'), css);

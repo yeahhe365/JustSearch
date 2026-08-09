@@ -12,38 +12,46 @@ export function registerDetachListener() {
 }
 
 export async function attachTab(tabId) {
-  await withQueue(tabId, async () => {
-    if (attachedTabs.has(tabId)) return;
-    try {
-      await chrome.debugger.attach({ tabId }, "1.3");
-      attachedTabs.add(tabId);
-    } catch (err) {
-      // 重复 attach:若我们未登记但 Chrome 认为已附着,可能是自己残留,尝试当成功。
-      // 若是「另一个扩展/工具」占着 debugger,绝不能假成功,否则 sendCommand 会挂死。
-      if (isAlreadyAttachedError(err)) {
-        // 只有确认是本扩展会话时才登记;否则抛出,让调用方重试/降级。
-        // Chrome 无法区分「自己 vs 他人」,保守策略:先 detach 再 attach 一次。
-        try {
-          await chrome.debugger.detach({ tabId });
-        } catch {
-          /* ignore */
-        }
-        try {
-          await chrome.debugger.attach({ tabId }, "1.3");
-          attachedTabs.add(tabId);
-          return;
-        } catch (err2) {
-          attachedTabs.delete(tabId);
-          throw new Error(
-            `Cannot attach debugger to tab ${tabId}: ${err2?.message ?? err2} ` +
-              `(original: ${err?.message ?? err}). Another tool may hold the debugger.`
-          );
-        }
+  await withQueue(tabId, () => ensureAttached(tabId));
+}
+
+/**
+ * Attach the debugger to ``tabId`` (idempotent), recovering from a stale
+ * already-attached state. Must be called from within a ``withQueue(tabId)``
+ * scope — it never queues itself, so executeCdp can reuse it without a
+ * re-entrant withQueue deadlock.
+ */
+async function ensureAttached(tabId) {
+  if (attachedTabs.has(tabId)) return;
+  try {
+    await chrome.debugger.attach({ tabId }, "1.3");
+    attachedTabs.add(tabId);
+  } catch (err) {
+    // 重复 attach:若我们未登记但 Chrome 认为已附着,可能是自己残留,尝试当成功。
+    // 若是「另一个扩展/工具」占着 debugger,绝不能假成功,否则 sendCommand 会挂死。
+    if (isAlreadyAttachedError(err)) {
+      // 只有确认是本扩展会话时才登记;否则抛出,让调用方重试/降级。
+      // Chrome 无法区分「自己 vs 他人」,保守策略:先 detach 再 attach 一次。
+      try {
+        await chrome.debugger.detach({ tabId });
+      } catch {
+        /* ignore */
       }
-      attachedTabs.delete(tabId);
-      throw err;
+      try {
+        await chrome.debugger.attach({ tabId }, "1.3");
+        attachedTabs.add(tabId);
+        return;
+      } catch (err2) {
+        attachedTabs.delete(tabId);
+        throw new Error(
+          `Cannot attach debugger to tab ${tabId}: ${err2?.message ?? err2} ` +
+            `(original: ${err?.message ?? err}). Another tool may hold the debugger.`
+        );
+      }
     }
-  });
+    attachedTabs.delete(tabId);
+    throw err;
+  }
 }
 
 export async function detachTab(tabId) {
@@ -56,10 +64,6 @@ export async function detachTab(tabId) {
       attachedTabs.delete(tabId);
     }
   });
-}
-
-export function isTabAttached(tabId) {
-  return attachedTabs.has(tabId);
 }
 
 export async function detachAll() {
@@ -75,25 +79,7 @@ export async function detachAll() {
 export async function executeCdp({ tabId, method, params = {}, timeoutMs }) {
   const timeout = normalizeTimeout(timeoutMs);
   return withQueue(tabId, async () => {
-    // attach 内联(已在 queue 中,不再二次 withQueue)
-    if (!attachedTabs.has(tabId)) {
-      try {
-        await chrome.debugger.attach({ tabId }, "1.3");
-        attachedTabs.add(tabId);
-      } catch (err) {
-        if (isAlreadyAttachedError(err)) {
-          try {
-            await chrome.debugger.detach({ tabId });
-          } catch {
-            /* ignore */
-          }
-          await chrome.debugger.attach({ tabId }, "1.3");
-          attachedTabs.add(tabId);
-        } else {
-          throw err;
-        }
-      }
-    }
+    await ensureAttached(tabId);
 
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {

@@ -29,6 +29,7 @@ from ..providers import (
     split_model_item,
 )
 from ..search_engine import get_all_engines
+from .history import _body_text
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,14 @@ class SettingsModel(BaseModel):
     live_artifacts_font_size: Optional[int] = 16
     completion_notification_enabled: Optional[bool] = False
     completion_sound_enabled: Optional[bool] = False
+    citation_verification_enabled: Optional[bool] = None
+    bridge_require_before_send: Optional[bool] = None
+    bridge_show_banner: Optional[bool] = None
+    bridge_toast_on_change: Optional[bool] = None
+    bridge_poll_interval_sec: Optional[int] = None
+    history_window: Optional[int] = None
+    history_char_budget: Optional[int] = None
+    assistant_turn_char_budget: Optional[int] = None
 
 
 BASE_FONT_SIZE_MIN = 12
@@ -75,12 +84,12 @@ LIVE_ARTIFACTS_FONT_SIZE_MIN = 10
 LIVE_ARTIFACTS_FONT_SIZE_MAX = 32
 
 
-def _clamp_font_size(value, *, default: int, min_size: int, max_size: int) -> int:
+def _clamp_int(value, default: int, minimum: int, maximum: int) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
         return default
-    return max(min_size, min(max_size, parsed))
+    return max(minimum, min(maximum, parsed))
 
 
 class EngineCheckRequest(BaseModel):
@@ -112,13 +121,6 @@ def _recreate_browser_user_data_dir(user_data_dir: str):
 async def _reset_browser_profile_data(user_data_dir: str):
     """清理浏览器持久化数据。user_data/ 目录是历史遗留,这里只删除目录内容。"""
     _recreate_browser_user_data_dir(user_data_dir)
-
-
-def _body_str(body: dict, key: str, default: str = "") -> str:
-    value = body.get(key, default)
-    if value is None:
-        value = default
-    return str(value).strip()
 
 
 @router.get("/api/settings")
@@ -194,18 +196,18 @@ async def update_settings_endpoint(settings: SettingsModel):
     if "max_iterations" in update:
         update["max_iterations"] = max(1, min(10, int(update["max_iterations"])))
     if "base_font_size" in update:
-        update["base_font_size"] = _clamp_font_size(
+        update["base_font_size"] = _clamp_int(
             update["base_font_size"],
             default=16,
-            min_size=BASE_FONT_SIZE_MIN,
-            max_size=BASE_FONT_SIZE_MAX,
+            minimum=BASE_FONT_SIZE_MIN,
+            maximum=BASE_FONT_SIZE_MAX,
         )
     if "live_artifacts_font_size" in update:
-        update["live_artifacts_font_size"] = _clamp_font_size(
+        update["live_artifacts_font_size"] = _clamp_int(
             update["live_artifacts_font_size"],
             default=16,
-            min_size=LIVE_ARTIFACTS_FONT_SIZE_MIN,
-            max_size=LIVE_ARTIFACTS_FONT_SIZE_MAX,
+            minimum=LIVE_ARTIFACTS_FONT_SIZE_MIN,
+            maximum=LIVE_ARTIFACTS_FONT_SIZE_MAX,
         )
     if "history_window" in update:
         update["history_window"] = max(2, min(30, int(update["history_window"])))
@@ -235,7 +237,6 @@ async def _check_single_engine(engine: str, query: str) -> dict:
         results = await asyncio.wait_for(
             manager.search_web(
                 query,
-                allow_fallback=False,
                 use_cache=False,
             ),
             timeout=_ENGINE_CHECK_TIMEOUT_SECONDS,
@@ -281,18 +282,18 @@ async def check_search_engines_endpoint(body: EngineCheckRequest | None = None):
 @router.post("/api/settings/validate-key")
 async def validate_api_key_endpoint(body: dict = Body(...)):
     """Validate an API key by making a test request to the model endpoint."""
-    api_key = _body_str(body, "api_key")
+    api_key = _body_text(body, "api_key")
     if api_key and "****" in api_key:
-        provider_id = _body_str(body, "provider_id")
-        previous_provider_id = _body_str(body, "previous_provider_id")
+        provider_id = _body_text(body, "provider_id")
+        previous_provider_id = _body_text(body, "previous_provider_id")
         settings = await load_settings()
         provider = get_provider_by_id(settings, provider_id) if provider_id else None
         if provider is None and previous_provider_id:
             provider = get_provider_by_id(settings, previous_provider_id)
         api_key = (provider or {}).get("api_key", "").strip()
 
-    base_url = _body_str(body, "base_url") or "https://api.openai.com/v1"
-    model_id = _body_str(body, "model_id")
+    base_url = _body_text(body, "base_url") or "https://api.openai.com/v1"
+    model_id = _body_text(body, "model_id")
     model_id, _display_name = split_model_item(model_id)
 
     if not model_id:
