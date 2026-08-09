@@ -27,6 +27,7 @@ const {
     normalizePreviewDiagnostic,
     normalizePreviewableMarkdownContent,
     parseLiveArtifactInteractionSpec,
+    processArtifactHtmlForDisplay,
     sanitizeClippingStylesInHtml,
     scheduleFinalHeightSweep,
     forceOpenAllDetailsInHtml,
@@ -1526,6 +1527,31 @@ test('streamChat does not retry a non-idempotent chat request after response sta
     }
 });
 
+test('final display pipeline matches the buildSrcdoc body (streaming:false consistency)', () => {
+    installBrowserGlobals('<!doctype html><body></body>');
+    const code = '<section><details><summary>S</summary><p>Hidden text</p></details><p style="color:#2563eb">Blue</p></section>';
+    const processed = processArtifactHtmlForDisplay(code, { streaming: false });
+    // Full chain: details forced open, hardcoded light color rewritten for theme.
+    assert.match(processed, /<details open/i, 'details forced open in final path');
+    assert.doesNotMatch(processed, /<details(?!\s)/i, 'no non-open details remain');
+    // buildSrcdoc bakes the same processed content into its body.
+    const srcdoc = buildSrcdoc(code, 'html', [], { themeId: 'light' });
+    const body = (srcdoc.match(/<body>([\s\S]*?)<\/body>/) || [])[1] || '';
+    assert.ok(body, 'srcdoc has a body');
+    // The processed body must carry the same structural markers.
+    assert.match(body, /<details open/i, 'buildSrcdoc body also force-opens details');
+    assert.match(body, /Blue/, 'content survives into the srcdoc body');
+});
+
+test('streaming display pipeline stays light (sanitize only)', () => {
+    installBrowserGlobals('<!doctype html><body></body>');
+    const code = '<details><summary>S</summary><p>Hidden</p></details>';
+    const processed = processArtifactHtmlForDisplay(code, { streaming: true });
+    // Streaming path must NOT force-open details or rewrite content — the heavy
+    // work is deferred to final bake.
+    assert.doesNotMatch(processed, /<details open/i, 'streaming path leaves details closed');
+});
+
 test('streaming inline HTML uses a stable stream shell; markup stays on streamHtml', () => {
     const html = '<section style="display:grid"><strong>Partial';
     const artifact = extractInlineLiveArtifact(html, 'message-stream', true);
@@ -1592,12 +1618,23 @@ test('streaming preview reuses srcdoc across chunks and pushes stream-render upd
         messageId: 'stream-stable',
         isStreaming: false,
     });
-    // Stream → final transitions remount the iframe (fresh node) so the final
-    // srcdoc reliably navigates — re-query the current frame instead of the
-    // stale pre-final reference.
+    // Phase 2.1: stream → final does NOT remount the iframe. The same shell stays
+    // in place (no blank window); the final content is pushed in-place over
+    // postMessage using the full display chain, and the registry's srcdoc is
+    // updated as the rebuild seed.
     const frameFinal = container.querySelector('.live-artifact-inline-iframe');
-    assert.match(frameFinal.getAttribute('srcdoc') || frameFinal.srcdoc || '', /Body text/);
+    assert.equal(frameFinal, frame1, 'final state reuses the same iframe — no remount, no blank window');
+    assert.match(frameFinal.getAttribute('srcdoc') || frameFinal.srcdoc || '', /data-amc-stream-preview-root="true"/, 'shell srcdoc is preserved (content rides postMessage)');
     assert.equal(frameFinal.dataset.liveArtifactStreaming, 'false');
+    assert.ok(
+        posts.some((msg) => (
+            msg
+            && msg.channel === 'justsearch-live-artifacts'
+            && msg.event === 'stream-render'
+            && /Body text/.test(msg.html || '')
+        )),
+        'final content is delivered over postMessage into the mounted shell',
+    );
 });
 
 test('public inline Live Artifact probe matches AMC raw HTML fragments', () => {

@@ -2770,23 +2770,10 @@ function renderInlineArtifactFrame(container, artifact) {
     let viewport = frameShell?.querySelector('.live-artifact-inline-viewport');
     let frame = frameShell?.querySelector('.live-artifact-inline-iframe');
 
-    // Transitioning stream shell → final: Chrome does NOT reliably re-navigate an
-    // already-loaded srcdoc iframe when the srcdoc attribute is swapped in place —
-    // it often stays on the shell's empty document (the white screen). AMC avoids
-    // this because React remounts/re-renders the iframe when srcDoc changes. Force
-    // a real remount here: drop the old shell so the block below builds a fresh
-    // iframe whose srcdoc navigates cleanly to the final content.
-    const streamingShellMounted = Boolean(
-        frame
-        && frame.dataset.liveArtifactStreamShell === '1'
-        && frame.srcdoc
-    );
-    if (!artifact.isStreaming && streamingShellMounted) {
-        frameShell?.remove();
-        frameShell = null;
-        viewport = null;
-        frame = null;
-    }
+    // Phase 2.1: a mounted shell is never remounted on stream→final. The final
+    // content is pushed over postMessage into the SAME iframe (whose head — CSP,
+    // theme, font, bridge — is identical to the final srcdoc), so there is no
+    // blank-document window while the browser navigates a fresh srcdoc.
 
     // Streaming with a mounted shell: skip buildSrcdoc entirely (content rides postMessage).
     const streamShellReady = Boolean(
@@ -2836,20 +2823,19 @@ function renderInlineArtifactFrame(container, artifact) {
         syncInlineArtifactFrameHeight(viewport, frame, artifact, container);
     }
 
-    // While streaming with a mounted shell, never reassign srcdoc (avoids reload even if
-    // bake produced a byte-identical-looking but newly-stringified document).
-    const streamShellMountedNow = frame?.dataset?.liveArtifactStreamShell === '1';
-    if (artifact.isStreaming && streamShellMountedNow && frame.srcdoc) {
-        // keep existing srcdoc
+    // srcdoc is the single source of truth for FUTURE rebuilds (registry).
+    // The live frame gets its content over postMessage; we only assign srcdoc on
+    // a brand-new mount (fresh node navigates cleanly in the same task). Once a
+    // shell is mounted, never touch frame.srcdoc again — re-assigning navigates
+    // the iframe and produces a blank window.
+    const shellAlreadyMounted = frame?.dataset?.liveArtifactStreamShell === '1' && frame.srcdoc;
+    const isFreshMount = frame?.dataset?.liveArtifactFreshMount === '1';
+    if (shellAlreadyMounted) {
+        // Stream shell (or a shell that reached final state) stays in place; the
+        // final/fresh content is delivered via postMessage below.
     } else if (frame.srcdoc !== artifact.srcdoc) {
-        // Synchronous assignment against the freshly-attached frame. Reproduced
-        // reliably: a brand-new iframe that is appended and then given its real
-        // srcdoc in the same task DOES navigate correctly; the failures only
-        // happened when an old iframe's srcdoc was swapped in place or when a
-        // delay was introduced before the first assignment. The stream→final
-        // remount above already removed the old shell, so `frame` here is a
-        // brand-new node — assign synchronously.
-        if (frame.dataset.liveArtifactFreshMount === '1') {
+        // Brand-new frame: synchronous srcdoc assignment navigates correctly.
+        if (isFreshMount) {
             delete frame.dataset.liveArtifactFreshMount;
         }
         frame.srcdoc = artifact.srcdoc;
@@ -2867,7 +2853,9 @@ function renderInlineArtifactFrame(container, artifact) {
         // remains the authoritative growth source.
         scheduleFinalHeightSweep(viewport, frame, artifact, container, 500);
     }
-    // Streaming content path: postMessage into the stable shell (retries + load handler).
+    // Content path: postMessage into the stable shell (retries + load handler).
+    // For final state this pushes the fully-processed (theme-adapted, citation-
+    // linked) content into the already-mounted iframe — no remount, no blank.
     syncPendingStreamToFrame(frame, artifact);
 }
 
@@ -2899,20 +2887,25 @@ function scheduleFinalHeightSweep(viewport, frame, artifact, container, delay) {
 }
 
 function syncPendingStreamToFrame(frame, artifact) {
-    if (!frame || !artifact?.isStreaming) return;
-    const html = artifact.streamHtml || artifact.code || '';
+    if (!frame || !artifact) return;
+    const html = artifact.isStreaming
+        ? (artifact.streamHtml || artifact.code || '')
+        : (artifact.code || '');
     if (!html || !String(html).trim()) return;
-    // Always push while streaming — srcdoc is the stable shell; content rides postMessage.
-    postInlineArtifactStream(frame, html);
+    // Streaming: light path. Final state: full path (theme/citations/details) so
+    // the in-place push matches what a rebuild-from-registry would render.
+    postInlineArtifactStream(frame, html, { streaming: !artifact.isStreaming });
 }
 
-function postInlineArtifactStream(frame, html) {
+function postInlineArtifactStream(frame, html, options = {}) {
     if (!frame || typeof html !== 'string' || !html.trim()) return;
     // Streaming path stays light: sanitize clip-shells only. Theme adaptation,
     // details force-open, token materialize, and citation linking are deferred to
     // the final bake (processArtifactHtmlForDisplay streaming:false), so each
-    // stream tick no longer pays for the heavy regex + DOM walk.
-    const adaptedHtml = processArtifactHtmlForDisplay(html, { streaming: true });
+    // stream tick no longer pays for the heavy regex + DOM walk. Final-state
+    // pushes (streaming:false) run the full chain once, in-place.
+    const isFinal = options.streaming === false;
+    const adaptedHtml = processArtifactHtmlForDisplay(html, { streaming: !isFinal });
     // Skip identical re-posts (rAF can re-enter with unchanged buffer).
     if (frame.dataset.liveArtifactPendingStreamHtml === adaptedHtml) {
         // Still re-send once so late-loading bridge can catch up.
@@ -2940,12 +2933,18 @@ function postInlineArtifactStream(frame, html) {
         }
     };
     // Retries cover the common race where srcdoc navigation has not installed the
-    // bridge listener yet (setTimeout(0) alone is often too early).
+    // bridge listener yet (setTimeout(0) alone is often too early). A final push
+    // needs fewer retries because the shell has long been mounted by then.
     send();
-    setTimeout(send, 0);
-    setTimeout(send, 50);
-    setTimeout(send, 150);
-    setTimeout(send, 400);
+    if (isFinal) {
+        setTimeout(send, 50);
+        setTimeout(send, 200);
+    } else {
+        setTimeout(send, 0);
+        setTimeout(send, 50);
+        setTimeout(send, 150);
+        setTimeout(send, 400);
+    }
 }
 
 function normalizeArtifactSources(sources) {
@@ -4058,6 +4057,7 @@ export const __liveArtifactsTestHooks = {
     prefersHtmlArtifactPath,
     pingAndRebuildArtifactFrame,
     pingAndRebuildDeadArtifactFrames,
+    processArtifactHtmlForDisplay,
     rebuildLiveArtifactFrames,
     recreateLiveArtifactFrame,
     resolveLiveArtifactFontSizePx,
