@@ -126,6 +126,30 @@ export function detachCurrentStream(uiElements = {}) {
 }
 
 /**
+ * Incremental-stream gate (pure, exported for tests): decide whether a throttled
+ * tick must run the full render pipeline. Renders when the buffer grew enough,
+ * hit a block boundary, or has gone stale too long. Keeps per-tick cost decoupled
+ * from total accumulated length (avoids O(n²) re-renders on every token).
+ */
+export function shouldRenderStreamTick({
+    length,
+    lastPushedLength,
+    buffer,
+    now,
+    lastPushTime,
+    minDeltaChars = 400,
+    maxStalenessMs = 800,
+    blockBoundaryRe = /\n\n|```/,
+} = {}) {
+    if (length === lastPushedLength) return false;
+    if (length - lastPushedLength >= minDeltaChars) return true;
+    if (lastPushedLength === 0) return true; // first push: render promptly
+    if (blockBoundaryRe.test(String(buffer || '').slice(lastPushedLength))) return true;
+    if (now - lastPushTime >= maxStalenessMs) return true;
+    return false;
+}
+
+/**
  * 设置聊天处理器：发送消息、加载/删除对话、输入框自动调整等。
  */
 // 搜索引擎 → 显示名（含 i18n 文案）。quick 切换与状态栏共用，避免漂移。
@@ -591,6 +615,8 @@ export function setupChatHandler(elements, renderHistory) {
         // baked srcdoc with the streaming shell (STREAM_PREVIEW_ROOT). Bumping
         // this on bake invalidates any in-flight scheduled streaming render.
         let streamRenderSeq = 0;
+        let lastPushedLength = 0;
+        let lastPushTime = Date.now();
 
         function scheduleStreamRender(isStreaming) {
             if (!ownsView()) return;
@@ -602,12 +628,37 @@ export function setupChatHandler(elements, renderHistory) {
             // 会让流式内容在后台从不 push 到 Live Artifact iframe；setTimeout
             // 在后台照常触发，前台则因 120ms > 帧间隔而等效于合并到下一帧。
             renderTimer = setTimeout(() => {
-                pendingRender = false;
-                renderTimer = null;
-                if (!ownsView()) return;
+                if (!ownsView()) {
+                    pendingRender = false;
+                    renderTimer = null;
+                    return;
+                }
                 // 若排队期间已完成终态烘焙,跳过这次流式渲染,
                 // 避免用流式壳(STREAM_PREVIEW_ROOT)覆盖刚烘焙好的最终内容
-                if (seqAtSchedule !== streamRenderSeq) return;
+                if (seqAtSchedule !== streamRenderSeq) {
+                    pendingRender = false;
+                    renderTimer = null;
+                    return;
+                }
+                const now = Date.now();
+                if (!shouldRenderStreamTick({
+                    length: currentAnswerBuffer.length,
+                    lastPushedLength,
+                    buffer: currentAnswerBuffer,
+                    now,
+                    lastPushTime,
+                })) {
+                    // Not enough new content yet — re-check after another throttle
+                    // window instead of rendering the full pipeline for tiny deltas.
+                    pendingRender = false;
+                    renderTimer = null;
+                    scheduleStreamRender(pendingRenderIsStreaming);
+                    return;
+                }
+                pendingRender = false;
+                renderTimer = null;
+                lastPushedLength = currentAnswerBuffer.length;
+                lastPushTime = now;
                 renderCurrentAssistantAnswer(pendingRenderIsStreaming);
                 if (!userScrolled) scrollToBottom();
             }, STREAM_RENDER_THROTTLE_MS);
@@ -749,6 +800,10 @@ export function setupChatHandler(elements, renderHistory) {
                         pendingRender = false;
                         streamRenderSeq += 1; // 标记终态烘焙,作废已排期的流式渲染
                         renderCurrentAssistantAnswer(false);
+                        // 终态已烘焙：把流式门控重置到最终长度,后续若有迟到 chunk
+                        // 触发 scheduleStreamRender 也不至于重推整个内容。
+                        lastPushedLength = currentAnswerBuffer.length;
+                        lastPushTime = Date.now();
                         setCurrentSessionId(sid);
                         // user + assistant persisted → count is assistantIndex + 1
                         setSessionMessageCount(s.count);

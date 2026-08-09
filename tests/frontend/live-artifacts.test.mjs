@@ -2509,12 +2509,14 @@ test('pingAndRebuildArtifactFrame rebuilds only the dead frame that scrolls into
     assert.equal(deadStillPresent, false, 'dead frame scrolled into view must be rebuilt');
 });
 
-test('bridge stream-render patches incrementally, preserving DOM node identity', () => {
+test('bridge stream-render patches incrementally, preserving DOM node identity', async () => {
     // Extract the injected preview bridge from a streaming shell srcdoc and run
     // it against an iframe-like jsdom document, then feed it two stream-render
     // payloads. The second must patch in place (same <section> element) rather
     // than replaceChildren — the old all-or-nothing rebuild dropped focus /
-    // scroll / expanded-details state on every chunk.
+    // scroll / expanded-details state on every chunk. The bridge now coalesces
+    // bursty stream-render messages onto one rAF, so each payload needs a tick
+    // to flush before its DOM effects are observable.
     const shellSrcDoc = buildSrcdoc('<div data-amc-stream-preview-root="true"></div>', 'html', [], {
         frameId: 'patch-identity',
     });
@@ -2539,10 +2541,13 @@ test('bridge stream-render patches incrementally, preserving DOM node identity',
     const root = window.document.querySelector('[data-amc-stream-preview-root]');
     assert.ok(root, 'stream root should exist');
 
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
     // First stream-render: empty root → wholesale replace.
     window.dispatchEvent(new window.MessageEvent('message', {
         data: { channel: 'justsearch-live-artifacts', event: 'stream-render', html: '<section data-state="keep"><p>First chunk</p></section>' },
     }));
+    await flush();
     const firstParagraph = root.querySelector('p');
     assert.equal(firstParagraph?.textContent, 'First chunk', 'first render populates content');
 
@@ -2552,6 +2557,7 @@ test('bridge stream-render patches incrementally, preserving DOM node identity',
     window.dispatchEvent(new window.MessageEvent('message', {
         data: { channel: 'justsearch-live-artifacts', event: 'stream-render', html: '<section data-state="keep"><p>Second chunk more text</p></section>' },
     }));
+    await flush();
     const section2 = root.querySelector('section');
     assert.equal(section2, section, 'section element identity preserved (incremental patch, not replaceChildren)');
     assert.equal(section2.getAttribute('data-state'), 'keep', 'matching attribute preserved');
@@ -2561,6 +2567,7 @@ test('bridge stream-render patches incrementally, preserving DOM node identity',
     window.dispatchEvent(new window.MessageEvent('message', {
         data: { channel: 'justsearch-live-artifacts', event: 'stream-render', html: '<section data-state="keep"></section>' },
     }));
+    await flush();
     assert.equal(root.querySelector('p'), null, 'removed node is removed');
     assert.equal(root.querySelector('section'), section, 'section survives when only children change');
 });

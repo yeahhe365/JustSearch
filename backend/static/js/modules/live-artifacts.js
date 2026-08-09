@@ -1105,6 +1105,27 @@ function shouldMergeSupportingBlocks(block, language) {
     return language === 'html' && !isFullHtmlDocument(block.code);
 }
 
+/**
+ * Unified post-processing for artifact display HTML.
+ * Streaming path stays light (sanitize + normalize only); the full chain
+ * (force-open details, theme rewrite, token materialize, citation linking) runs
+ * once at final bake. Keep the ordering identical to the old buildSrcdoc body so
+ * final-state rendering is byte-for-byte unchanged.
+ */
+function processArtifactHtmlForDisplay(html, { streaming = false, sources = [], themeId } = {}) {
+    const resolvedTheme = themeId || resolveLiveArtifactThemeId();
+    // Keep the same order as the legacy buildSrcdoc body: clip-shell neutralization
+    // first, then force-open details (order is irrelevant between the two, but
+    // preserve it to minimize diff risk on final-state output).
+    let out = sanitizeClippingStylesInHtml(html);
+    if (streaming) return out;
+    out = forceOpenAllDetailsInHtml(out);
+    out = adaptArtifactHtmlForTheme(out, resolvedTheme);
+    out = materializeLiveArtifactThemeVars(out, resolvedTheme);
+    out = linkArtifactCitationsInHtml(out, sources);
+    return out;
+}
+
 function buildSrcdoc(code, language, sources = [], options = {}) {
     const frameId = String(options.frameId || '');
     const baseFontSize = options.baseFontSize !== undefined
@@ -1131,13 +1152,10 @@ ${code}
 </body>
 </html>`;
     } else {
-        // 1) strip viewport clip shells  2) open details for full layout
-        // 3) rewrite light-only hardcodes  4) materialize theme tokens
-        const cleaned = forceOpenAllDetailsInHtml(sanitizeClippingStylesInHtml(code));
-        srcdoc = materializeLiveArtifactThemeVars(
-            adaptArtifactHtmlForTheme(linkArtifactCitationsInHtml(cleaned, sources), themeId),
-            themeId,
-        );
+        // Streaming shells bake only the (empty) preview root; real content rides
+        // postMessage and is processed by the light streaming path. Final-state
+        // content goes through the full chain here (see processArtifactHtmlForDisplay).
+        srcdoc = processArtifactHtmlForDisplay(code, { streaming: false, sources, themeId });
     }
     // Order mirrors AMC prepareHtmlPreviewSrcDoc: security → theme → font → bridge.
     return injectPreviewSecurityPolicy(
@@ -2032,6 +2050,29 @@ function injectPreviewBridge(code, frameId = '') {
     }
     scheduleResize();
   };
+  // Coalesce bursty stream-render messages: the parent throttles to ~120ms but
+  // can still fire several in quick succession (or with a re-send burst). Keep
+  // only the latest payload and render once per animation frame.
+  let pendingStreamHtml = null;
+  let streamFrameQueued = false;
+  const flushStreamHtml = () => {
+    streamFrameQueued = false;
+    if (pendingStreamHtml === null) return;
+    const html = pendingStreamHtml;
+    pendingStreamHtml = null;
+    renderStreamHtml(html);
+  };
+  const queueStreamHtml = (html) => {
+    if (pendingStreamHtml === html) return; // identical to last coalesced payload
+    pendingStreamHtml = html;
+    if (streamFrameQueued) return;
+    streamFrameQueued = true;
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(flushStreamHtml);
+    } else {
+      setTimeout(flushStreamHtml, 0);
+    }
+  };
   window.addEventListener('message', (event) => {
     if (!event.data || event.data.channel !== 'justsearch-live-artifacts') return;
     if (event.data.event === 'ping') {
@@ -2039,7 +2080,7 @@ function injectPreviewBridge(code, frameId = '') {
       return;
     }
     if (event.data.event !== 'stream-render') return;
-    renderStreamHtml(event.data.html);
+    queueStreamHtml(event.data.html);
   });
   const parsePayload = (raw) => {
     const value = raw.trim();
@@ -2408,6 +2449,29 @@ function hashArtifactContent(value) {
     return `${text.length}:${(hash >>> 0).toString(36)}`;
 }
 
+// Memoize the parent-side height probe by (content hash + width + forceOpen).
+// The probe does a full DOM clone + forced synchronous layout, which is the
+// single most expensive per-tick cost while streaming; identical content must
+// not re-measure. LRU-capped so a long conversation does not grow unbounded.
+const HEIGHT_PROBE_MEMO_LIMIT = 40;
+const heightProbeMemo = new Map(); // key -> measured height
+
+function memoKeyForHeightProbe(html, widthPx, forceOpenDetails) {
+    return `${hashArtifactContent(html)}|${Math.floor(Number(widthPx) || 0)}|${forceOpenDetails ? '1' : '0'}`;
+}
+
+function rememberHeightProbe(key, height) {
+    if (heightProbeMemo.has(key)) {
+        // Refresh recency.
+        heightProbeMemo.delete(key);
+    }
+    heightProbeMemo.set(key, height);
+    if (heightProbeMemo.size > HEIGHT_PROBE_MEMO_LIMIT) {
+        const oldest = heightProbeMemo.keys().next().value;
+        if (oldest !== undefined) heightProbeMemo.delete(oldest);
+    }
+}
+
 function getArtifactHeightCacheKey(artifact) {
     const html = artifact?.isStreaming ? (artifact.streamHtml || artifact.code || '') : (artifact?.code || '');
     const contentHash = hashArtifactContent(html);
@@ -2448,6 +2512,12 @@ function measureArtifactContentHeight(html, widthPx, options = {}) {
     if (typeof document === 'undefined') return INLINE_ARTIFACT_DEFAULT_HEIGHT;
     const forceOpenDetails = Boolean(options.forceOpenDetails);
     const width = Math.max(280, Math.floor(Number(widthPx) || 680));
+    // Same content + same width → same measured height. Skip the DOM clone +
+    // forced synchronous layout when nothing changed (the common stream-tick case).
+    const memoKey = memoKeyForHeightProbe(html, width, forceOpenDetails);
+    if (heightProbeMemo.has(memoKey)) {
+        return heightProbeMemo.get(memoKey);
+    }
     const probe = document.createElement('div');
     probe.setAttribute('data-amc-height-probe', 'true');
     probe.setAttribute('aria-hidden', 'true');
@@ -2528,10 +2598,12 @@ function measureArtifactContentHeight(html, widthPx, options = {}) {
             height = Math.max(height, estimated);
         }
         probe.remove();
-        return Math.min(
+        const measured = Math.min(
             INLINE_ARTIFACT_MAX_HEIGHT,
             Math.max(INLINE_ARTIFACT_MIN_HEIGHT, height || INLINE_ARTIFACT_DEFAULT_HEIGHT),
         );
+        rememberHeightProbe(memoKey, measured);
+        return measured;
     } catch {
         try { probe.remove(); } catch { /* ignore */ }
         return INLINE_ARTIFACT_DEFAULT_HEIGHT;
@@ -2597,17 +2669,15 @@ function probeInlineArtifactHeight(html, viewport, container) {
 
 function syncInlineArtifactFrameHeight(viewport, frame, artifact, container) {
     const cacheKey = getArtifactHeightCacheKey(artifact);
-    // Measure the SAME HTML the srcdoc renders. buildSrcdoc applies
-    // sanitizeClippingStylesInHtml → forceOpenAllDetailsInHtml → linkArtifactCitationsInHtml
-    // before baking; if the probe measures raw artifact.code (still carrying "[1]"
-    // text markers, un-clipped, with details collapsed) it systematically
-    // under-reports vs the iframe, and that too-small seed clips content.
+    // Measure the SAME HTML the iframe renders. Streaming content rides the
+    // light sanitize-only path (postInlineArtifactStream); final-state content
+    // runs the full display chain (buildSrcdoc). Matching the probe HTML to the
+    // actual render avoids systematic under/over-report.
     const rawHtml = artifact.isStreaming ? (artifact.streamHtml || artifact.code || '') : (artifact.code || '');
     const sources = Array.isArray(artifact.sources) ? artifact.sources : [];
-    const contentHtml = linkArtifactCitationsInHtml(
-        forceOpenAllDetailsInHtml(sanitizeClippingStylesInHtml(rawHtml)),
-        sources,
-    );
+    const contentHtml = artifact.isStreaming
+        ? processArtifactHtmlForDisplay(rawHtml, { streaming: true })
+        : processArtifactHtmlForDisplay(rawHtml, { streaming: false, sources });
     const { hasDetails, collapsed, expanded, fullHeight } = probeInlineArtifactHeight(contentHtml, viewport, container);
     if (frame) {
         frame.dataset.liveArtifactCollapsedHeight = String(collapsed);
@@ -2757,8 +2827,14 @@ function renderInlineArtifactFrame(container, artifact) {
     frame.dataset.liveArtifactHeightKey = heightKey;
     frame.dataset.liveArtifactProbeHtml = contentHtml;
 
-    // Parent-side height first (reliable), then iframe postMessage can only grow further.
-    syncInlineArtifactFrameHeight(viewport, frame, artifact, container);
+    // Parent-side height probe is the most expensive per-tick step (full DOM clone
+    // + forced synchronous layout). While streaming, only probe on the initial
+    // mount — the in-iframe bridge reports authoritative heights via resize and
+    // grows the viewport, so mid-stream re-probing buys nothing. Final-state bake
+    // always probes (below), and the memo keyed by content hash dedups repeats.
+    if (!artifact.isStreaming || frame.dataset.liveArtifactFreshMount === '1') {
+        syncInlineArtifactFrameHeight(viewport, frame, artifact, container);
+    }
 
     // While streaming with a mounted shell, never reassign srcdoc (avoids reload even if
     // bake produced a byte-identical-looking but newly-stringified document).
@@ -2783,12 +2859,13 @@ function renderInlineArtifactFrame(container, artifact) {
     } else {
         delete frame.dataset.liveArtifactStreamShell;
         // Final-state backstop: after baking the real srcdoc, re-measure the
-        // parent probe twice. syncInlineArtifactFrameHeight is allowShrink:false,
+        // parent probe once. syncInlineArtifactFrameHeight is allowShrink:false,
         // so this only ever grows the viewport — covering the case where the
         // initial seed measured short (fonts/layout not yet committed) AND the
         // bridge resize message was lost (e.g. background tab rAF suspension).
-        scheduleFinalHeightSweep(viewport, frame, artifact, container, 400);
-        scheduleFinalHeightSweep(viewport, frame, artifact, container, 1600);
+        // A single sweep keeps the extra layout cost bounded; the bridge resize
+        // remains the authoritative growth source.
+        scheduleFinalHeightSweep(viewport, frame, artifact, container, 500);
     }
     // Streaming content path: postMessage into the stable shell (retries + load handler).
     syncPendingStreamToFrame(frame, artifact);
@@ -2831,15 +2908,11 @@ function syncPendingStreamToFrame(frame, artifact) {
 
 function postInlineArtifactStream(frame, html) {
     if (!frame || typeof html !== 'string' || !html.trim()) return;
-    const themeId = resolveLiveArtifactThemeId();
-    // Theme-adapt + force-open details for height probe parity; sanitize clipping first.
-    const adaptedHtml = materializeLiveArtifactThemeVars(
-        adaptArtifactHtmlForTheme(
-            forceOpenAllDetailsInHtml(sanitizeClippingStylesInHtml(html)),
-            themeId,
-        ),
-        themeId,
-    );
+    // Streaming path stays light: sanitize clip-shells only. Theme adaptation,
+    // details force-open, token materialize, and citation linking are deferred to
+    // the final bake (processArtifactHtmlForDisplay streaming:false), so each
+    // stream tick no longer pays for the heavy regex + DOM walk.
+    const adaptedHtml = processArtifactHtmlForDisplay(html, { streaming: true });
     // Skip identical re-posts (rAF can re-enter with unchanged buffer).
     if (frame.dataset.liveArtifactPendingStreamHtml === adaptedHtml) {
         // Still re-send once so late-loading bridge can catch up.

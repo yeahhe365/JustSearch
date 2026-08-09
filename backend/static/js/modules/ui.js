@@ -462,9 +462,22 @@ export function renderAssistantAnswerBody(bodyEl, content, {
         isStreaming,
         liveArtifactOptions,
     );
-    if (!inlineArtifact) {
-        bodyEl.innerHTML = renderWithCitations(content, resolvedSources);
+    if (inlineArtifact) {
+        // AMC path: the whole message renders inside one themed iframe. Skip the
+        // bubble markdown pipeline (and the parent-side citation DOM walk) so each
+        // stream tick parses the content exactly once — citation links live inside
+        // the iframe's baked srcdoc.
+        renderLiveArtifactsForMessage(bodyEl, content, {
+            messageId,
+            isStreaming,
+            sources: resolvedSources,
+            citations,
+            inlineArtifact,
+            ...liveArtifactOptions,
+        });
+        return;
     }
+    bodyEl.innerHTML = renderWithCitations(content, resolvedSources);
     renderLiveArtifactsForMessage(bodyEl, content, {
         messageId,
         isStreaming,
