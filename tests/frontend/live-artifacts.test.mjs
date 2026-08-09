@@ -2608,3 +2608,49 @@ test('bridge stream-render patches incrementally, preserving DOM node identity',
     assert.equal(root.querySelector('p'), null, 'removed node is removed');
     assert.equal(root.querySelector('section'), section, 'section survives when only children change');
 });
+
+test('Phase 2.2: off-screen artifact unloads, streaming artifact is skipped, remount restores frame', () => {
+    installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
+    const hooks = __liveArtifactsTestHooks;
+
+    // Finished artifact → unload removes the iframe shell and caches height.
+    const container = document.getElementById('message');
+    renderLiveArtifactsForMessage(container, '<section style="height:120px"><h1>Done</h1></section>', {
+        messageId: 'unload-done',
+        isStreaming: false,
+    });
+    const frame = container.querySelector('.live-artifact-inline-iframe');
+    assert.ok(frame, 'final artifact has an iframe');
+    const viewport = container.querySelector('.live-artifact-inline-viewport');
+    viewport.style.height = '340px';
+    const realFrameId = frame.dataset.liveArtifactFrameId;
+    assert.ok(realFrameId, 'rendered artifact carries a frame id');
+
+    hooks.unloadArtifactFrame(container);
+    assert.equal(container.querySelector('.live-artifact-inline-iframe'), null, 'iframe removed on unload');
+    assert.equal(container.dataset.artifactUnloaded, '1', 'container flagged as unloaded');
+    assert.equal(container.dataset.liveArtifactRestoreHeight, '340', 'pre-unload height cached for remount');
+
+    // Remount rebuilds the frame with the same frame id (registry-backed).
+    hooks.remountArtifactFrame(container);
+    const remounted = container.querySelector('.live-artifact-inline-iframe');
+    assert.ok(remounted, 'remount recreates an iframe');
+    assert.equal(remounted.dataset.liveArtifactFrameId, realFrameId, 'frame id preserved across remount');
+    assert.notEqual(container.dataset.artifactUnloaded, '1', 'container no longer flagged unloaded');
+});
+
+test('Phase 2.2: a streaming artifact is not unloaded off-screen', () => {
+    installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
+    const hooks = __liveArtifactsTestHooks;
+    const container = document.getElementById('message');
+    renderLiveArtifactsForMessage(container, '<section><h2>Live</h2></section>', {
+        messageId: 'unload-streaming',
+        isStreaming: true,
+    });
+    const frame = container.querySelector('.live-artifact-inline-iframe');
+    assert.ok(frame, 'streaming artifact has an iframe');
+
+    hooks.unloadArtifactFrame(container);
+    assert.ok(container.querySelector('.live-artifact-inline-iframe'), 'streaming artifact is NOT unloaded');
+    assert.notEqual(container.dataset.artifactUnloaded, '1', 'streaming container not flagged unloaded');
+});

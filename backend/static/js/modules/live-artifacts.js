@@ -2805,6 +2805,15 @@ function renderInlineArtifactFrame(container, artifact) {
         frameShell.appendChild(viewport);
         container.appendChild(frameShell);
         frame.dataset.liveArtifactFreshMount = '1';
+        // Phase 2.2: register the viewport container with the unload observer so
+        // an artifact scrolled far off-screen is unmounted (no iframe for Chrome
+        // to discard), then remounted on return.
+        observeArtifactViewportContainer(container);
+        // Restore the pre-unload height synchronously so a remount does not jump.
+        const restoreHeight = container.dataset.liveArtifactRestoreHeight;
+        if (restoreHeight && !Number.isNaN(parseInt(restoreHeight, 10))) {
+            viewport.style.height = `${restoreHeight}px`;
+        }
     }
 
     const heightKey = getArtifactHeightCacheKey(artifact);
@@ -3768,7 +3777,24 @@ const FRAME_PING_TIMEOUT_MS = 1500;
 // a synchronous pong in a fraction of this, dead frames are rebuilt quickly so
 // the user does not stare at a white artifact for the full 1.5s.
 const FRAME_VIEW_RECOVERY_TIMEOUT_MS = 150;
+// Phase 2.3: after a background stay wakes the tab, only frames still inside the
+// viewport are pinged, and the window is shortened so a discarded document is
+// replaced almost immediately (Phase 2.2 already removed the off-screen frames).
+const FRAME_WAKE_RECOVERY_TIMEOUT_MS = 300;
 let visibilityRecoveryInitialized = false;
+
+// Phase 2.2: off-screen unloading. Chrome can only discard a document that
+// EXISTS off-screen; if we remove the iframe while the artifact is well out of
+// view, the blank-screen root cause disappears. A 1.5-screen rootMargin keeps
+// frames mounted a little beyond the edges (no flash on fast flick-past); we
+// unload after a 2s delay once fully out of the expanded region.
+const LA_VIEWPORT_UNLOAD_ENABLED = true;
+const LA_UNLOAD_DELAY_MS = 2000;
+// One observer for all inline artifact viewport containers (not a second
+// observer — merged into initLiveArtifactVisibilityRecovery below).
+let viewportUnloadObserver = null;
+const observedViewportContainers = new Set();
+const unloadTimers = new WeakMap(); // container -> setTimeout id
 
 /**
  * Ping a single Live Artifact frame's bridge. Frames that answer `pong` are
@@ -3778,6 +3804,112 @@ let visibilityRecoveryInitialized = false;
  * frame scrolls back into the viewport, where Chrome may have dropped its
  * off-screen document even while the page stays in the foreground.
  */
+
+// ---------------------------------------------------------------------------
+// Phase 2.2: off-screen unload + on-demand remount.
+// Chrome can only discard a document that EXISTS off-screen; removing the
+// iframe while the artifact is well out of view eliminates the blank-screen
+// root cause. A 1.5-screen rootMargin keeps frames mounted a little beyond the
+// edges (no flash on fast flick-past); we unload after a delay once fully out
+// of the expanded region.
+// ---------------------------------------------------------------------------
+
+function unloadArtifactFrame(container) {
+    if (!container || !LA_VIEWPORT_UNLOAD_ENABLED) return;
+    // A still-streaming artifact is being written to right now — unloading it
+    // would drop the stream. Side-panel frames and focused/interacted artifacts
+    // stay mounted too.
+    const frameShell = container.querySelector(':scope > .live-artifact-inline-frame');
+    const viewport = frameShell?.querySelector('.live-artifact-inline-viewport');
+    const frame = viewport?.querySelector('.live-artifact-inline-iframe');
+    if (!frameShell || !frame) return;
+    if (frame.dataset?.liveArtifactStreaming === 'true') return;
+    if (container.closest('.live-artifacts-panel')) return;
+    if (container.contains(document.activeElement)) return;
+
+    // Cache the current rendered height so a later remount can restore it
+    // synchronously (no layout jump when scrolling back).
+    const currentHeight = parseInt(viewport?.style?.height || '', 10)
+        || parseInt(frame.style?.height || '', 10)
+        || 0;
+    if (currentHeight > 0) {
+        container.dataset.liveArtifactRestoreHeight = String(currentHeight);
+    }
+    container.dataset.liveArtifactFrameId = frame.dataset?.liveArtifactFrameId || '';
+    container.dataset.artifactUnloaded = '1';
+    frameShell.remove();
+}
+
+function remountArtifactFrame(container) {
+    if (!container) return;
+    delete container.dataset.artifactUnloaded;
+    // Resolve the artifact from the registry via the frame id stored at unload.
+    const frameId = container.dataset.liveArtifactFrameId || '';
+    const artifact = frameId ? registry.get(frameId) : null;
+    if (artifact) {
+        renderInlineArtifactFrame(container, artifact);
+    } else {
+        container.dataset.artifactUnloaded = '0';
+    }
+}
+
+function scheduleArtifactUnload(container) {
+    if (!LA_VIEWPORT_UNLOAD_ENABLED || !container) return;
+    const existing = unloadTimers.get(container);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+        unloadTimers.delete(container);
+        unloadArtifactFrame(container);
+    }, LA_UNLOAD_DELAY_MS);
+    unloadTimers.set(container, timer);
+}
+
+function cancelArtifactUnload(container) {
+    const existing = unloadTimers.get(container);
+    if (existing) {
+        clearTimeout(existing);
+        unloadTimers.delete(container);
+    }
+}
+
+function onViewportIntersection(entries) {
+    if (!LA_VIEWPORT_UNLOAD_ENABLED) return;
+    entries.forEach((entry) => {
+        const container = entry.target;
+        if (entry.isIntersecting) {
+            cancelArtifactUnload(container);
+            if (container.dataset.artifactUnloaded === '1') {
+                remountArtifactFrame(container);
+            }
+        } else {
+            scheduleArtifactUnload(container);
+        }
+    });
+}
+
+function observeArtifactViewportContainer(container) {
+    if (!viewportUnloadObserver || !container || observedViewportContainers.has(container)) return;
+    observedViewportContainers.add(container);
+    viewportUnloadObserver.observe(container);
+}
+
+function unobserveAllArtifactViewports() {
+    if (viewportUnloadObserver) {
+        observedViewportContainers.forEach((container) => {
+            cancelArtifactUnload(container);
+            viewportUnloadObserver.unobserve(container);
+        });
+    }
+    observedViewportContainers.clear();
+}
+
+function initViewportUnloadObserver() {
+    if (viewportUnloadObserver || !('IntersectionObserver' in window)) return;
+    viewportUnloadObserver = new IntersectionObserver(onViewportIntersection, {
+        rootMargin: '150% 0px',
+    });
+}
+
 function pingAndRebuildArtifactFrame(frame, timeoutMs = FRAME_PING_TIMEOUT_MS) {
     if (!frame || typeof document === 'undefined') return;
     const frameId = frame.dataset?.liveArtifactFrameId || '';
@@ -3819,17 +3951,30 @@ function initLiveArtifactVisibilityRecovery() {
 
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) return;
-        // No 30s threshold: any background stay may have let Chrome discard the
-        // srcdoc sub-frame documents. Ping each frame; rebuild only the dead ones.
-        pingAndRebuildDeadArtifactFrames();
+        // After any background stay Chrome may have discarded the in-viewport
+        // srcdoc documents. Ping only those (Phase 2.2 already unmounted the
+        // off-screen ones) with a short 300ms window so a dead frame is
+        // replaced almost immediately.
+        pingAndRebuildDeadArtifactFrames({
+            timeoutMs: FRAME_WAKE_RECOVERY_TIMEOUT_MS,
+            viewportOnly: true,
+        });
     });
 
     if (typeof window !== 'undefined') {
         window.addEventListener('pageshow', (event) => {
-            if (event && event.persisted) pingAndRebuildDeadArtifactFrames();
+            if (event && event.persisted) {
+                pingAndRebuildDeadArtifactFrames({
+                    timeoutMs: FRAME_WAKE_RECOVERY_TIMEOUT_MS,
+                    viewportOnly: true,
+                });
+            }
         });
         document.addEventListener('resume', () => {
-            pingAndRebuildDeadArtifactFrames();
+            pingAndRebuildDeadArtifactFrames({
+                timeoutMs: FRAME_WAKE_RECOVERY_TIMEOUT_MS,
+                viewportOnly: true,
+            });
         });
         // Rolling a Live Artifact back into view is where Chrome most often
         // drops off-screen srcdoc documents while the page stays foregrounded
@@ -3839,14 +3984,24 @@ function initLiveArtifactVisibilityRecovery() {
         // viewport a small rootMargin head-start so a quick flick-past does
         // not leave a blank artifact waiting for the next intersection.
         if ('IntersectionObserver' in window) {
-            // A frame entering the viewport gets a fast recovery check: 150ms
-            // instead of the 1.5s background-tab window. Healthy frames answer
-            // pong synchronously, so they are confirmed in a fraction of the
-            // window and never rebuilt; a frame whose document Chrome discarded
-            // while it was off-screen is rebuilt almost immediately — the
-            // "whole artifact is white when I scroll back" case. AMC avoids this
-            // structurally (Virtuoso unloads off-screen messages), so a static
-            // renderer needs the fast path here.
+            // Phase 2.2: off-screen unloading. One observer watches the viewport
+            // CONTAINERS and unloads / remounts them. A 1.5-screen rootMargin
+            // keeps frames mounted a little beyond the edges so a quick
+            // flick-past does not rebuild; leaving the expanded region schedules
+            // a delayed unload (see onViewportIntersection).
+            initViewportUnloadObserver();
+            const startObservingViewports = () => {
+                document.querySelectorAll('.live-artifact-inline-frame')
+                    .forEach((container) => observeArtifactViewportContainer(container));
+            };
+            startObservingViewports();
+
+            // A frame entering the viewport still gets a fast recovery check
+            // (150ms here, 300ms for full-page wakes below): healthy frames answer
+            // pong synchronously and are never rebuilt; a frame whose document
+            // Chrome discarded (memory pressure / background stay) is rebuilt
+            // almost immediately — the "whole artifact is white when I scroll
+            // back" case, even when unload did not kick in.
             const observer = new IntersectionObserver((entries) => {
                 entries.forEach((entry) => {
                     if (entry.isIntersecting) {
@@ -3945,14 +4100,24 @@ function recreateLiveArtifactFrame(frame) {
 
 /**
  * Ping every open Live Artifact iframe's in-document bridge. Frames that do not
- * answer `pong` within FRAME_PING_TIMEOUT_MS have had their document discarded
- * (background tab / Memory Saver / freeze) and are rebuilt as brand-new nodes.
- * Healthy frames answer and are left completely untouched, so quick tab
- * switches never cause a flash.
+ * answer `pong` within timeoutMs have had their document discarded (background
+ * tab / Memory Saver / freeze) and are rebuilt as brand-new nodes. Healthy
+ * frames answer and are left completely untouched, so quick tab switches never
+ * cause a flash. With `viewportOnly`, only frames currently inside the viewport
+ * are pinged — after Phase 2.2 off-screen artifacts have no iframe at all, so
+ * this is a pure safety net for frames discarded while the page stays visible.
  */
-function pingAndRebuildDeadArtifactFrames() {
+function pingAndRebuildDeadArtifactFrames({ timeoutMs = FRAME_PING_TIMEOUT_MS, viewportOnly = false } = {}) {
     if (typeof document === 'undefined') return;
-    const frames = Array.from(document.querySelectorAll('.live-artifact-inline-iframe'));
+    let frames = Array.from(document.querySelectorAll('.live-artifact-inline-iframe'));
+    if (viewportOnly && frames.length) {
+        const viewportHeight = window.innerHeight || document.documentElement?.clientHeight || 0;
+        frames = frames.filter((frame) => {
+            if (!viewportHeight) return true;
+            const rect = frame.getBoundingClientRect();
+            return rect.bottom >= -200 && rect.top <= viewportHeight + 200;
+        });
+    }
     const panelFrame = (panelState?.frame && activeArtifactId) ? panelState.frame : null;
     const targets = panelFrame ? [...frames, panelFrame] : frames;
     if (!targets.length) return;
@@ -3989,7 +4154,7 @@ function pingAndRebuildDeadArtifactFrames() {
                 recreateLiveArtifactFrame(frame);
             }
         });
-    }, FRAME_PING_TIMEOUT_MS);
+    }, timeoutMs);
 }
 
 /**
@@ -4060,13 +4225,16 @@ export const __liveArtifactsTestHooks = {
     processArtifactHtmlForDisplay,
     rebuildLiveArtifactFrames,
     recreateLiveArtifactFrame,
+    remountArtifactFrame,
     resolveLiveArtifactFontSizePx,
     resolveLiveArtifactThemeId,
     resolveLiveArtifactsModeFlag,
     sanitizeClippingStylesInHtml,
     scheduleFinalHeightSweep,
+    scheduleArtifactUnload,
     shouldMergeSupportingBlocks,
     syncInlineArtifactFrameHeight,
+    unloadArtifactFrame,
     finalHeightSweepTimers,
     wrapAsArtifactRoot,
 };
