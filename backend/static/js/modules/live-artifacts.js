@@ -330,20 +330,27 @@ export function refreshLiveArtifactPreviews(settings) {
         });
     });
 
+    // Refresh only mounted frames. Phase 2.1 forbids swapping srcdoc on a live
+    // iframe (that navigates → blank window), so push the freshly-processed
+    // content over postMessage with the new theme instead. Off-screen frames were
+    // unmounted (Phase 2.2); their registry srcdoc is already updated and they
+    // rebuild with the new values when they scroll back into view.
     document.querySelectorAll('.live-artifact-inline-iframe').forEach((frame) => {
         const frameId = frame.dataset.liveArtifactFrameId || '';
         const artifact = frameId ? registry.get(frameId) : null;
-        if (artifact?.srcdoc && frame.srcdoc !== artifact.srcdoc) {
-            frame.srcdoc = artifact.srcdoc;
-            // After srcdoc reload the bridge re-listens; re-push any pending stream HTML.
-            syncPendingStreamToFrame(frame, artifact);
+        if (artifact) {
+            const html = artifact.isStreaming
+                ? (artifact.streamHtml || artifact.code || '')
+                : (artifact.code || '');
+            if (html) {
+                postInlineArtifactStream(frame, html, { streaming: !artifact.isStreaming });
+            }
         }
     });
 
     if (panelState?.frame && activeArtifactId) {
         const active = registry.get(activeArtifactId);
         if (active?.renderable && active.srcdoc) {
-            panelState.frame.srcdoc = active.srcdoc;
             syncPendingStreamToFrame(panelState.frame, active);
         }
     }
@@ -2895,6 +2902,20 @@ function scheduleFinalHeightSweep(viewport, frame, artifact, container, delay) {
     timers.add(timer);
 }
 
+/**
+ * Cancel all pending final-height sweeps for a frame. Called when the frame is
+ * unmounted (off-screen unload) or replaced so the timer closure cannot fire
+ * against a detached node and trigger a stale layout.
+ */
+function clearFinalHeightSweeps(frame) {
+    if (!frame) return;
+    const timers = finalHeightSweepTimers.get(frame);
+    if (!timers) return;
+    timers.forEach((timer) => clearTimeout(timer));
+    timers.clear();
+    finalHeightSweepTimers.delete(frame);
+}
+
 function syncPendingStreamToFrame(frame, artifact) {
     if (!frame || !artifact) return;
     const html = artifact.isStreaming
@@ -3866,6 +3887,9 @@ function unloadArtifactFrame(container) {
     }
     container.dataset.liveArtifactFrameId = frame.dataset?.liveArtifactFrameId || '';
     container.dataset.artifactUnloaded = '1';
+    // Cancel any in-flight final-height sweep so it cannot fire against the
+    // now-detached frame (Phase 4 leak/cleanup).
+    clearFinalHeightSweeps(frame);
     frameShell.remove();
 }
 
@@ -3917,7 +3941,14 @@ function onViewportIntersection(entries) {
 }
 
 function observeArtifactViewportContainer(container) {
-    if (!viewportUnloadObserver || !container || observedViewportContainers.has(container)) return;
+    if (!viewportUnloadObserver || !container) return;
+    // Lazy cleanup: containers that left the DOM (session switch, chat cleared)
+    // are already auto-unobserved by the IO, but drop them from the Set so the
+    // Set does not hold references and keep the unload observer lean.
+    observedViewportContainers.forEach((c) => {
+        if (!c.isConnected) observedViewportContainers.delete(c);
+    });
+    if (observedViewportContainers.has(container)) return;
     observedViewportContainers.add(container);
     viewportUnloadObserver.observe(container);
 }
@@ -4123,6 +4154,8 @@ function recreateLiveArtifactFrame(frame) {
     fresh.dataset.liveArtifactMountedAt = String(Date.now());
     if (frame.style.height) fresh.style.height = frame.style.height;
 
+    // Cancel any pending final-height sweep on the old node (Phase 4 cleanup).
+    clearFinalHeightSweeps(frame);
     frame.replaceWith(fresh); // 新节点 = 新浏览上下文
     fresh.srcdoc = buildReloadSrcdoc(srcdoc);
 
