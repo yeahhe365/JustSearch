@@ -2699,3 +2699,98 @@ test('Phase 3: hidden tab defers stream pushes, visible flush delivers the lates
     );
     assert.equal(frame.dataset.liveArtifactDirty, '0', 'dirty flag cleared after flush');
 });
+
+test('streaming push uses light path; final push uses full chain (root-cause 1 regression)', () => {
+    installBrowserGlobals('<!doctype html><body></body>');
+    const hooks = __liveArtifactsTestHooks;
+    const code = '<details><summary>S</summary><p>Hidden</p></details>';
+
+    const posts = [];
+    function makeFrame() {
+        return {
+            dataset: {},
+            contentWindow: { postMessage(data) { posts.push(data); } },
+        };
+    }
+
+    // Streaming artifact → light path: details must NOT be force-opened.
+    posts.length = 0;
+    const streamFrame = makeFrame();
+    hooks.syncPendingStreamToFrame(streamFrame, {
+        isStreaming: true,
+        streamHtml: code,
+    });
+    const streamMsg = posts.find((m) => m && m.event === 'stream-render');
+    assert.ok(streamMsg, 'streaming frame received a push');
+    assert.doesNotMatch(streamMsg.html, /<details open/i, 'streaming push must NOT force-open details (light path)');
+
+    // Final artifact → full chain: details ARE force-opened (matches baked srcdoc).
+    posts.length = 0;
+    const finalFrame = makeFrame();
+    hooks.syncPendingStreamToFrame(finalFrame, {
+        isStreaming: false,
+        code,
+    });
+    const finalMsg = posts.find((m) => m && m.event === 'stream-render');
+    assert.ok(finalMsg, 'final frame received a push');
+    assert.match(finalMsg.html, /<details open/i, 'final push must force-open details (full chain)');
+});
+
+test('ping recovery never rebuilds a streaming frame (root-cause 2 regression)', async () => {
+    installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
+    const hooks = __liveArtifactsTestHooks;
+    const container = document.getElementById('message');
+
+    renderLiveArtifactsForMessage(container, '<section><h2>Live</h2></section>', {
+        messageId: 'stream-norebuild',
+        isStreaming: true,
+    });
+    const frame = container.querySelector('.live-artifact-inline-iframe');
+    assert.ok(frame, 'streaming frame mounted');
+    frame.dataset.liveArtifactStreaming = 'true';
+    // No pong will arrive (contentWindow that never responds).
+    Object.defineProperty(frame, 'contentWindow', { value: null, configurable: true });
+
+    // Ping with a very short window: even though no pong comes back, the frame
+    // must NOT be replaced because it is still streaming.
+    hooks.pingAndRebuildArtifactFrame(frame, 40);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const after = container.querySelector('.live-artifact-inline-iframe');
+    assert.equal(after, frame, 'streaming frame must survive a ping with no pong');
+});
+
+test('source strip is not rebuilt when sources are unchanged (root-cause 3 regression)', () => {
+    installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
+    const container = document.getElementById('message');
+    const sources = [
+        { id: '1', title: 'Alpha', url: 'https://alpha.test' },
+        { id: '2', title: 'Beta', url: 'https://beta.test' },
+    ];
+
+    renderLiveArtifactsForMessage(container, '<section><h2>Doc</h2></section>', {
+        messageId: 'src-strip',
+        isStreaming: false,
+        sources,
+    });
+    const strip1 = container.querySelector('.live-artifact-source-strip');
+    assert.ok(strip1, 'first render builds a source strip');
+
+    // Same sources again → the strip element must be reused, not destroyed+rebuilt.
+    renderLiveArtifactsForMessage(container, '<section><h2>Doc</h2></section>', {
+        messageId: 'src-strip',
+        isStreaming: false,
+        sources,
+    });
+    const strip2 = container.querySelector('.live-artifact-source-strip');
+    assert.equal(strip2, strip1, 'source strip is preserved when sources are unchanged');
+
+    // Changing the sources rebuilds it.
+    renderLiveArtifactsForMessage(container, '<section><h2>Doc</h2></section>', {
+        messageId: 'src-strip',
+        isStreaming: false,
+        sources: [...sources, { id: '3', title: 'Gamma', url: 'https://gamma.test' }],
+    });
+    const strip3 = container.querySelector('.live-artifact-source-strip');
+    assert.notEqual(strip3, strip1, 'source strip rebuilds when sources change');
+});

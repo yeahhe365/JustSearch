@@ -343,7 +343,7 @@ export function refreshLiveArtifactPreviews(settings) {
                 ? (artifact.streamHtml || artifact.code || '')
                 : (artifact.code || '');
             if (html) {
-                postInlineArtifactStream(frame, html, { streaming: !artifact.isStreaming });
+                postInlineArtifactStream(frame, html, { streaming: artifact.isStreaming });
             }
         }
     });
@@ -2390,7 +2390,10 @@ function syncRegistryForMessage(messageId, artifacts) {
 
 function clearArtifactControls(container) {
     container.querySelectorAll('.live-artifacts-strip').forEach(el => el.remove());
-    container.querySelectorAll('.live-artifact-source-strip').forEach(el => el.remove());
+    // NOTE: .live-artifact-source-strip is intentionally NOT cleared here —
+    // renderLiveArtifactSources owns it and only rebuilds when the source
+    // signature changes, so a live artifact's chips row does not flash on every
+    // stream tick.
     container.querySelectorAll('.live-artifact-open-btn').forEach(el => el.remove());
     container.querySelectorAll('.live-artifact-support-block').forEach((el) => {
         el.classList.remove('live-artifact-support-block');
@@ -2924,7 +2927,7 @@ function syncPendingStreamToFrame(frame, artifact) {
     if (!html || !String(html).trim()) return;
     // Streaming: light path. Final state: full path (theme/citations/details) so
     // the in-place push matches what a rebuild-from-registry would render.
-    postInlineArtifactStream(frame, html, { streaming: !artifact.isStreaming });
+    postInlineArtifactStream(frame, html, { streaming: artifact.isStreaming });
 }
 
 function postInlineArtifactStream(frame, html, options = {}) {
@@ -3067,12 +3070,21 @@ function selectArtifactSources(artifact, sources) {
 }
 
 function renderLiveArtifactSources(container, artifact, sources) {
-    container.querySelectorAll('.live-artifact-source-strip').forEach(el => el.remove());
     const selected = selectArtifactSources(artifact, sources);
+    // Signature: if the selected sources did not change, keep the existing strip
+    // instead of destroying + rebuilding it every stream tick (which flashes the
+    // chips row under a live artifact).
+    const signature = selected.map((s) => `${s.id}:${s.url || ''}`).join('|');
+    const existing = container.querySelector('.live-artifact-source-strip');
+    if (existing) {
+        if (existing.dataset.sourceSignature === signature) return;
+        existing.remove();
+    }
     if (selected.length === 0) return;
 
     const strip = document.createElement('div');
     strip.className = 'live-artifact-source-strip';
+    strip.dataset.sourceSignature = signature;
     strip.setAttribute('aria-label', t('liveArtifacts.searchSources'));
 
     const header = document.createElement('div');
@@ -3825,8 +3837,11 @@ function openArtifactInNewWindow(artifact) {
 const FRAME_PING_TIMEOUT_MS = 1500;
 // Fast window used when a frame scrolls into view: healthy frames confirm with
 // a synchronous pong in a fraction of this, dead frames are rebuilt quickly so
-// the user does not stare at a white artifact for the full 1.5s.
-const FRAME_VIEW_RECOVERY_TIMEOUT_MS = 150;
+// the user does not stare at a white artifact for the full 1.5s. Kept at 1s —
+// not 150ms — because during streaming the parent thread may be busy with the
+// throttled render pipeline and a legitimate pong can arrive late; a too-short
+// window falsely rebuilds a healthy frame and flashes a blank shell.
+const FRAME_VIEW_RECOVERY_TIMEOUT_MS = 1000;
 // Phase 2.3: after a background stay wakes the tab, only frames still inside the
 // viewport are pinged, and the window is shortened so a discarded document is
 // replaced almost immediately (Phase 2.2 already removed the off-screen frames).
@@ -3993,6 +4008,10 @@ function pingAndRebuildArtifactFrame(frame, timeoutMs = FRAME_PING_TIMEOUT_MS) {
         // A frame still mounting its first document is not "dead" — give it time.
         const mountedAt = Number(frame.dataset?.liveArtifactMountedAt || 0);
         if (mountedAt && Date.now() - mountedAt < 2500 && !frame.dataset.liveArtifactLoaded) return;
+        // A streaming frame is actively being written to; rebuilding it produces
+        // an empty shell that flashes blank until the next push. Never rebuild a
+        // streaming frame — the stream's own render path owns its recovery.
+        if (frame.dataset?.liveArtifactStreaming === 'true') return;
         if (frame.classList.contains('live-artifacts-frame')) {
             recoverPanelFrame(frame);
         } else {
@@ -4213,6 +4232,9 @@ function pingAndRebuildDeadArtifactFrames({ timeoutMs = FRAME_PING_TIMEOUT_MS, v
             // 还在首次加载中的新 frame 不算死，避免误重建
             const mountedAt = Number(frame.dataset?.liveArtifactMountedAt || 0);
             if (mountedAt && now - mountedAt < 2500 && !frame.dataset.liveArtifactLoaded) return;
+            // Streaming frames are being written to — rebuilding flashes an empty
+            // shell. Skip them; their own render path owns recovery.
+            if (frame.dataset?.liveArtifactStreaming === 'true') return;
             if (frame === panelFrame) {
                 recoverPanelFrame(panelFrame);
             } else {
@@ -4288,6 +4310,7 @@ export const __liveArtifactsTestHooks = {
     prefersHtmlArtifactPath,
     pingAndRebuildArtifactFrame,
     pingAndRebuildDeadArtifactFrames,
+    postInlineArtifactStream,
     processArtifactHtmlForDisplay,
     rebuildLiveArtifactFrames,
     recreateLiveArtifactFrame,
@@ -4300,6 +4323,7 @@ export const __liveArtifactsTestHooks = {
     scheduleArtifactUnload,
     shouldMergeSupportingBlocks,
     syncInlineArtifactFrameHeight,
+    syncPendingStreamToFrame,
     unloadArtifactFrame,
     finalHeightSweepTimers,
     wrapAsArtifactRoot,
