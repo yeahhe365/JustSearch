@@ -13,7 +13,7 @@ from typing import Optional
 
 from ..database import (
     load_settings, save_settings, delete_all_chats,
-    DEFAULT_SETTINGS, get_chat_path, load_chat_history,
+    DEFAULT_SETTINGS, load_chat_history,
 )
 from ..browser_manager import BrowserManager
 from ..llm_client import _provider_error_message
@@ -339,7 +339,7 @@ async def clear_cache_endpoint():
     # 1. 删除所有聊天记录
     await delete_all_chats()
 
-    # 2. 关闭浏览器上下文，删除持久化数据，再重建上下文池
+    # 2. 清理浏览器持久化数据目录（历史遗留，保留以维持 clear-cache 语义）
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
     user_data_dir = os.path.join(project_root, "user_data")

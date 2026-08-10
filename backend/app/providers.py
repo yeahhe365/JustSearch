@@ -9,16 +9,12 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
+from .auth import _LOOPBACK_HOSTS
 from .database import mask_api_key
 
 
-WORKFLOW_MODEL_STEPS = [
-    {"id": "analysis", "name": "问题分析"},
-    {"id": "relevance", "name": "相关性评估"},
-    {"id": "interaction", "name": "页面交互"},
-    {"id": "answer", "name": "最终回答"},
-]
-WORKFLOW_MODEL_STEP_IDS = [step["id"] for step in WORKFLOW_MODEL_STEPS]
+WORKFLOW_MODEL_STEP_IDS = ["analysis", "relevance", "interaction", "answer"]
+WORKFLOW_MODEL_STEPS = [{"id": step_id} for step_id in WORKFLOW_MODEL_STEP_IDS]
 DEFAULT_WORKFLOW_STEP_MODELS = {
     step_id: {"provider_id": "", "model_id": ""}
     for step_id in WORKFLOW_MODEL_STEP_IDS
@@ -26,13 +22,10 @@ DEFAULT_WORKFLOW_STEP_MODELS = {
 
 _PROVIDER_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 _UNSUPPORTED_MODEL_RE = re.compile(r"\bgemini[\s._-]*2[\s._-]*5\b", re.IGNORECASE)
-_LOCAL_PROVIDER_HOSTS = {
-    "localhost",
-    "127.0.0.1",
-    "::1",
-    "0.0.0.0",
-    "host.docker.internal",
-}
+# Local OpenAI-compatible runtimes accept empty keys. Base loopback set comes
+# from auth (localhost/127.0.0.1/::1); Docker bridges add 0.0.0.0 and
+# host.docker.internal on top.
+_LOCAL_PROVIDER_HOSTS = _LOOPBACK_HOSTS | {"0.0.0.0", "host.docker.internal"}
 
 
 def is_unsupported_model_id(model_id: Any) -> bool:

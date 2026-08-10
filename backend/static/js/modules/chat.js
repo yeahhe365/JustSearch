@@ -152,17 +152,20 @@ export function shouldRenderStreamTick({
 /**
  * 设置聊天处理器：发送消息、加载/删除对话、输入框自动调整等。
  */
-// 搜索引擎 → 显示名（含 i18n 文案）。quick 切换与状态栏共用，避免漂移。
-// 提升到模块级：syncQuickSettingsFromState（页面初始化即调用）也引用它。
-const ENGINE_NAMES = {
-    'duckduckgo': 'DuckDuckGo',
-    'google': 'Google',
-    'bing': 'Bing',
-    'sogou': t('engine.sogou'),
-    'brave': 'Brave Search',
-    'baidu': t('engine.baidu'),
-    'yandex': 'Yandex',
-};
+// 搜索引擎 → 显示名。sogou/baidu 的文案走 t() 运行时取值（切语言后刷新）；
+// 其余为固定品牌名。提升到模块级：syncQuickSettingsFromState 也引用它。
+function getEngineName(engine) {
+    switch (engine) {
+        case 'duckduckgo': return 'DuckDuckGo';
+        case 'google': return 'Google';
+        case 'bing': return 'Bing';
+        case 'sogou': return t('engine.sogou');
+        case 'brave': return 'Brave Search';
+        case 'baidu': return t('engine.baidu');
+        case 'yandex': return 'Yandex';
+        default: return engine || 'Google';
+    }
+}
 
 export function setupChatHandler(elements, renderHistory) {
     // 记录最后一条用户消息，用于重新生成
@@ -1241,7 +1244,7 @@ export function setupChatHandler(elements, renderHistory) {
         getStatusText: () => {
             if (!state.settings) return null;
             const preset = matchIntensityPreset(state.settings.max_results, state.settings.max_iterations);
-            const engine = ENGINE_NAMES[state.settings.search_engine] || state.settings.search_engine || 'Google';
+            const engine = getEngineName(state.settings.search_engine);
             return { title: t('chat.searching'), subtitle: `${preset?.label || t('searchIntensity.custom')} · ${engine}` };
         },
     });
@@ -1354,7 +1357,7 @@ export function syncQuickSettingsFromState() {
     
     const engine = state.settings.search_engine || 'google';
     if (quickEngineName) {
-        quickEngineName.textContent = ENGINE_NAMES[engine] || engine;
+        quickEngineName.textContent = getEngineName(engine);
     }
     
     if (quickEngineDropdown) {

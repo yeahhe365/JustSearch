@@ -7,7 +7,12 @@ import {
     shouldSkipTextNode,
 } from './citation-occurrences.js?v=1';
 import { setFrameEvidenceContext } from './evidence-panel.js?v=5';
-import { escapeHtml, getSafeUrl } from './utils.js?v=14';
+import {
+    escapeHtml,
+    getSafeUrl,
+    clampLiveArtifactsFontSize as clampLiveArtifactFontSize,
+    DEFAULT_LIVE_ARTIFACTS_FONT_SIZE as DEFAULT_LIVE_ARTIFACT_FONT_SIZE,
+} from './utils.js?v=14';
 
 const ARTIFACT_LANGUAGES = new Set(['html', 'svg']);
 const SUPPORTING_LANGUAGES = new Set(['css', 'javascript', 'js']);
@@ -182,9 +187,6 @@ const LIVE_ARTIFACT_THEME_PALETTES = {
         warningSurface: 'rgba(251, 191, 36, 0.14)',
     },
 };
-const DEFAULT_LIVE_ARTIFACT_FONT_SIZE = 16;
-const LIVE_ARTIFACT_FONT_SIZE_MIN = 10;
-const LIVE_ARTIFACT_FONT_SIZE_MAX = 32;
 // Align with AMC-WebUI ArtifactFrame height constants.
 const INLINE_ARTIFACT_MIN_HEIGHT = 120;
 const INLINE_ARTIFACT_DEFAULT_HEIGHT = 320;
@@ -390,15 +392,6 @@ function resolveLiveArtifactFontSizePx(settings) {
         }
     }
     return DEFAULT_LIVE_ARTIFACT_FONT_SIZE;
-}
-
-function clampLiveArtifactFontSize(value) {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return DEFAULT_LIVE_ARTIFACT_FONT_SIZE;
-    return Math.min(
-        LIVE_ARTIFACT_FONT_SIZE_MAX,
-        Math.max(LIVE_ARTIFACT_FONT_SIZE_MIN, Math.round(parsed)),
-    );
 }
 
 function resolveMessageId(container, requestedId = '') {

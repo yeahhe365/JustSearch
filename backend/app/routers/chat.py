@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..database import (
-    load_settings, save_chat_history, load_chat_history, get_chat_path, get_next_api_key,
+    load_settings, save_chat_history, load_chat_history, get_next_api_key,
     delete_message, replace_messages_from, _extract_title,
     normalize_route_safe_id,
 )
@@ -354,8 +354,7 @@ async def chat_endpoint(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    chat_path = get_chat_path(session_id)
-    chat_history_data = await load_chat_history(chat_path)
+    chat_history_data = await load_chat_history(session_id)
     context_messages = chat_history_data.get("messages", []) if chat_history_data else []
 
     # AMC resend/retry: truncate history at the edited user message (or the user
@@ -375,7 +374,7 @@ async def chat_endpoint(request: ChatRequest):
         if raw_session_id:
             # Verify the session exists so we still 404 cleanly when it doesn't,
             # but do NOT delete anything yet — context_messages is sliced below.
-            existing = await load_chat_history(chat_path)
+            existing = await load_chat_history(session_id)
             if not existing:
                 raise HTTPException(status_code=404, detail="会话不存在，无法截断消息")
             # 并发防护：客户端前缀与 DB 前缀比对，不一致(另一窗口已编辑/追加)
@@ -482,8 +481,7 @@ async def chat_endpoint(request: ChatRequest):
             )
 
             try:
-                path = get_chat_path(session_id)
-                existing_data = await load_chat_history(path)
+                existing_data = await load_chat_history(session_id)
                 existing_messages = existing_data.get("messages", []) if existing_data else []
 
                 new_messages = [
@@ -528,7 +526,7 @@ async def chat_endpoint(request: ChatRequest):
                         # below would RE-CREATE the session (save_chat_history upserts
                         # when no row exists), resurrecting a chat the user just
                         # deleted. Re-check existence before falling back.
-                        still_exists = await load_chat_history(path)
+                        still_exists = await load_chat_history(session_id)
                         if still_exists is None:
                             logger.info(
                                 "replace_messages_from failed for %s and session no longer exists; skipping fallback",

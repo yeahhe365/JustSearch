@@ -10,7 +10,7 @@ from sqlalchemy import text as sql_text
 
 from ..database import (
     list_chats, load_chat_history, save_chat_history,
-    delete_chat, get_chat_path, delete_all_chats, get_session,
+    delete_chat, delete_all_chats, get_session,
     list_chat_groups, create_chat_group, update_chat_group,
     delete_chat_group, move_chat_to_group, set_chat_pinned,
     duplicate_chat, fork_chat_from,
@@ -274,8 +274,7 @@ async def import_history_endpoint(body: object = Body(...)):
 @router.get("/api/history/{session_id}")
 async def get_chat_endpoint(session_id: str):
     session_id = _require_route_safe_id(session_id, "session_id")
-    path = get_chat_path(session_id)
-    history = await load_chat_history(path)
+    history = await load_chat_history(session_id)
     if not history:
         raise HTTPException(status_code=404, detail="Chat not found")
     return history
@@ -346,13 +345,12 @@ async def fork_chat_endpoint(session_id: str, body: object = Body(default=None))
 @router.get("/api/history/{session_id}/export")
 async def export_chat(session_id: str, format: str = "markdown"):
     """导出单个对话。支持 markdown (默认) 和 json 格式。"""
-    from ..database import load_chat_history, get_chat_path
+    from ..database import load_chat_history
     from fastapi.responses import Response
     import datetime as _dt
 
     session_id = _require_route_safe_id(session_id, "session_id")
-    path = get_chat_path(session_id)
-    data = await load_chat_history(path)
+    data = await load_chat_history(session_id)
     if not data:
         raise HTTPException(status_code=404, detail="对话不存在")
 
