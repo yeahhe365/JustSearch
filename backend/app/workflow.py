@@ -243,8 +243,6 @@ class SearchWorkflow:
         if not valid_queries and iteration == 1 and search_queries:
              valid_queries = [search_queries[0]]
 
-        engine_name = self.browser.engine.capitalize()
-        
         search_results = []
         if valid_queries:
             progress_callback(f"阶段 II: 在 {self.browser.engine.capitalize()} 上搜索: {', '.join(valid_queries)}...")
@@ -573,6 +571,13 @@ class SearchWorkflow:
                     if self.live_artifacts_mode:
                         return ensure_live_artifact_answer(final_answer)
                     return self._format_references(final_answer, accumulated_sources)
+                elif result.get("status") == "error":
+                    # A hard generation failure (timeout / corrupt stream / provider
+                    # error). Do NOT treat it as an insufficient partial and run
+                    # another search round, and do NOT render the exception text as a
+                    # normal answer — surface it to the caller so the UI shows the
+                    # error + retry affordance.
+                    raise RuntimeError(result.get("answer") or "生成答案失败")
                 else:
                     last_partial_answer = result.get("answer", "")
                     last_feedback = result.get("missing_info") or last_partial_answer

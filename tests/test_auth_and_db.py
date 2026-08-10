@@ -2514,6 +2514,25 @@ def test_provider_enabled_semantics():
     with pytest.raises(HTTPException):
         ensure_default_provider_id(providers, "qwen")
 
+    # Bug #4: all-disabled config must not silently fall back to a disabled
+    # provider as the default.
+    all_disabled = [
+        {"id": "a", "base_url": "", "model_id": "", "enabled": False},
+        {"id": "b", "base_url": "", "model_id": "", "enabled": False},
+    ]
+    with pytest.raises(HTTPException):
+        ensure_default_provider_id(all_disabled, "")
+
+    # Bug #4: an omitted api_key field must carry over the existing key (via
+    # current_providers), never wipe it to "".
+    preserved = normalize_providers(
+        [{"id": "deepseek", "base_url": "https://api.deepseek.com/v1", "model_id": "deepseek-v4-flash"}],
+        current_providers=[
+            {"id": "deepseek", "base_url": "https://api.deepseek.com/v1", "model_id": "deepseek-v4-flash", "api_key": "sk-keep-me"}
+        ],
+    )
+    assert preserved[0]["api_key"] == "sk-keep-me", "omitted api_key must preserve the stored key"
+
     # Step models referencing a disabled provider are dropped on the non-strict
     # path and rejected on the strict path.
     non_strict = normalize_workflow_step_models(

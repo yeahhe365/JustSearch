@@ -67,7 +67,9 @@ export function registerHandlers(bridge) {
   });
 
   bridge.registerRequestHandler("createTab", async ({ url, session_id } = {}) => {
-    const sessionId = typeof session_id === "string" && session_id ? session_id : "default";
+    // Note: session_id is intentionally unused here — agent tabs all join the
+    // single global AGENT_GROUP_SESSION (multi-group clutter), so the cursor
+    // controller keys per-session state off the real session_id on the backend.
     const tab = await chrome.tabs.create({ url: url ?? "about:blank", active: false });
     // 归入唯一的全局 agent 分组。串行化 + 先登记 tab,保证并发 createTab
     // 复用同一组而非各建新组(SW 重启后还能从持久化的 groupMetadata 复用)。

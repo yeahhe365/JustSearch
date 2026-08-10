@@ -189,13 +189,24 @@ class ExtensionConnection:
         """同步 fire-and-forget 发送，仅用于扩展主动发来的通知响应。
 
         这些消息没有等待方，若阻塞发送会拖住接收循环；发送失败时的
-        _reject_all 与 _send 一致。
+        _reject_all 与 _send 一致。任务无等待方，异常必须显式消费，
+        否则会变成 "Task exception was never retrieved"。
         """
         try:
-            asyncio.get_running_loop().create_task(self._send(msg))
+            task = asyncio.get_running_loop().create_task(self._send(msg))
+            task.add_done_callback(self._consume_fire_and_forget_result)
         except RuntimeError:
             # 无运行循环(关闭中),忽略。
             pass
+
+    def _consume_fire_and_forget_result(self, task: asyncio.Task) -> None:
+        """Consume a fire-and-forget task result so stray exceptions surface in logs."""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # noqa: BLE001 - log-and-swallow by design
+            logger.debug("[bridge] fire-and-forget send failed: %s", e)
 
     def _reject_all(self, reason: str) -> None:
         self._closed = True

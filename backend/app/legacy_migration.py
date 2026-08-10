@@ -51,6 +51,7 @@ async def _migrate_chats_dir(
     logger.info("Migrating %d chat JSON files from %s ...", len(json_files), chats_dir)
 
     async with await get_session() as session:
+        failed = []
         for fpath in json_files:
             try:
                 with open(fpath, "r", encoding="utf-8") as f:
@@ -104,9 +105,18 @@ async def _migrate_chats_dir(
                     )
             except Exception as e:
                 logger.error("Failed to migrate %s: %s", fpath, e)
-
+                failed.append(fpath)
         await session.commit()
 
+    # Only delete the source directory when EVERY file migrated cleanly. A single
+    # failed file must not be destroyed — its JSON is the only copy of that chat.
+    if failed:
+        logger.warning(
+            "%d legacy chat file(s) failed to migrate; keeping %s so they are not lost",
+            len(failed),
+            chats_dir,
+        )
+        return
     try:
         shutil.rmtree(chats_dir, ignore_errors=True)
         logger.info("Removed legacy chats/ directory")

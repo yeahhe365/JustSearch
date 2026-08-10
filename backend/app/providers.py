@@ -139,7 +139,7 @@ def with_supported_provider_models(provider: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
-def normalize_provider(provider: dict[str, Any]) -> dict[str, str]:
+def normalize_provider(provider: dict[str, Any]) -> dict[str, str | None]:
     provider_id = str(provider.get("id", "")).strip()
     if not provider_id:
         raise HTTPException(status_code=400, detail="provider id 不能为空")
@@ -157,10 +157,16 @@ def normalize_provider(provider: dict[str, Any]) -> dict[str, str]:
     if enabled and not model_id:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} 缺少 model_id")
 
+    # Distinguish "api_key field omitted" (None) from "explicitly set to '' or a
+    # mask". An omitted field must NOT wipe a previously stored key — the caller
+    # is patching other fields and the key should be carried over from current.
+    api_key = provider.get("api_key")
+    normalized_api_key = None if api_key is None else str(api_key).strip()
+
     return {
         "id": provider_id,
         "name": str(provider.get("name", "")).strip() or provider_id,
-        "api_key": str(provider.get("api_key", "")).strip(),
+        "api_key": normalized_api_key,
         "base_url": base_url,
         "model_id": model_id,
         "enabled": enabled,
@@ -190,7 +196,14 @@ def normalize_providers(
             raise HTTPException(status_code=400, detail=f"重复的 provider id: {provider_id}")
         seen.add(provider_id)
 
-        if "****" in item["api_key"]:
+        if item["api_key"] is None:
+            # Field omitted — carry over the existing key (never wipe it).
+            previous_provider_id = str(provider.get("previous_id", "")).strip()
+            current_provider = current_by_id.get(provider_id)
+            if current_provider is None and previous_provider_id:
+                current_provider = current_by_id.get(previous_provider_id)
+            item["api_key"] = str((current_provider or {}).get("api_key", "")).strip()
+        elif "****" in item["api_key"]:
             previous_provider_id = str(provider.get("previous_id", "")).strip()
             current_provider = current_by_id.get(provider_id)
             if current_provider is None and previous_provider_id:
@@ -212,8 +225,13 @@ def ensure_default_provider_id(
     if not requested:
         default = next(
             (provider for provider in providers if is_provider_enabled(provider)),
-            providers[0],
+            None,
         )
+        if default is None:
+            raise HTTPException(
+                status_code=400,
+                detail="至少需要启用一个 provider 作为默认 provider",
+            )
         return str(default["id"])
     if requested not in provider_ids:
         raise HTTPException(status_code=400, detail=f"默认 provider 不存在: {requested}")

@@ -392,6 +392,14 @@ export function setupChatHandler(elements, renderHistory) {
         // failed/cancelled turn kept so its DOM can be shown once).
         const rec = activeStreams.get(sessionId);
         if (rec) {
+            // A truncate-edit stream detached mid-flight: the DB still holds the
+            // pre-truncate tail (persist hasn't happened yet), so loadChat just
+            // rendered it above. Trim it before re-attaching the live bubbles,
+            // otherwise the soon-to-be-cut tail is briefly visible again.
+            if (rec.truncateFromIndex !== null && rec.truncateFromIndex !== undefined) {
+                removeMessagesFromDom(rec.truncateFromIndex);
+                setSessionMessageCount(rec.truncateFromIndex);
+            }
             if (rec.userNode) elements.chatContainer.appendChild(rec.userNode);
             if (rec.msgDiv) elements.chatContainer.appendChild(rec.msgDiv);
             elements.heroSection.style.display = 'none';
@@ -509,6 +517,7 @@ export function setupChatHandler(elements, renderHistory) {
             msgDiv: null,
             count: 0,
             lastUserIndex: null,
+            truncateFromIndex: null,
         };
         activeStreams.set(provisionalKey, rec);
         const ownsView = () => rec.attached && state.currentSessionId === (rec.sessionId ?? requestSessionId);
@@ -520,6 +529,7 @@ export function setupChatHandler(elements, renderHistory) {
 
         // Optimistic DOM truncate (AMC slice) before appending the new turn.
         if (truncateFromIndex !== null) {
+            rec.truncateFromIndex = truncateFromIndex;
             removeMessagesFromDom(truncateFromIndex);
             setSessionMessageCount(truncateFromIndex);
         }

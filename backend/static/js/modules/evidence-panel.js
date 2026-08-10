@@ -87,6 +87,10 @@ function ensurePanel() {
 export function setFrameEvidenceContext(frameId, { sources = [], citations = [] } = {}) {
     const id = String(frameId ?? '').trim();
     if (!id) return;
+    // Re-setting an existing key keeps its original insertion position in a Map,
+    // which would defeat the LRU eviction below (a re-registered frame could be
+    // evicted even though it is actively used). Delete-then-set refreshes recency.
+    if (frameContexts.has(id)) frameContexts.delete(id);
     frameContexts.set(id, {
         sources: Array.isArray(sources) ? sources : [],
         citations: Array.isArray(citations) ? citations : [],

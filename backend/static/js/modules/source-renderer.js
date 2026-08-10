@@ -136,7 +136,6 @@ export function linkCitationsInElement(root, sources) {
                     // href kept as fallback / middle-click; primary click opens evidence panel.
                     anchor.href = safeUrl || '#';
                     anchor.className = 'citation-link';
-                    if (source.snippet) anchor.dataset.evidenceSnippet = String(source.snippet).slice(0, 200);
                     if (safeUrl) {
                         anchor.target = '_blank';
                         anchor.rel = 'noopener noreferrer';

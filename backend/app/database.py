@@ -323,7 +323,10 @@ async def init_db():
 async def _cleanup_old_sessions(max_age_days: int = 90):
     """Remove empty sessions older than max_age_days."""
     try:
-        cutoff = datetime.now() - timedelta(days=max_age_days)
+        # updated_at is stored as naive UTC (_utc_now), so the cutoff must be
+        # UTC too — using local naive time shifts the window by the local TZ
+        # offset (e.g. UTC+8 would delete sessions "updated" up to 8h ago).
+        cutoff = _utc_now() - timedelta(days=max_age_days)
         async with await get_session() as session:
             result = await session.execute(
                 delete(ChatSession)

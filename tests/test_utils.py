@@ -1197,3 +1197,60 @@ class TestLiveArtifactsAnswerFormatting:
             assert second_result["answer"] == "second answer"
 
         asyncio.run(run_check())
+
+
+class TestInsufficientStreamGating:
+    """Regression: a stream that reports `Status: insufficient` must not push
+    its partial answer to the UI buffer (Bug #1 — _drain_stream was missing
+    `nonlocal status`, so the gate never fired and two rounds concatenated)."""
+
+    def test_insufficient_stream_does_not_push_partial_answer(self):
+        import asyncio
+        from backend.app.llm_client import LLMClient
+
+        class FakeStream:
+            def __init__(self, chunks):
+                self._chunks = chunks
+
+            def __aiter__(self):
+                self._iter = iter(self._chunks)
+                return self
+
+            async def __anext__(self):
+                try:
+                    content = next(self._iter)
+                except StopIteration:
+                    raise StopAsyncIteration
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content=content),
+                            finish_reason=None,
+                        )
+                    ]
+                )
+
+        class FakeCompletions:
+            async def create(self, model, messages, stream):
+                return FakeStream(
+                    [
+                        "Status: insufficient\nMissing_Info: need more rounds\nAnswer:\n",
+                        "这是第一轮的部分答案，不应推给前端。",
+                        "更多不该出现的内容。",
+                    ]
+                )
+
+        chunks = []
+        client = LLMClient(api_key="test-key", base_url="https://example.test/v1")
+        client.client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+        result = asyncio.run(
+            client.generate_answer(
+                "测试问题",
+                [{"id": 1, "title": "fixture", "content": "source", "url": "https://example.test"}],
+                stream_callback=chunks.append,
+            )
+        )
+
+        assert result["status"] == "insufficient"
+        assert chunks == [], "insufficient stream must not stream partial answer to UI"

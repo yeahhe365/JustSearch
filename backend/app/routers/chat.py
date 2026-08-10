@@ -522,8 +522,21 @@ async def chat_endpoint(request: ChatRequest):
                         expected_prefix=existing_messages[:pending_truncate],
                     )
                     if not replaced:
-                        full_messages = existing_messages + new_messages
-                        await save_chat_history(session_id, full_messages, title)
+                        # replace_messages_from returns False for (a) invalid args,
+                        # (b) prefix drift under concurrent edits, and (c) the session
+                        # having been deleted concurrently. In case (c) the fallback
+                        # below would RE-CREATE the session (save_chat_history upserts
+                        # when no row exists), resurrecting a chat the user just
+                        # deleted. Re-check existence before falling back.
+                        still_exists = await load_chat_history(path)
+                        if still_exists is None:
+                            logger.info(
+                                "replace_messages_from failed for %s and session no longer exists; skipping fallback",
+                                session_id,
+                            )
+                        else:
+                            full_messages = existing_messages + new_messages
+                            await save_chat_history(session_id, full_messages, title)
                 else:
                     full_messages = existing_messages + new_messages
                     await save_chat_history(session_id, full_messages, title)

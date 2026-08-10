@@ -989,10 +989,10 @@ def _extract_history_anchor_terms(history: Optional[List[Dict[str, str]]], *, ma
     # not lost) and strip trailing punctuation (Python. -> Python) below.
     for match in re.finditer(r"[\u4e00-\u9fff]{2,12}|[A-Za-z][A-Za-z0-9\-+.]*", blob):
         term = match.group(0).strip().rstrip(".-+")
-        # A long CJK run may have skipped sub-clause punctuation; trim it to the
-        # first sub-clause so the anchor is one phrase, not a whole sentence.
-        if len(term) > 6 and re.fullmatch(r"[\u4e00-\u9fff]+", term):
-            term = re.split(r"[\uff0c\u3002\uff1b\u3001,.!?\uff1f\uff01\uff1a]", term)[0]
+        # A CJK run matched by [\u4e00-\u9fff]{2,12} can never contain the
+        # sub-clause punctuation below, so splitting here would be a no-op; the
+        # run is already length-capped and _CJK_FUNCTION_WORD_RE strips deictic
+        # words at the query level (see _looks_like_followup_query callers).
         if not term or term.lower() in _STOPWORDS or term in _STOPWORDS:
             continue
         if term not in candidates:
@@ -1738,7 +1738,7 @@ class LLMClient:
         """
         [09] AI Model: Generation & Evaluation
         Input: Query and full content of selected sources.
-        Returns: {"status": "sufficient"|"insufficient", "answer": "..."}
+        Returns: {"status": "sufficient"|"insufficient"|"error", "answer": "..."}
         """
         # NOTE: generate_answer does NOT use cache — the same query with different sources
         # should produce different results. Caching by query alone caused a collision bug
@@ -1847,7 +1847,7 @@ class LLMClient:
                         )
 
                         async def _drain_stream():
-                            nonlocal full_content, parsing_header, header_buffer, answer_started
+                            nonlocal full_content, parsing_header, header_buffer, answer_started, status
                             async for chunk in response:
                                 if chunk.choices and chunk.choices[0].delta.content:
                                     content = chunk.choices[0].delta.content
@@ -1933,7 +1933,7 @@ class LLMClient:
                         max_attempts - 1,
                     )
                     if attempt >= max_attempts - 1:
-                        return {"status": "sufficient", "answer": "生成答案超时，请重试。"}
+                        return {"status": "error", "answer": "生成答案超时，请重试。", "missing_info": ""}
                     await asyncio.sleep(_retry_backoff_seconds(attempt, base=2.0))
                     continue
                 except Exception as e:
@@ -1999,7 +1999,7 @@ class LLMClient:
 
             if last_error is not None:
                 raise last_error
-            return {"status": "sufficient", "answer": "生成答案时出错: 未收到模型响应。"}
+            return {"status": "error", "answer": "生成答案时出错: 未收到模型响应。", "missing_info": ""}
 
         except LLMProviderConfigurationError:
             raise
@@ -2012,7 +2012,7 @@ class LLMClient:
                     "answer": "模型返回的流式响应中断，请重试。",
                     "missing_info": "",
                 }
-            return {"status": "sufficient", "answer": f"生成答案时出错: {e}"}
+            return {"status": "error", "answer": f"生成答案时出错: {e}", "missing_info": ""}
 
 
 def _is_stream_corruption_error(error: BaseException) -> bool:

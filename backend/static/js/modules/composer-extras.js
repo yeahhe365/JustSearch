@@ -14,7 +14,7 @@
 // ===========================================================================
 import { abortActiveStream } from './state.js?v=5';
 import { t } from './i18n.js?v=1';
-import { INTENSITY_PRESETS } from './search-intensity.js';
+import { INTENSITY_PRESETS } from './search-intensity.js?v=3';
 
 // --- Suggestion data (search-domain prompts) -------------------------------
 export const SUGGESTIONS = Object.freeze([
