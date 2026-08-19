@@ -1,3 +1,5 @@
+
+
 # 🚀 JustSearch: 智能 AI 深度搜索助手
 
 <p align="center">
@@ -122,7 +124,7 @@ pip install -r backend/requirements.txt
 如需生产级优化(JS 合并压缩、CSS 拼接压缩、自动缓存指纹),执行:
 
 ```bash
-npm install          # 首次;安装 esbuild
+npm install          # 首次;安装 esbuild（需 Node.js ≥ 22.12）
 npm run build        # 生成 backend/static/dist/ 产物
 ```
 
@@ -320,4 +322,3 @@ JustSearch/
 ## 友链
 
 - [Linux.do](https://linux.do/)：也称 L 站，是一个活跃的中文技术社区，围绕 AI、软件开发、资源分享与前沿资讯展开讨论；社区愿景是“新的理想型社区”，社区文化是“真诚、友善、团结、专业，共建你我引以为荣之社区”。
-
