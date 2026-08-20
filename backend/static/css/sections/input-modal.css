@@ -33,7 +33,7 @@
 }
 
 .edit-message-banner-copy .material-symbols-rounded {
-    color: #d97706;
+    color: var(--theme-bg-warning-strong, #d97706);
     font-size: 18px;
     flex-shrink: 0;
 }
@@ -131,22 +131,22 @@
 }
 
 [data-theme="graphite"] #input-area {
-    --amc-bg-input: #343438;          /* Graphite bgInput */
-    --amc-border: #4c4c52;            /* borderSecondary */
-    --amc-border-focus: #4f7cf5;      /* borderFocus (accent blue) */
-    --amc-btn-hover: #3c3c40;         /* bgTertiary */
-    --amc-text-primary: #f2f2f4;
-    --amc-text-secondary: #b8b8be;
-    --amc-text-tertiary: #88888f;
-    --amc-icon-color: #b8b8be;
-    --amc-accent: #4f7cf5;
-    --amc-accent-hover: #3b6bed;
-    --amc-accent-text: #ffffff;
-    --amc-danger: #f87171;
-    --amc-danger-hover: #fca5a5;
-    --amc-success-bg: rgba(134, 239, 172, 0.15);
-    --amc-success-text: #86efac;
-    --primary-gradient: #4f7cf5;
+    --amc-bg-input: var(--theme-bg-secondary);
+    --amc-border: var(--theme-border-primary);
+    --amc-border-focus: var(--theme-border-focus);
+    --amc-btn-hover: var(--theme-bg-tertiary);
+    --amc-text-primary: var(--theme-text-primary);
+    --amc-text-secondary: var(--theme-text-secondary);
+    --amc-text-tertiary: var(--theme-text-tertiary);
+    --amc-icon-color: var(--theme-text-secondary);
+    --amc-accent: var(--theme-bg-accent);
+    --amc-accent-hover: var(--theme-bg-accent-hover, #3b6bed);
+    --amc-accent-text: var(--theme-text-inverse, #ffffff);
+    --amc-danger: var(--theme-text-danger, #f87171);
+    --amc-danger-hover: var(--theme-text-danger-hover, #fca5a5);
+    --amc-success-bg: var(--theme-bg-success-light, rgba(134, 239, 172, 0.15));
+    --amc-success-text: var(--theme-text-success, #86efac);
+    --primary-gradient: var(--theme-bg-accent);
     /* P1: expose theme warning tokens for edit banner */
     --amc-warning: var(--theme-bg-warning-strong, #d97706);
     --amc-warning-hover: var(--theme-bg-warning-strong-hover, #b45309);
@@ -277,7 +277,6 @@
     max-width: 44rem;
     position: relative; /* anchor for the slash-command menu */
     background: var(--theme-bg-input);
-    background-color: var(--theme-bg-input);
     border: 1px solid var(--theme-border-secondary);
     border-radius: var(--amc-radius-lg);
     padding: 0.375rem 0.75rem;
@@ -286,16 +285,8 @@
     align-items: stretch;
     gap: 6px;
     box-shadow: var(--amc-composer-shadow);
-    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
     box-sizing: border-box;
-}
-
-#input-area .input-box {
-    border-radius: var(--amc-radius-lg);
-    border: 1px solid var(--theme-border-secondary);
-    background: var(--theme-bg-input);
-    box-shadow: var(--amc-composer-shadow);
-    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 @media (min-width: 640px) {
@@ -312,11 +303,6 @@
     border-color: var(--theme-border-focus);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-border-focus) 15%, transparent);
     background-color: var(--theme-bg-input);
-}
-
-#input-area .input-box:focus-within {
-    border-color: var(--theme-border-focus);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-border-focus) 15%, transparent);
 }
 
 [data-theme="dark"] .input-box:focus-within {
@@ -425,19 +411,19 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #94a3b8;
+    background: var(--theme-text-tertiary, #94a3b8);
     flex-shrink: 0;
-    box-shadow: 0 0 0 2px color-mix(in srgb, #94a3b8 20%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-text-tertiary, #94a3b8) 20%, transparent);
 }
 
 .bridge-status-btn[data-state="connected"] .bridge-status-dot {
-    background: #22c55e;
-    box-shadow: 0 0 0 2px color-mix(in srgb, #22c55e 25%, transparent);
+    background: var(--theme-text-success, #22c55e);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-text-success, #22c55e) 25%, transparent);
 }
 
 .bridge-status-btn[data-state="disconnected"] .bridge-status-dot {
-    background: #ef4444;
-    box-shadow: 0 0 0 2px color-mix(in srgb, #ef4444 25%, transparent);
+    background: var(--theme-text-danger, #ef4444);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-text-danger, #ef4444) 25%, transparent);
 }
 
 .bridge-status-btn[data-state="disconnected"] {
@@ -1772,8 +1758,8 @@
     width: 6px;
     height: 6px;
     border-radius: var(--radius-full);
-    background: #10b981;
-    box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.14);
+    background: var(--theme-text-success, #10b981);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--theme-text-success, #10b981) 14%, transparent);
 }
 
 .about-description {
@@ -1842,7 +1828,7 @@
 }
 
 .about-action-link .material-symbols-rounded {
-    color: #f59e0b;
+    color: var(--theme-bg-warning-strong, #f59e0b);
     font-size: 16px;
 }
 

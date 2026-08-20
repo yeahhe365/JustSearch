@@ -253,7 +253,10 @@ export function setupSettingsSearch({ modalEl, root = document }) {
 
     // "/" focuses search when not editing and settings modal is open.
     function isEditableTarget(target) {
-        return target instanceof Element && target.closest('input, textarea, select, [contenteditable="true"]');
+        if (!(target instanceof Element)) return false;
+        if (target.closest('input, textarea, select, [contenteditable]')) return true;
+        // Bare contenteditable without value still editable
+        return Boolean(target.isContentEditable);
     }
     const slashHandler = (e) => {
         if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -265,8 +268,20 @@ export function setupSettingsSearch({ modalEl, root = document }) {
         input.focus();
     };
     // Listen on document so "/" works regardless of root being document or shadow.
+    // Guard duplicate registration when setup is called twice (singleton modal).
     const slashRoot = (typeof document !== 'undefined' ? document : root);
+    if (slashRoot._justSearchSlashHandler) {
+        try { slashRoot.removeEventListener('keydown', slashRoot._justSearchSlashHandler); } catch {}
+    }
+    slashRoot._justSearchSlashHandler = slashHandler;
     slashRoot.addEventListener('keydown', slashHandler);
 
-    return { buildIndex, clearSearch, highlightText };
+    function destroy() {
+        try { slashRoot.removeEventListener('keydown', slashHandler); } catch {}
+        if (slashRoot._justSearchSlashHandler === slashHandler) {
+            try { delete slashRoot._justSearchSlashHandler; } catch { slashRoot._justSearchSlashHandler = null; }
+        }
+    }
+
+    return { buildIndex, clearSearch, highlightText, destroy };
 }
