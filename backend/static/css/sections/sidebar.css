@@ -524,6 +524,8 @@
     transition: background-color var(--transition-fast), color var(--transition-fast);
     margin-bottom: 2px;
     overflow: hidden;
+    content-visibility: auto;
+    contain-intrinsic-size: 0 40px;
 }
 
 .history-item.dragging {
@@ -950,4 +952,20 @@
     text-align: center;
     color: var(--text-muted);
     font-size: 13px;
+}
+
+/* P1: AMC uiStore parity — per-viewport stability & drag feedback */
+.history-list {
+    scrollbar-gutter: stable;
+}
+.history-item.dragging,
+.history-item.is-dragging {
+    opacity: 0.5;
+    transform: rotate(0.5deg);
+}
+.history-item.drag-over,
+.chat-group.drag-over {
+    outline: 2px dashed var(--theme-border-focus, var(--primary));
+    outline-offset: -2px;
+    background: color-mix(in srgb, var(--theme-bg-tertiary, var(--bg-secondary)) 60%, transparent);
 }

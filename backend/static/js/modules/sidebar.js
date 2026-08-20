@@ -8,6 +8,34 @@ import { encodePathSegment, safeGetLocalStorageItem, safeSetLocalStorageItem } f
 let popoverEl = null;
 let popoverTimeout = null;
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'sidebarCollapsed';
+const DESKTOP_BP = 768;
+const SIDEBAR_COLLAPSED_KEYS = {
+    desktop: 'sidebarCollapsed_desktop',
+    mobile: 'sidebarCollapsed_mobile',
+    legacy: 'sidebarCollapsed',
+};
+function isDesktopViewport() {
+    return typeof window !== 'undefined' ? window.innerWidth > DESKTOP_BP : true;
+}
+function getSidebarCollapsedForViewport() {
+    const desktop = isDesktopViewport();
+    const key = desktop ? SIDEBAR_COLLAPSED_KEYS.desktop : SIDEBAR_COLLAPSED_KEYS.mobile;
+    let val = safeGetLocalStorageItem(key);
+    if (val === '' && desktop) {
+        // Migrate legacy single key to desktop
+        const legacy = safeGetLocalStorageItem(SIDEBAR_COLLAPSED_KEYS.legacy);
+        if (legacy !== '') {
+            val = legacy;
+            safeSetLocalStorageItem(key, legacy);
+            try { localStorage.removeItem(SIDEBAR_COLLAPSED_KEYS.legacy); } catch {}
+        }
+    }
+    return val === 'true';
+}
+function setSidebarCollapsedForViewport(collapsed) {
+    const key = isDesktopViewport() ? SIDEBAR_COLLAPSED_KEYS.desktop : SIDEBAR_COLLAPSED_KEYS.mobile;
+    safeSetLocalStorageItem(key, collapsed ? 'true' : 'false');
+}
 
 function removeRecentChatsPopover() {
     if (popoverEl) {
@@ -114,21 +142,20 @@ function setupHistoryPopover(miniHistoryBtn, loadChat) {
 }
 
 export function setupSidebar(loadChat) {
-    if (window.innerWidth > 768) {
-        const sidebarCollapsed = safeGetLocalStorageItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
-        if (sidebarCollapsed) {
+    if (isDesktopViewport()) {
+        if (getSidebarCollapsedForViewport()) {
             elements.sidebar.classList.add('collapsed');
         }
     }
 
     const toggleSidebar = () => {
         removeRecentChatsPopover();
-        if (window.innerWidth <= 768) {
+        if (!isDesktopViewport()) {
             elements.sidebar.classList.add('mobile-open');
             elements.mobileOverlay.classList.add('active');
         } else {
             elements.sidebar.classList.toggle('collapsed');
-            safeSetLocalStorageItem(SIDEBAR_COLLAPSED_STORAGE_KEY, elements.sidebar.classList.contains('collapsed'));
+            setSidebarCollapsedForViewport(elements.sidebar.classList.contains('collapsed'));
         }
     };
 
@@ -179,10 +206,22 @@ export function setupSidebar(loadChat) {
     // Track observers and listeners for cleanup
     const _sidebarCleanup = [];
 
-    const resizeHandler = () => {
-        if (window.innerWidth > 768) {
+    // Mirror AMC uiStore.syncHistorySidebarForViewport(): isHistorySidebarOpen = isDesktop()? desktopOpen : mobileOpen
+    const syncSidebarForViewport = () => {
+        const isDesktop = isDesktopViewport();
+        if (isDesktop) {
             closeMobileSidebar();
+            const collapsed = getSidebarCollapsedForViewport();
+            elements.sidebar.classList.toggle('collapsed', collapsed);
+        } else {
+            // On mobile, collapsed pane is not used — remove desktop collapsed to avoid leaking state
+            // Mobile persistence is via mobile key (isolated), but overlay handles visibility
+            elements.sidebar.classList.remove('collapsed');
         }
+    };
+
+    const resizeHandler = () => {
+        syncSidebarForViewport();
     };
     window.addEventListener('resize', resizeHandler);
     _sidebarCleanup.push(() => window.removeEventListener('resize', resizeHandler));
@@ -190,13 +229,14 @@ export function setupSidebar(loadChat) {
     const themeBtn = document.getElementById('quick-theme-btn');
     if (themeBtn) {
         const updateThemeIcon = () => {
-            const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-            themeBtn.title = isDark ? t('sidebar.switchToLight') : t('sidebar.switchToDark');
-            if (isDark) {
-                // Sun Icon (switching to light mode)
+            const theme = document.documentElement.getAttribute('data-theme');
+            const isDarkLike = theme === 'dark' || theme === 'graphite';
+            themeBtn.title = isDarkLike ? t('sidebar.switchToLight') : t('sidebar.switchToDark');
+            if (isDarkLike) {
+                // Sun Icon (switching to light mode) — for dark/graphite
                 themeBtn.innerHTML = `<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>`;
             } else {
-                // Moon Icon (switching to dark mode)
+                // Moon Icon (switching to dark mode) — for light
                 themeBtn.innerHTML = `<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>`;
             }
         };
@@ -217,7 +257,10 @@ export function setupSidebar(loadChat) {
 
         themeBtn.addEventListener('click', async () => {
             const currentTheme = document.documentElement.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            // P0: cycle light → dark → graphite → light (AMC pearl/onyx/graphite)，auto 不经快捷键设置
+            const order = ['light', 'dark', 'graphite'];
+            const idx = order.indexOf(currentTheme);
+            const newTheme = order[(idx + 1) % order.length] || 'light';
 
             const { applyTheme } = await import('./utils.js?v=14');
             applyTheme(newTheme);
@@ -245,7 +288,7 @@ export function setupSidebar(loadChat) {
     miniSearchBtn?.addEventListener('click', () => {
         if (elements.sidebar.classList.contains('collapsed')) {
             elements.sidebar.classList.remove('collapsed');
-            safeSetLocalStorageItem(SIDEBAR_COLLAPSED_STORAGE_KEY, 'false');
+            setSidebarCollapsedForViewport(false);
         }
         setTimeout(() => {
             openHistorySearch();
@@ -266,12 +309,12 @@ export function closeMobileSidebar() {
 
 export function toggleSidebarFromShortcut() {
     removeRecentChatsPopover();
-    if (window.innerWidth <= 768) {
+    if (!isDesktopViewport()) {
         elements.sidebar.classList.toggle('mobile-open');
         elements.mobileOverlay.classList.toggle('active');
     } else {
         elements.sidebar.classList.toggle('collapsed');
-        safeSetLocalStorageItem(SIDEBAR_COLLAPSED_STORAGE_KEY, elements.sidebar.classList.contains('collapsed'));
+        setSidebarCollapsedForViewport(elements.sidebar.classList.contains('collapsed'));
     }
 }
 

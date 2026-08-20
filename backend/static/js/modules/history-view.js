@@ -142,9 +142,29 @@ function createHistoryItem(chat, currentSessionId, callbacks) {
         event.dataTransfer.setData('sessionId', chat.id);
         event.dataTransfer.effectAllowed = 'move';
         item.classList.add('dragging');
+        item.classList.add('is-dragging');
+        // Ghost image — align with AMC drag feedback (clone + setDragImage)
+        try {
+            if (event.dataTransfer.setDragImage) {
+                const ghost = item.cloneNode(true);
+                ghost.style.position = 'fixed';
+                ghost.style.top = '-1000px';
+                ghost.style.left = '-1000px';
+                ghost.style.opacity = '0.9';
+                ghost.style.pointerEvents = 'none';
+                ghost.style.width = `${item.offsetWidth}px`;
+                document.body.appendChild(ghost);
+                event.dataTransfer.setDragImage(ghost, 12, 12);
+                setTimeout(() => { try { ghost.remove(); } catch {} }, 0);
+            }
+        } catch {}
+        // Emit dragover line indicator via custom event: parent will handle .drag-over
     });
     item.addEventListener('dragend', () => {
         item.classList.remove('dragging');
+        item.classList.remove('is-dragging');
+        // Cleanup any lingering drag-over states
+        document.querySelectorAll('.history-item.drag-over, .chat-group.drag-over').forEach(el => el.classList.remove('drag-over'));
     });
 
     const titleSpan = document.createElement('span');
@@ -611,6 +631,7 @@ export function setupHistoryDragAndDrop(callbacks) {
     document.querySelectorAll('.chat-group-drop-target').forEach(target => {
         target.addEventListener('dragover', (event) => {
             event.preventDefault();
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
             target.classList.add('drag-over');
         });
         target.addEventListener('dragleave', (event) => {
@@ -624,6 +645,37 @@ export function setupHistoryDragAndDrop(callbacks) {
             const sessionId = event.dataTransfer.getData('sessionId') || event.dataTransfer.getData('text/plain');
             if (!sessionId) return;
             const groupId = target.dataset.groupId || null;
+            if (await moveChatToGroupAPI(sessionId, groupId)) {
+                await refreshHistoryView(callbacks);
+                showToast(groupId ? t('history.movedToGroup') : t('history.movedUngrouped'), 'success');
+            } else {
+                showToast(t('history.moveFailed'), 'error');
+            }
+        });
+    });
+    // Per-item drag-over line indicator (insertion feedback) — mirror AMC drag ghost inset
+    document.querySelectorAll('.history-item').forEach(item => {
+        item.addEventListener('dragover', (event) => {
+            event.preventDefault();
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+            // Avoid self-highlight
+            if (item.classList.contains('is-dragging') || item.classList.contains('dragging')) return;
+            item.classList.add('drag-over');
+        });
+        item.addEventListener('dragleave', (event) => {
+            if (item.contains(event.relatedTarget)) return;
+            item.classList.remove('drag-over');
+        });
+        item.addEventListener('drop', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            item.classList.remove('drag-over');
+            const sessionId = event.dataTransfer.getData('sessionId') || event.dataTransfer.getData('text/plain');
+            const targetId = item.dataset.id;
+            if (!sessionId || sessionId === targetId) return;
+            // Dropping onto item => move to same group as target (or ungrouped if no group)
+            const targetGroup = item.closest('.chat-group-drop-target, .ungrouped-drop-target');
+            const groupId = targetGroup?.dataset?.groupId || null;
             if (await moveChatToGroupAPI(sessionId, groupId)) {
                 await refreshHistoryView(callbacks);
                 showToast(groupId ? t('history.movedToGroup') : t('history.movedUngrouped'), 'success');
@@ -703,7 +755,7 @@ export function setupHistorySearch(callbacks) {
                 skipLocalFilter: true,
                 searchTermOverride: term,
             });
-        }, 200);
+        }, 120);
     });
     searchInput.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') {
