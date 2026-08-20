@@ -295,3 +295,26 @@ test('P1: shortcuts help groups ordered input/generation/edit/sidebar/help and s
   assert.equal(searchInput.value, '', 'Esc cleared shortcuts search');
   assert.ok(stopped, 'first Esc on shortcuts search stops propagation');
 });
+
+// ---------------------------------------------------------------------------
+// Task 4: sidebar per-viewport & drag
+// ---------------------------------------------------------------------------
+
+test('sidebar collapsed persists per viewport', () => {
+  const js = readFileSync('backend/static/js/modules/sidebar.js', 'utf8');
+  assert.match(js, /sidebarCollapsed_desktop/, 'should have desktop key');
+  assert.match(js, /sidebarCollapsed_mobile/, 'should have mobile key');
+  assert.match(js, /DESKTOP_BP|isDesktop|isDesktopViewport/, 'should have viewport check');
+  const css = readFileSync('backend/static/css/sections/sidebar.css', 'utf8');
+  assert.match(css, /\.history-item\.is-dragging|\.history-item\.drag-over/, 'drag styles should exist');
+});
+
+test('history drag adds ghost class', () => {
+  const css = readFileSync('backend/static/css/sections/sidebar.css', 'utf8');
+  assert.match(css, /\.history-item\.is-dragging/, 'is-dragging class');
+  assert.match(css, /\.history-item\.drag-over|\.chat-group.*drag-over/, 'drag-over outline');
+  assert.match(css, /scrollbar-gutter:\s*stable/, 'scrollbar-gutter stable');
+  const js = readFileSync('backend/static/js/modules/history-view.js', 'utf8');
+  assert.match(js, /is-dragging|dragging/, 'history-view should toggle dragging class');
+  assert.match(js, /dragover|dragstart/, 'history-view should handle dragover/dragstart');
+});
