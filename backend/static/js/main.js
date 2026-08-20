@@ -3,11 +3,17 @@ import { initI18n, applyI18n } from './modules/i18n.js?v=1';
 import { state, setCurrentSessionId, setLiveArtifactsMode } from './modules/state.js?v=5';
 import { initUI, elements } from './modules/ui.js?v=43';
 import { detachCurrentStream, setupChatHandler, syncQuickSettingsFromState } from './modules/chat.js?v=56';
-import { initEvidencePanel } from './modules/evidence-panel.js?v=5';
 import { openHistorySearch, renderHistory, setupHistoryGroups, setupHistorySearch, updateActiveHistoryItem } from './modules/history-view.js?v=28';
-import { setupSettingsModal } from './modules/settings-modal.js?v=60';
+import { initEvidencePanel } from './modules/evidence-panel.js?v=5';
 import { setupShortcutsHelp } from './modules/shortcuts-help.js?v=2';
 import { setupSidebar, toggleSidebarFromShortcut } from './modules/sidebar.js?v=25';
+// 重块按需加载（对齐 AMC vite/chunks.ts HEAVY_PRELOAD_PATTERNS）：settings-modal、live-artifacts 延迟到首次使用
+let _settingsModalCache = null;
+async function getSettingsModal() {
+    if (_settingsModalCache) return _settingsModalCache;
+    _settingsModalCache = await import('./modules/settings-modal.js?v=60');
+    return _settingsModalCache;
+}
 import {
     findOptionForModelPreference,
     initCustomModelSelect,
@@ -57,7 +63,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     setupSidebar(loadChat);
     setupShortcutsHelp();
-    const { refreshSettingsForm } = setupSettingsModal({
+    // 懒加载设置弹窗（对齐 AMC  settings-options 懒块）：首屏不解析 73KB settings-modal
+    let refreshSettingsForm = null;
+    const { setupSettingsModal: setupModalFn } = await getSettingsModal();
+    ({ refreshSettingsForm } = setupModalFn({
         updateModelSelector,
         historyCallbacks,
         onSettingsSaved: () => {
@@ -75,7 +84,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 disabled: Boolean(state.isProcessing),
             });
         },
-    });
+    }));
+    // 预热 LiveArtifacts 块（空闲时），但不阻塞首屏
+    if ('requestIdleCallback' in window) {
+        requestIdleCallback(() => import('./modules/live-artifacts.js?v=53').catch(()=>{}), { timeout: 3000 });
+    } else {
+        setTimeout(() => import('./modules/live-artifacts.js?v=53').catch(()=>{}), 2000);
+    }
     setupHistoryGroups(historyCallbacks);
     setupHistorySearch(historyCallbacks);
     setupSystemThemeListener();
@@ -180,12 +195,36 @@ function setupSystemThemeListener() {
             import('./modules/utils.js?v=14').then(m => m.applyTheme('auto'));
         }
     });
+    // AMC对齐：跨标签设置同步
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            const bc = new BroadcastChannel('justsearch_settings');
+            bc.onmessage = (event) => {
+                if (event.data?.type === 'SETTINGS_UPDATED' && event.data.theme) {
+                    import('./modules/utils.js?v=14').then(m => m.applyTheme(event.data.theme)).catch(()=>{});
+                }
+            };
+            // 系统主题为 auto 时，同步 OS 暗色变化
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+                const cur = localStorage.getItem('justsearch_theme') || 'auto';
+                if (cur === 'auto') {
+                    try { bc.postMessage({ type: 'SETTINGS_UPDATED', theme: 'auto' }); } catch {}
+                }
+            });
+        }
+    } catch {}
 }
 
 function setupPwaInstallPrompt() {
     window.addEventListener('beforeinstallprompt', (event) => {
         event.preventDefault();
     });
+    // AMC对齐：注册 Service Worker（轻量缓存静态资源）
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('/static/sw.js').catch(()=>{});
+        });
+    }
 }
 
 function setupKeyboardShortcuts() {

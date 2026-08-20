@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, copyFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const STATIC = join(ROOT, 'backend', 'static');
@@ -29,6 +30,7 @@ const OUT_DIR = join(STATIC, isDev ? 'build/dev' : 'dist');
 
 const CSS_SECTION_ORDER = [
     'base.css',
+    'tailwind.css',
     'sidebar.css',
     'chat.css',
     'input-modal.css',
@@ -63,20 +65,37 @@ function copyDir(src, dest) {
 }
 
 async function bundleAppJs() {
-    const outfile = join(OUT_DIR, 'js', 'app.js');
-    ensureDir(dirname(outfile));
+    // AMC对齐：esbuild splitting + 动态 import 懒块（settings-modal 等）
+    const outdir = join(OUT_DIR, 'js');
+    ensureDir(outdir);
+    // 清理旧 app.js（splitting 改为目录输出，避免残留）
+    try { rmSync(join(outdir, 'app.js'), { force: true }); } catch {}
     await build({
         entryPoints: [join(STATIC, 'js', 'main.js')],
-        outfile,
         bundle: true,
         format: 'esm',
+        splitting: true,
+        outdir,
+        chunkNames: 'chunks/[name]-[hash]',
         target: 'es2020',
         minify: !isDev,
         sourcemap: isDev,
         legalComments: 'none',
         logLevel: 'info',
     });
-    return readFileSync(outfile);
+    // 主入口为 main.js（被 import 的settings-modal 会成为 chunks/xxx.js）
+    const mainPath = join(outdir, 'main.js');
+    // 兼容旧路径：保留 app.js 符号链接指向 main.js，供 generateIndexHtml 与旧缓存兼容
+    try {
+        const buf = readFileSync(mainPath);
+        writeFileSync(join(outdir, 'app.js'), buf);
+        return buf;
+    } catch {
+        // fallback：若 esbuild 输出 app.js（未启用 splitting 的旧构建）
+        const fallback = join(outdir, 'app.js');
+        if (existsSync(fallback)) return readFileSync(fallback);
+        throw new Error('main.js not found after bundle');
+    }
 }
 
 /** Vendor libs are pre-minified UMD globals; concatenate in dependency order. */
@@ -89,7 +108,35 @@ function bundleVendorJs() {
     return readFileSync(out);
 }
 
+async function buildTailwindCss() {
+    const input = join(STATIC, 'css', 'tailwind-input.css');
+    const output = join(STATIC, 'css', 'sections', 'tailwind.css');
+    if (!existsSync(input)) return;
+    try {
+        const bin = join(ROOT, 'node_modules', '.bin', 'tailwindcss');
+        const useBin = existsSync(bin);
+        const args = useBin
+            ? ['-i', input, '-o', output]
+            : ['@tailwindcss/cli', '-i', input, '-o', output];
+        if (!isDev) args.push('--minify');
+        console.log(`[tailwind] ${useBin ? bin : 'npx'} ${args.join(' ')}`);
+        const result = spawnSync(useBin ? bin : 'npx', args, { stdio: 'inherit', cwd: ROOT });
+        if (result.status !== 0) {
+            console.warn('[tailwind] build failed, writing fallback');
+            if (!existsSync(output)) writeFileSync(output, '/* tailwind fallback — CLI failed */\n');
+        } else if (!existsSync(output)) {
+            writeFileSync(output, '/* tailwind generated empty */\n');
+        } else {
+            console.log(`[tailwind] generated ${output} (${(readFileSync(output).length / 1024).toFixed(1)} KiB)`);
+        }
+    } catch (e) {
+        console.warn('[tailwind] error', e?.message || e);
+        if (!existsSync(output)) writeFileSync(output, '/* tailwind error fallback */\n');
+    }
+}
+
 async function buildCss() {
+    await buildTailwindCss();
     let css = '';
     for (const name of CSS_SECTION_ORDER) {
         const file = join(STATIC, 'css', 'sections', name);
@@ -129,26 +176,31 @@ function generateIndexHtml(assets) {
 
     // Vendor JS bundle: replace the three individual vendor <script> tags
     // (markdown-it, purify, highlight) with a single concatenated vendor.js.
-    // The highlight <link> theme stylesheets stay — chat.js toggles
-    // #hljs-dark / #hljs-light at runtime.
+    // AMC对齐：vendor 延迟加载（defer），避免阻塞首屏解析
     html = html.replace(
-        /<script src="\/static\/vendor\/markdown-it[^"]*"><\/script>\s*/,
+        /<script[^>]*src="\/static\/vendor\/markdown-it[^"]*"[^>]*><\/script>\s*/,
         '',
     );
     html = html.replace(
-        /<script src="\/static\/vendor\/purify[^"]*"><\/script>\s*/,
+        /<script[^>]*src="\/static\/vendor\/purify[^"]*"[^>]*><\/script>\s*/,
         '',
     );
     html = html.replace(
-        /<script src="\/static\/vendor\/highlight[^"]*"><\/script>/,
-        `<script src="${v('/static/dist/js/vendor.js', assets.vendorJs)}"></script>`,
+        /<script[^>]*src="\/static\/vendor\/highlight[^"]*"[^>]*><\/script>/,
+        `<script defer src="${v('/static/dist/js/vendor.js', assets.vendorJs)}"></script>`,
     );
 
-    // Main stylesheet (style.css preload + noscript fallback).
+    // Main stylesheet — AMC 对齐：同步阻塞式，避免 preload onload 闪白
     html = html.replace(
         /\/static\/css\/style\.css\?v=\d+/g,
         v('/static/dist/css/style.css', assets.styleCss),
     );
+    // 若源码仍残留 preload 模式，兜底清理（兼容旧产物）
+    html = html.replace(/<link rel="preload"[^>]*as="style"[^>]*>/g, (m) => {
+        if (m.includes('style.css') || m.includes('fonts.css')) return '';
+        return m;
+    });
+    html = html.replace(/<noscript>[\s\S]*?<\/noscript>/g, '');
 
     // highlight theme stylesheets are copied to dist/vendor and keep their ids
     // (chat.js toggles #hljs-dark / #hljs-light .disabled at runtime).
@@ -204,6 +256,11 @@ async function main() {
     copyDir(join(STATIC, 'assets'), join(OUT_DIR, 'assets'));
     if (existsSync(join(STATIC, 'manifest.json'))) {
         copyFileSync(join(STATIC, 'manifest.json'), join(OUT_DIR, 'manifest.json'));
+    }
+    // PWA: copy sw.js (对齐 AMC VitePWA)
+    if (existsSync(join(STATIC, 'sw.js'))) {
+        copyFileSync(join(STATIC, 'sw.js'), join(OUT_DIR, 'sw.js'));
+        // keep source also accessible via /static/sw.js
     }
     ensureDir(join(OUT_DIR, 'vendor'));
     for (const name of ['highlight-github-dark.min.css', 'highlight-github.min.css']) {

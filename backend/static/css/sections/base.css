@@ -1,10 +1,24 @@
 /* ========================================
    JustSearch — Modern UI Theme System
+   Aligned with AMC-WebUI themeRegistry (Pearl / Onyx / Graphite)
    ======================================== */
+
+/* --- App font / easing (mirrors AMC src/styles/main.css) --- */
+:root {
+    --ease-spring: cubic-bezier(0.2, 0.8, 0.2, 1);
+    --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-out-circ: cubic-bezier(0.075, 0.82, 0.165, 1);
+    --app-font-sans:
+        system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC',
+        'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', sans-serif, 'Apple Color Emoji',
+        'Segoe UI Emoji';
+    --app-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+    --app-text-measure: 75ch;
+}
 
 /* --- Focus Styles (Accessibility) --- */
 :focus-visible {
-    outline: 2px solid var(--primary);
+    outline: 2px solid var(--theme-border-focus, var(--primary));
     outline-offset: 2px;
 }
 
@@ -12,12 +26,16 @@ button:focus-visible,
 select:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
-    outline: 2px solid var(--primary);
+    outline: 2px solid var(--theme-border-focus, var(--primary));
     outline-offset: 1px;
 }
 
 /* --- Text selection (accent tint, mirrors AMC theme-selection tokens) --- */
 ::selection {
+    background: var(--theme-selection-bg);
+    color: var(--theme-selection-text);
+}
+::-moz-selection {
     background: var(--theme-selection-bg);
     color: var(--theme-selection-text);
 }
@@ -43,9 +61,9 @@ textarea:focus-visible {
 }
 
 /* --- Design Tokens ---
-   Canonical palette mirrors AMC-WebUI themeRegistry (Pearl / Onyx).
-   --theme-* are the source of truth; the legacy JustSearch tokens below
-   are aliased to them so the whole app converges on the AMC look. */
+   Canonical palette mirrors AMC-WebUI themeRegistry (Pearl / Onyx / Graphite).
+   --theme-* are the source of truth; legacy JustSearch tokens are aliased
+   to them so the whole app converges on the AMC look. */
 :root {
     color-scheme: light;
 
@@ -66,6 +84,8 @@ textarea:focus-visible {
     --theme-bg-success: rgba(22, 163, 74, 0.1);
     --theme-bg-info: rgba(37, 99, 235, 0.06);
     --theme-bg-warning: rgba(212, 167, 44, 0.1);
+    --theme-bg-warning-strong: #d97706;
+    --theme-bg-warning-strong-hover: #b45309;
 
     --theme-text-primary: #1a1a1f;
     --theme-text-secondary: #4a4a55;
@@ -103,7 +123,7 @@ textarea:focus-visible {
     --theme-icon-attach: #4a4a55;
     --theme-icon-clear-chat: #ffffff;
 
-    /* === Legacy aliases (remapped to AMC tokens) === */
+    /* === Legacy aliases (remapped to AMC tokens) — kept for compat, do not use in new code === */
     --primary: var(--theme-bg-accent);
     --primary-hover: var(--theme-bg-accent-hover);
     --primary-light: rgba(37, 99, 235, 0.09);
@@ -204,6 +224,8 @@ textarea:focus-visible {
     --theme-bg-success: rgba(6, 78, 59, 0.25);
     --theme-bg-info: rgba(30, 58, 138, 0.25);
     --theme-bg-warning: rgba(120, 53, 15, 0.25);
+    --theme-bg-warning-strong: #b45309;
+    --theme-bg-warning-strong-hover: #92400e;
 
     --theme-text-primary: #f5f5f7;
     --theme-text-secondary: #a8a8b3;
@@ -307,27 +329,199 @@ textarea:focus-visible {
     --glass-border: rgba(30, 30, 36, 0.4);
 }
 
-/* --- Global Reset & Base --- */
+/* === AMC Graphite theme (warm gray) — new in P0 === */
+[data-theme="graphite"] {
+    color-scheme: dark;
+
+    --theme-bg-primary: #2b2b2e;
+    --theme-bg-secondary: #1f1f22;
+    --theme-bg-tertiary: #3c3c40;
+    --theme-bg-accent: #4f7cf5;
+    --theme-bg-accent-hover: #3b6bed;
+    --theme-bg-danger: #7f1d1d;
+    --theme-bg-danger-hover: #991b1b;
+    --theme-bg-input: #343438;
+    --theme-bg-code-block: #252528;
+    --theme-bg-code-block-header: #313134;
+    --theme-bg-user-message: #3c3c40;
+    --theme-bg-model-message: transparent;
+    --theme-bg-error-message: rgba(127, 29, 29, 0.28);
+    --theme-bg-success: rgba(6, 95, 70, 0.28);
+    --theme-bg-info: rgba(37, 99, 235, 0.22);
+    --theme-bg-warning: rgba(120, 53, 15, 0.28);
+    --theme-bg-warning-strong: #b45309;
+    --theme-bg-warning-strong-hover: #92400e;
+
+    --theme-text-primary: #f2f2f4;
+    --theme-text-secondary: #b8b8be;
+    --theme-text-tertiary: #88888f;
+    --theme-text-accent: #ffffff;
+    --theme-text-danger: #fca5a5;
+    --theme-text-link: #6ba3fc;
+    --theme-text-code: #f2f2f4;
+    --theme-text-success: #86efac;
+    --theme-text-info: #93c5fd;
+    --theme-text-warning: #fde68a;
+    --theme-user-message-text: #f2f2f4;
+    --theme-model-message-text: #f2f2f4;
+    --theme-error-message-text: #fecaca;
+
+    --theme-border-primary: #3c3c40;
+    --theme-border-secondary: #4c4c52;
+    --theme-border-focus: #4f7cf5;
+
+    --theme-scrollbar-thumb: #4c4c52;
+    --theme-scrollbar-track: transparent;
+
+    --theme-selection-bg: rgba(79, 124, 245, 0.35);
+    --theme-selection-text: #f2f2f4;
+
+    --theme-icon-user: #b8b8be;
+    --theme-icon-model: #6ba3fc;
+    --theme-icon-error: #f87171;
+    --theme-icon-thought: #88888f;
+    --theme-icon-settings: #b8b8be;
+    --theme-icon-history: #b8b8be;
+    --theme-icon-send: #ffffff;
+    --theme-icon-stop: #ffffff;
+    --theme-icon-edit: #b8b8be;
+    --theme-icon-attach: #b8b8be;
+    --theme-icon-clear-chat: #f2f2f4;
+
+    /* === Legacy aliases (remapped to AMC tokens) === */
+    --primary: var(--theme-bg-accent);
+    --primary-hover: var(--theme-bg-accent-hover);
+    --primary-light: rgba(79, 124, 245, 0.14);
+    --primary-text: var(--theme-text-link);
+    --primary-gradient: linear-gradient(135deg, #4f7cf5 0%, #3b6bed 100%);
+    --text-on-primary: var(--theme-text-accent);
+
+    /* Surfaces */
+    --bg: var(--theme-bg-primary);
+    --bg-secondary: var(--theme-bg-secondary);
+    --bg-elevated: var(--theme-bg-tertiary);
+    --bg-input: var(--theme-bg-input);
+
+    /* Text */
+    --text-primary: var(--theme-text-primary);
+    --text-secondary: var(--theme-text-secondary);
+    --text-muted: var(--theme-text-tertiary);
+    --text-inverse: var(--theme-text-accent);
+
+    /* Borders */
+    --border: var(--theme-border-secondary);
+    --border-light: var(--theme-border-primary);
+    --border-focus: var(--theme-border-focus);
+
+    /* Feedback */
+    --success: var(--theme-text-success);
+    --success-light: var(--theme-bg-success);
+    --warning: var(--theme-text-warning);
+    --warning-light: var(--theme-bg-warning);
+    --error: var(--theme-text-danger);
+    --error-light: var(--theme-bg-error-message);
+    --info: var(--theme-text-info);
+    --danger: var(--theme-text-danger);
+
+    /* Shadows */
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 4px 8px -2px rgba(0, 0, 0, 0.5), 0 2px 4px -2px rgba(0, 0, 0, 0.35);
+    --shadow-lg: 0 12px 24px -6px rgba(0, 0, 0, 0.55), 0 4px 8px -4px rgba(0, 0, 0, 0.35);
+    --shadow-xl: 0 24px 48px -12px rgba(0, 0, 0, 0.6), 0 8px 16px -8px rgba(0, 0, 0, 0.4);
+
+    /* Code */
+    --code-bg: var(--theme-bg-code-block);
+    --code-text: #f472b6;
+
+    /* AMC-style Messages */
+    --amc-message-user-bg: var(--theme-bg-user-message);
+    --amc-message-user-text: var(--theme-user-message-text);
+    --amc-message-model-bg: var(--theme-bg-model-message);
+    --amc-message-model-text: var(--theme-model-message-text);
+    --amc-message-action-bg: transparent;
+    --amc-message-action-hover-bg: var(--theme-bg-tertiary);
+    --amc-message-action-text: var(--theme-text-secondary);
+    --amc-message-action-danger: var(--theme-text-danger);
+    --amc-message-code-bg: var(--theme-bg-code-block);
+
+    /* Scrollbar */
+    --scrollbar-thumb: var(--theme-scrollbar-thumb);
+    --scrollbar-thumb-hover: #5a5a62;
+
+    /* Glass */
+    --glass-bg: rgba(43, 43, 46, 0.72);
+    --glass-border: rgba(60, 60, 64, 0.4);
+}
+
+/* --- Global Reset & Base (AMC-aligned) --- */
 *, *::before, *::after {
     box-sizing: border-box;
 }
 
+html {
+    font-family: var(--app-font-sans);
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+#root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+@supports (height: 100dvh) {
+    html,
+    body,
+    #root {
+        height: 100dvh;
+    }
+}
+
+#root {
+    display: flex;
+    flex-direction: column;
+}
+
 body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
+    font-family: inherit;
     background-color: var(--bg);
     color: var(--text-primary);
-    margin: 0;
     display: flex;
-    height: 100vh;
-    height: 100dvh;
+    line-height: 1.5;
+    text-rendering: optimizeLegibility;
     overflow: hidden;
-    transition: background-color var(--transition-smooth), color var(--transition-smooth);
     -webkit-font-smoothing: auto;
     -moz-osx-font-smoothing: auto;
     touch-action: manipulation;  /* Eliminate 300ms tap delay on mobile */
 }
 
-/* --- Custom Scrollbar --- */
+/* AMC 对齐：主题过渡仅限 body/#root/.theme-transition-colors，避免全页闪 */
+body,
+#root,
+.theme-transition-colors {
+    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* --- Custom Scrollbar (AMC custom-scrollbar) --- */
 ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -349,4 +543,40 @@ body {
 * {
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: var(--theme-scrollbar-thumb) transparent;
+}
+.custom-scrollbar::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background-color: var(--theme-scrollbar-thumb);
+    border-radius: 10px;
+    transition: background-color 0.2s;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: var(--theme-border-focus);
+}
+.custom-scrollbar::-webkit-scrollbar-corner {
+    background: transparent;
+}
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+.no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+/* Fade mask for horizontal scroll lists (AMC .fade-mask-x) */
+.fade-mask-x {
+    -webkit-mask-image: linear-gradient(to right, transparent, black 10px, black calc(100% - 10px), transparent);
+    mask-image: linear-gradient(to right, transparent, black 10px, black calc(100% - 10px), transparent);
 }

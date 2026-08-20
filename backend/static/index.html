@@ -2,7 +2,7 @@
 <html lang="zh-CN" data-theme="light">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
     <title>JustSearch</title>
     <link rel="icon" type="image/png" sizes="16x16" href="/static/assets/justsearch-favicon-16.png?v=13">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/assets/justsearch-favicon-32.png?v=13">
@@ -14,14 +14,44 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="description" data-i18n-content="meta.description" content="JustSearch - 基于 AI 和深度搜索的智能研究助手">
     <meta name="keywords" data-i18n-content="meta.keywords" content="AI搜索,深度搜索,智能助手,LLM,搜索增强">
+    <!-- AMC 对齐：同步注入主题变量，避免 FOUC/闪白。两个空 style 与 AMC index.html:15-16 一致 -->
+    <style id="theme-variables"></style>
+    <style id="live-artifact-theme-variables"></style>
+    <style id="critical-theme">html{background:#fefefe}html[data-theme="dark"]{background:#0c0c0e}html[data-theme="graphite"]{background:#2b2b2e}#sidebar{visibility:hidden}</style>
     <!-- 在 CSS 加载前同步设置主题与语言，避免刷新时闪白/闪错语言(FOUC) -->
     <script>
         (function () {
             try {
                 var k = 'justsearch_theme';
                 var t = localStorage.getItem(k) || 'auto';
-                var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-                document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+                // P0: 支持 light/dark/graphite/auto 四档，对齐 AMC pearl/onyx/graphite
+                var theme = t;
+                if (theme !== 'light' && theme !== 'dark' && theme !== 'graphite') {
+                    // auto 或非法值 → 跟随系统（light/dark），graphite 需显式选择
+                    var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                    theme = prefersDark ? 'dark' : 'light';
+                }
+                document.documentElement.setAttribute('data-theme', theme);
+                // AMC themeDom.ts: 同步写入 #theme-variables，无需等待外链 CSS
+                var tag = document.getElementById('theme-variables');
+                var liveTag = document.getElementById('live-artifact-theme-variables');
+                var dark = theme === 'dark';
+                var graphite = theme === 'graphite';
+                if (tag) {
+                    // 仅写首屏关键变量，其余由外链 base.css 兜底；与 AMC themeRegistry Pearl/Onyx/Graphite 对齐
+                    tag.textContent = dark
+                        ? ':root{--theme-bg-primary:#0c0c0e;--theme-bg-secondary:#08080a;--theme-text-primary:#f5f5f7;--theme-bg-tertiary:#1c1c20;--theme-text-secondary:#a8a8b3;--theme-text-tertiary:#78787f;--theme-border-primary:#1e1e24;--theme-border-secondary:#2c2c34}'
+                        : graphite
+                            ? ':root{--theme-bg-primary:#2b2b2e;--theme-bg-secondary:#1f1f22;--theme-text-primary:#f2f2f4;--theme-bg-tertiary:#3c3c40;--theme-text-secondary:#b8b8be;--theme-text-tertiary:#88888f;--theme-border-primary:#3c3c40;--theme-border-secondary:#4c4c52}'
+                            : ':root{--theme-bg-primary:#fefefe;--theme-bg-secondary:#f6f7f9;--theme-text-primary:#1a1a1f;--theme-bg-tertiary:#edeef2;--theme-text-secondary:#4a4a55;--theme-text-tertiary:#75757f;--theme-border-primary:#eaeaef;--theme-border-secondary:#d5d5dc}';
+                }
+                if (liveTag) {
+                    // graphite 与 dark 共用 live-artifact 暗色 token，视觉一致
+                    var isLight = theme === 'light';
+                    liveTag.textContent = isLight
+                        ? ':root{--amc-live-artifact-text:#111827;--amc-live-artifact-muted:#6b7280;--amc-live-artifact-border:#e5e7eb;--amc-live-artifact-accent:#2563eb}'
+                        : ':root{--amc-live-artifact-text:#f4f4f5;--amc-live-artifact-muted:#a1a1aa;--amc-live-artifact-border:#27272a;--amc-live-artifact-accent:#38bdf8}';
+                }
             } catch (e) {}
             try {
                 var lang = localStorage.getItem('justsearch_language') || 'zh';
@@ -30,20 +60,23 @@
                     : 'zh-CN');
                 document.documentElement.lang = resolved;
             } catch (e) {}
+            // 主题就绪后揭示侧栏，避免错误主题壳闪现（AMC 空 #root 同理）
+            try {
+                var sb = document.getElementById('sidebar');
+                // 延迟到下一微任务，确保外链 CSS 已开始加载；若 CSS 后到，仍有 data-theme 兜底
+                if (sb) requestAnimationFrame(function(){ sb.style.visibility = ''; });
+            } catch (e) {}
         })();
     </script>
-    <link rel="preload" href="/static/css/style.css?v=50" as="style" onload="this.onload=null;this.rel='stylesheet'">
-    <link rel="preload" href="/static/fonts/fonts.css?v=1" as="style" onload="this.onload=null;this.rel='stylesheet'">
-    <noscript>
-        <link rel="stylesheet" href="/static/css/style.css?v=50">
-        <link rel="stylesheet" href="/static/fonts/fonts.css?v=1">
-    </noscript>
+    <!-- AMC 对齐：同步阻塞式 CSS，放弃 preload onload 异步（消除 FOUC） -->
+    <link rel="stylesheet" href="/static/css/style.css?v=50">
+    <link rel="stylesheet" href="/static/fonts/fonts.css?v=1">
     <!-- 三方库本地托管(markdown-it / dompurify / highlight.js),避免 jsdelivr CDN 在国内超时 -->
-    <script src="/static/vendor/markdown-it.min.js?v=14.0.0"></script>
-    <script src="/static/vendor/purify.min.js?v=3.0.8"></script>
+    <script src="/static/vendor/markdown-it.min.js?v=14.0.0" defer></script>
+    <script src="/static/vendor/purify.min.js?v=3.0.8" defer></script>
     <link rel="stylesheet" href="/static/vendor/highlight-github-dark.min.css?v=11.9.0" id="hljs-dark">
     <link rel="stylesheet" href="/static/vendor/highlight-github.min.css?v=11.9.0" id="hljs-light" disabled>
-    <script src="/static/vendor/highlight.min.js?v=11.9.0"></script>
+    <script src="/static/vendor/highlight.min.js?v=11.9.0" defer></script>
 </head>
 <body>
     <a href="#user-input" class="skip-link" data-i18n="hero.skipToInput">跳到输入框</a>
@@ -401,6 +434,7 @@
                                     <select id="theme-select">
                                         <option value="light" data-i18n="settings.themeLight">浅色</option>
                                         <option value="dark" data-i18n="settings.themeDark">深色</option>
+                                        <option value="graphite" data-i18n="settings.themeGraphite">中性灰</option>
                                         <option value="auto" data-i18n="settings.themeAuto">跟随系统</option>
                                     </select>
                                 </div>

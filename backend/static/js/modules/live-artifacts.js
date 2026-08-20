@@ -1112,17 +1112,42 @@ function shouldMergeSupportingBlocks(block, language) {
  * once at final bake. Keep the ordering identical to the old buildSrcdoc body so
  * final-state rendering is byte-for-byte unchanged.
  */
+const _finalBakeCache = new Map(); // hash -> baked html, 对齐 AMC 缓存最终态
+function _hashForBake(html, themeId, sources) {
+    let h = 0;
+    const s = String(html || '');
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    const srcKey = Array.isArray(sources) ? sources.length + ':' + (sources[0]?.url || '').slice(0, 32) : '0';
+    return `${s.length}:${h >>> 0}:${themeId}:${srcKey}`;
+}
 function processArtifactHtmlForDisplay(html, { streaming = false, sources = [], themeId } = {}) {
     const resolvedTheme = themeId || resolveLiveArtifactThemeId();
+    if (!streaming) {
+        const key = _hashForBake(html, resolvedTheme, sources);
+        if (_finalBakeCache.has(key)) return _finalBakeCache.get(key);
+    }
     // Keep the same order as the legacy buildSrcdoc body: clip-shell neutralization
     // first, then force-open details (order is irrelevant between the two, but
     // preserve it to minimize diff risk on final-state output).
     let out = sanitizeClippingStylesInHtml(html);
-    if (streaming) return out;
+    if (streaming) {
+        // AMC对齐：流式也做暗色适配，避免“白一下再黑”闪烁（轻量，不含 details/citations）
+        if (resolvedTheme === 'dark') {
+            out = adaptArtifactHtmlForTheme(out, resolvedTheme);
+            out = materializeLiveArtifactThemeVars(out, resolvedTheme);
+        }
+        return out;
+    }
     out = forceOpenAllDetailsInHtml(out);
     out = adaptArtifactHtmlForTheme(out, resolvedTheme);
     out = materializeLiveArtifactThemeVars(out, resolvedTheme);
     out = linkArtifactCitationsInHtml(out, sources);
+    const key = _hashForBake(html, resolvedTheme, sources);
+    if (_finalBakeCache.size > 80) {
+        const first = _finalBakeCache.keys().next().value;
+        if (first) _finalBakeCache.delete(first);
+    }
+    _finalBakeCache.set(key, out);
     return out;
 }
 
@@ -2826,11 +2851,8 @@ function renderInlineArtifactFrame(container, artifact) {
     frame.dataset.liveArtifactHeightKey = heightKey;
     frame.dataset.liveArtifactProbeHtml = contentHtml;
 
-    // Parent-side height probe is the most expensive per-tick step (full DOM clone
-    // + forced synchronous layout). While streaming, only probe on the initial
-    // mount — the in-iframe bridge reports authoritative heights via resize and
-    // grows the viewport, so mid-stream re-probing buys nothing. Final-state bake
-    // always probes (below), and the memo keyed by content hash dedups repeats.
+    // Parent-side height probe：流式仅首挂探高，最终态需同步种子高度避免“滑动变空白”（视口 320 截断长文）。
+    // 已加 _finalBakeCache + heightProbeMemo，二次探针命中缓存 <5ms，不会再堵 80ms。
     if (!artifact.isStreaming || frame.dataset.liveArtifactFreshMount === '1') {
         syncInlineArtifactFrameHeight(viewport, frame, artifact, container);
     }
@@ -2856,14 +2878,8 @@ function renderInlineArtifactFrame(container, artifact) {
         frame.dataset.liveArtifactStreamShell = '1';
     } else {
         delete frame.dataset.liveArtifactStreamShell;
-        // Final-state backstop: after baking the real srcdoc, re-measure the
-        // parent probe once. syncInlineArtifactFrameHeight is allowShrink:false,
-        // so this only ever grows the viewport — covering the case where the
-        // initial seed measured short (fonts/layout not yet committed) AND the
-        // bridge resize message was lost (e.g. background tab rAF suspension).
-        // A single sweep keeps the extra layout cost bounded; the bridge resize
-        // remains the authoritative growth source.
-        scheduleFinalHeightSweep(viewport, frame, artifact, container, 500);
+        // AMC 对齐：最终态不再做 500ms parent probe 二次撑高（曾导致“码完白一下再撑开”的抖动）。
+        // 高度完全由 iframe bridge 的 resize 驱动；若 bridge 丢失（后台 tab），由 pingAndRebuild 兜底。
     }
     // Content path: postMessage into the stable shell (retries + load handler).
     // For final state this pushes the fully-processed (theme-adapted, citation-
@@ -2971,17 +2987,12 @@ function postInlineArtifactStream(frame, html, options = {}) {
         }
     };
     // Retries cover the common race where srcdoc navigation has not installed the
-    // bridge listener yet (setTimeout(0) alone is often too early). A final push
-    // needs fewer retries because the shell has long been mounted by then.
+    // bridge listener yet (setTimeout(0) alone is often too early). 去重重试，避免最终态白闪：最终态仅 1 次重试，流式 1 次
     send();
     if (isFinal) {
         setTimeout(send, 50);
-        setTimeout(send, 200);
     } else {
-        setTimeout(send, 0);
         setTimeout(send, 50);
-        setTimeout(send, 150);
-        setTimeout(send, 400);
     }
 }
 

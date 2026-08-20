@@ -52,7 +52,7 @@ test('buildDisplayProviderRows renders the full catalog and overlays saved confi
 
 test('buildDisplayProviderRows merges saved catalog providers instead of duplicating them', () => {
     const { buildDisplayProviderRows } = helpers;
-    // All 7 catalog providers saved → exactly 7 rows, all presets.
+    // All 9 catalog providers saved → exactly 9 rows, all presets.
     const saved = [
         { id: 'openai', name: 'OpenAI', api_key: 'a', base_url: 'https://api.openai.com/v1', model_id: 'gpt-4.1' },
         { id: 'deepseek', name: 'DeepSeek', api_key: 'b', base_url: 'https://api.deepseek.com/v1', model_id: 'deepseek-v4-flash' },
@@ -61,11 +61,13 @@ test('buildDisplayProviderRows merges saved catalog providers instead of duplica
         { id: 'qwen', name: 'Qwen', api_key: 'e', base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', model_id: 'qwen3-max' },
         { id: 'kimi', name: 'Kimi', api_key: 'f', base_url: 'https://api.moonshot.ai/v1', model_id: 'kimi-k3' },
         { id: 'glm', name: 'GLM', api_key: 'g', base_url: 'https://open.bigmodel.cn/api/paas/v4', model_id: 'glm-5.2' },
+        { id: 'meta', name: 'Meta', api_key: 'h', base_url: 'https://api.meta.ai/v1', model_id: 'muse-spark-1.2' },
+        { id: 'hunyuan', name: 'Hunyuan', api_key: 'i', base_url: 'https://api.hunyuan.cloud.tencent.com/v1', model_id: 'hunyuan-turbos-latest' },
     ];
     const rows = buildDisplayProviderRows(saved);
-    assert.equal(rows.length, 7);
+    assert.equal(rows.length, 9);
     assert.ok(rows.every(row => row.isPreset), 'all saved catalog providers stay presets');
-    assert.equal(rows.map(row => row.provider.id).join(','), 'openai,deepseek,anthropic,openrouter,qwen,kimi,glm');
+    assert.equal(rows.map(row => row.provider.id).join(','), 'openai,deepseek,anthropic,openrouter,qwen,kimi,glm,meta,hunyuan');
 });
 
 test('isProviderEnabled treats missing flag as enabled and only honors explicit false', () => {

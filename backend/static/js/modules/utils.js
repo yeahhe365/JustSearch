@@ -19,11 +19,7 @@ function getMdInstance() {
                     return hljs.highlight(str, { language: lang, ignoreIllegals: true }).value;
                 } catch (__) {}
             }
-            if (window.hljs) {
-                try {
-                    return hljs.highlightAuto(str).value;
-                } catch (__) {}
-            }
+            // AMC对齐：移除同步 highlightAuto（全量语言检测 ~80ms），流式先转义，空闲再高亮
             return mdInstance.utils.escapeHtml(str);
         }
     });
@@ -185,15 +181,57 @@ export function applyTheme(theme) {
         }
     } catch (e) { /* localStorage 不可用时静默降级 */ }
 
-    if (!theme || theme === 'auto') {
-        // Auto-detect system preference
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
-        _updateHljsTheme(prefersDark);
-    } else {
-        document.documentElement.setAttribute('data-theme', theme);
-        _updateHljsTheme(theme === 'dark');
+    // P0: 支持 light/dark/graphite/auto 四档，对齐 AMC pearl/onyx/graphite
+    const VALID_THEMES = new Set(['light', 'dark', 'graphite']);
+    let resolvedTheme = theme;
+    if (!VALID_THEMES.has(theme)) {
+        // auto 或非法值 → 跟随系统；graphite 需显式选择，不随系统自动切
+        const prefersDark = typeof window !== 'undefined'
+            && window.matchMedia
+            && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        resolvedTheme = prefersDark ? 'dark' : 'light';
     }
+    document.documentElement.setAttribute('data-theme', resolvedTheme);
+    const isDarkLike = resolvedTheme === 'dark' || resolvedTheme === 'graphite';
+    _updateHljsTheme(isDarkLike);
+
+    // AMC 对齐：同步写入 #theme-variables / #live-artifact-theme-variables，避免等待外链重绘
+    try {
+        const themeTag = document.getElementById('theme-variables');
+        if (themeTag) {
+            if (resolvedTheme === 'dark') {
+                themeTag.textContent = ':root{--theme-bg-primary:#0c0c0e;--theme-bg-secondary:#08080a;--theme-text-primary:#f5f5f7;--theme-bg-tertiary:#1c1c20;--theme-text-secondary:#a8a8b3;--theme-text-tertiary:#78787f;--theme-border-primary:#1e1e24;--theme-border-secondary:#2c2c34}';
+            } else if (resolvedTheme === 'graphite') {
+                themeTag.textContent = ':root{--theme-bg-primary:#2b2b2e;--theme-bg-secondary:#1f1f22;--theme-text-primary:#f2f2f4;--theme-bg-tertiary:#3c3c40;--theme-text-secondary:#b8b8be;--theme-text-tertiary:#88888f;--theme-border-primary:#3c3c40;--theme-border-secondary:#4c4c52}';
+            } else {
+                themeTag.textContent = ':root{--theme-bg-primary:#fefefe;--theme-bg-secondary:#f6f7f9;--theme-text-primary:#1a1a1f;--theme-bg-tertiary:#edeef2;--theme-text-secondary:#4a4a55;--theme-text-tertiary:#75757f;--theme-border-primary:#eaeaef;--theme-border-secondary:#d5d5dc}';
+            }
+        }
+        const liveTag = document.getElementById('live-artifact-theme-variables');
+        if (liveTag) {
+            const isLight = resolvedTheme === 'light';
+            liveTag.textContent = isLight
+                ? ':root{--amc-live-artifact-text:#111827;--amc-live-artifact-muted:#6b7280;--amc-live-artifact-border:#e5e7eb;--amc-live-artifact-accent:#2563eb}'
+                : ':root{--amc-live-artifact-text:#f4f4f5;--amc-live-artifact-muted:#a1a1aa;--amc-live-artifact-border:#27272a;--amc-live-artifact-accent:#38bdf8}';
+        }
+        // 揭示侧栏（首屏 hidden 兜底）
+        const sb = document.getElementById('sidebar');
+        if (sb) sb.style.visibility = '';
+        const crit = document.getElementById('critical-theme');
+        if (crit && crit.parentNode) {
+            // 首帧已过，可移除阻塞用内联底色
+            setTimeout(() => { try { crit.remove(); } catch {} }, 300);
+        }
+    } catch {}
+
+    // AMC对齐：BroadcastChannel 跨标签同步主题（参考 AMC settingsStore BroadcastChannel）
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            const bc = new BroadcastChannel('justsearch_settings');
+            bc.postMessage({ type: 'SETTINGS_UPDATED', theme });
+            bc.close();
+        }
+    } catch {}
 
     // Rebuild open Live Artifact iframes so dark/light theme tokens stay readable.
     // Mirrors AMC re-injecting --amc-live-artifact-* when themeId changes.

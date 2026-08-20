@@ -58,6 +58,20 @@ export const PROVIDER_CATALOG = [
         models: ['glm-5.2'],
         logo: '/static/assets/providers/glm.png',
     },
+    {
+        id: 'meta',
+        label: 'Meta',
+        baseUrl: 'https://api.meta.ai/v1',
+        models: ['muse-spark-1.2', 'muse-spark-1.5', 'muse-spark-h3'],
+        logo: '/static/assets/providers/meta.svg',
+    },
+    {
+        id: 'hunyuan',
+        label: '混元 Hunyuan',
+        baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
+        models: ['hunyuan-turbos-latest', 'hunyuan-turbos', 'hunyuan-large'],
+        logo: '/static/assets/providers/hunyuan.svg',
+    },
 ];
 
 /** Fallback logo for providers that are not in the catalog. */
