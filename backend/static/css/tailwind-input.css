@@ -1,0 +1,13 @@
+/* JustSearch Tailwind entry — incremental adoption, aligned with AMC-WebUI tailwindcss@4 */
+@import "tailwindcss";
+
+/* AMC-aligned theme mapping: let Tailwind's `bg-*` utilities fall back to JustSearch tokens when needed */
+@theme {
+    --color-primary: var(--theme-bg-accent);
+    --radius-pill: 1.625rem;
+}
+
+/* Tell Tailwind where to look for class names (v4 @source replaces tailwind.config.js content) */
+@source "../index.html";
+@source "../js/modules/**/*.js";
+@source "./sections/**/*.css";

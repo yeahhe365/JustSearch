@@ -21,10 +21,10 @@
     /* 高于消息气泡 sticky 头像 (.message-side z-index: 10)，避免模型下拉被挡住 */
     position: relative;
     z-index: 40;
-    background: var(--glass-bg);
-    backdrop-filter: blur(var(--glass-blur));
-    -webkit-backdrop-filter: blur(var(--glass-blur));
-    /* border-bottom removed — clean look */
+    background: color-mix(in srgb, var(--theme-bg-secondary, var(--glass-bg)) 70%, transparent);
+    backdrop-filter: blur(12px) saturate(1.4);
+    -webkit-backdrop-filter: blur(12px) saturate(1.4);
+    border-bottom: 1px solid var(--theme-border-primary, transparent);
     min-height: 48px;
 }
 
@@ -392,6 +392,9 @@
     padding-inline: 0;
     position: relative;
     animation: messageIn 0.3s ease;
+    /* AMC对齐：视口外消息跳过渲染，轻量虚拟化（react-virtuoso 前的 80% 收益） */
+    content-visibility: auto;
+    contain-intrinsic-size: 0 500px;
 }
 
 .message:first-child {

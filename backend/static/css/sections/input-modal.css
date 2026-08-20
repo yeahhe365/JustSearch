@@ -11,9 +11,9 @@
     justify-content: space-between;
     gap: 12px;
     padding: 8px 12px;
-    border: 1px solid color-mix(in srgb, #f59e0b 45%, var(--amc-border, #d9d9e3));
+    border: 1px solid color-mix(in srgb, var(--theme-bg-warning-strong, #f59e0b) 45%, var(--amc-border, #d9d9e3));
     border-radius: 12px;
-    background: color-mix(in srgb, #f59e0b 12%, var(--amc-bg-input, #fff));
+    background: color-mix(in srgb, var(--theme-bg-warning-strong, #f59e0b) 12%, var(--amc-bg-input, #fff));
     color: var(--amc-text-primary, #111);
     box-sizing: border-box;
 }
@@ -54,7 +54,7 @@
 }
 
 .edit-message-cancel-btn:hover {
-    background: color-mix(in srgb, #f59e0b 18%, transparent);
+    background: color-mix(in srgb, var(--theme-bg-warning-strong, #f59e0b) 18%, transparent);
     color: var(--amc-text-primary, #111);
 }
 
@@ -63,20 +63,22 @@
 }
 
 #input-area.is-editing-message .input-box {
-    border-color: color-mix(in srgb, #f59e0b 55%, var(--amc-border, #d9d9e3));
-    box-shadow: 0 0 0 1px color-mix(in srgb, #f59e0b 25%, transparent);
+    border-color: color-mix(in srgb, var(--theme-bg-warning-strong, #f59e0b) 55%, var(--amc-border, #d9d9e3));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-bg-warning-strong, #f59e0b) 25%, transparent);
 }
 
 #input-area.is-editing-message #send-btn:not(.processing) {
-    background: #f59e0b;
+    background: var(--theme-bg-warning-strong, #f59e0b);
     color: #fff;
 }
 
 #input-area.is-editing-message #send-btn:not(.processing):hover {
-    background: #d97706;
+    background: var(--theme-bg-warning-strong-hover, #d97706);
 }
 
 #input-area {
+    --amc-radius-lg: 1.625rem; /* AMC COMPOSER_SHELL_RADIUS_CLASS pill */
+    --amc-composer-shadow: var(--shadow-md);
     position: relative;
     flex-shrink: 0;
     width: 100%;
@@ -126,6 +128,28 @@
     --amc-success-bg: rgba(16, 185, 129, 0.15);
     --amc-success-text: #34d399;
     --primary-gradient: #4f7cf5;
+}
+
+[data-theme="graphite"] #input-area {
+    --amc-bg-input: #343438;          /* Graphite bgInput */
+    --amc-border: #4c4c52;            /* borderSecondary */
+    --amc-border-focus: #4f7cf5;      /* borderFocus (accent blue) */
+    --amc-btn-hover: #3c3c40;         /* bgTertiary */
+    --amc-text-primary: #f2f2f4;
+    --amc-text-secondary: #b8b8be;
+    --amc-text-tertiary: #88888f;
+    --amc-icon-color: #b8b8be;
+    --amc-accent: #4f7cf5;
+    --amc-accent-hover: #3b6bed;
+    --amc-accent-text: #ffffff;
+    --amc-danger: #f87171;
+    --amc-danger-hover: #fca5a5;
+    --amc-success-bg: rgba(134, 239, 172, 0.15);
+    --amc-success-text: #86efac;
+    --primary-gradient: #4f7cf5;
+    /* P1: expose theme warning tokens for edit banner */
+    --amc-warning: var(--theme-bg-warning-strong, #d97706);
+    --amc-warning-hover: var(--theme-bg-warning-strong-hover, #b45309);
 }
 
 /* Search intensity presets above the input box */
@@ -252,17 +276,26 @@
     width: 100%;
     max-width: 44rem;
     position: relative; /* anchor for the slash-command menu */
-    background-color: var(--amc-bg-input);
-    border: 1px solid var(--amc-border);
-    border-radius: 1.625rem; /* AMC composer pill radius */
+    background: var(--theme-bg-input);
+    background-color: var(--theme-bg-input);
+    border: 1px solid var(--theme-border-secondary);
+    border-radius: var(--amc-radius-lg);
     padding: 0.375rem 0.75rem;
     display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.06);
-    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+    box-shadow: var(--amc-composer-shadow);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
     box-sizing: border-box;
+}
+
+#input-area .input-box {
+    border-radius: var(--amc-radius-lg);
+    border: 1px solid var(--theme-border-secondary);
+    background: var(--theme-bg-input);
+    box-shadow: var(--amc-composer-shadow);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 @media (min-width: 640px) {
@@ -276,13 +309,18 @@
 }
 
 .input-box:focus-within {
-    border-color: var(--amc-border-focus);
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
-    background-color: var(--amc-bg-input);
+    border-color: var(--theme-border-focus);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-border-focus) 15%, transparent);
+    background-color: var(--theme-bg-input);
+}
+
+#input-area .input-box:focus-within {
+    border-color: var(--theme-border-focus);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-border-focus) 15%, transparent);
 }
 
 [data-theme="dark"] .input-box:focus-within {
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-border-focus) 15%, transparent);
 }
 
 #user-input {
@@ -315,7 +353,9 @@
     width: 100%;
     border-top: none;
     padding-top: 4px;
+    gap: 0.5rem; /* COMPOSER_CLUSTER_GAP_CLASS gap-0.5 sm:gap-1 */
 }
+@media (min-width: 640px){ .input-toolbar{ gap: 0.75rem; } }
 
 .input-toolbar-left {
     display: flex;
@@ -340,8 +380,8 @@
     margin: 0 auto 10px;
     padding: 10px 14px;
     border-radius: 12px;
-    border: 1px solid color-mix(in srgb, #f59e0b 35%, var(--amc-border));
-    background: color-mix(in srgb, #f59e0b 12%, var(--amc-bg-input));
+    border: 1px solid color-mix(in srgb, var(--theme-bg-warning-strong, #f59e0b) 35%, var(--amc-border));
+    background: color-mix(in srgb, var(--theme-bg-warning-strong, #f59e0b) 12%, var(--amc-bg-input));
     color: var(--amc-text-primary);
     font-size: 13px;
     line-height: 1.45;
@@ -356,9 +396,9 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #f59e0b;
+    background: var(--theme-bg-warning-strong, #f59e0b);
     flex-shrink: 0;
-    box-shadow: 0 0 0 3px color-mix(in srgb, #f59e0b 25%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-bg-warning-strong, #f59e0b) 25%, transparent);
 }
 
 .bridge-status-banner-text {
@@ -3282,4 +3322,21 @@
 .settings-search-flash {
     animation: settingsFlashHighlight 1.4s ease;
     border-radius: 8px;
+}
+
+/* P1: search highlight + keyboard selection — AMC SettingsSearchResults parity */
+.settings-search-highlight {
+    background: var(--theme-selection-bg);
+    color: var(--theme-selection-text);
+    border-radius: 2px;
+    padding: 0 1px;
+}
+.settings-search-result.is-selected,
+.settings-search-result[aria-selected="true"] {
+    background: var(--theme-bg-tertiary);
+    border-left: 2px solid var(--theme-border-focus);
+}
+.settings-search-result.is-selected .settings-search-result-label,
+.settings-search-result[aria-selected="true"] .settings-search-result-label {
+    color: var(--theme-text-primary);
 }
