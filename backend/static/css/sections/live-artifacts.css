@@ -1,6 +1,10 @@
 /* ========================================
-   Live Artifacts
+   Live Artifacts — AMC ArtifactFrame parity
    ======================================== */
+.artifact-frame { border-radius: var(--radius-xl); border: 1px solid var(--theme-border-secondary); background: var(--theme-bg-primary); box-shadow: var(--shadow-sm); }
+.artifact-toolbar { background: color-mix(in srgb, var(--theme-bg-secondary) 70%, transparent); backdrop-filter: blur(12px); }
+[data-theme="dark"] .artifact-frame, [data-theme="graphite"] .artifact-frame { box-shadow: var(--shadow-md); }
+
 .live-artifact-inline-frame {
     width: 100%;
     margin: 12px 0;
@@ -15,7 +19,9 @@
     height: 320px;
     overflow: hidden;
     border-radius: 8px;
-    background: transparent;
+    background: var(--theme-bg-secondary);
+    /* 避免最终态切换时白闪：与 iframe 同色，高度变化用 opacity 过渡而非空白 */
+    transition: background-color 0.3s ease;
 }
 
 .live-artifact-inline-iframe {
@@ -23,7 +29,9 @@
     width: 100%;
     height: 100%;
     border: 0;
-    background: transparent;
+    background: var(--theme-bg-primary);
+    /* 保持与视口同色，流式 patch 时不露白底 */
+    color-scheme: light dark;
 }
 
 .live-artifact-source-strip {

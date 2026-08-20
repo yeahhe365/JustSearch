@@ -1,6 +1,15 @@
 /* ========================================
-   Markdown Rendering
+   Markdown Rendering — AMC typography parity
    ======================================== */
+/* 标题度量与 AMC --app-text-measure 一致 */
+.markdown-content { max-width: var(--app-text-measure, 75ch); line-height: 1.65; }
+.markdown-content h1, .markdown-content h2 { letter-spacing: -0.015em; }
+.markdown-content pre { background: var(--theme-bg-code-block); border: 1px solid var(--theme-border-primary); border-radius: var(--radius-md); }
+.code-block-header { background: var(--theme-bg-code-block-header); border-bottom: 1px solid var(--theme-border-primary); color: var(--theme-text-secondary); }
+.markdown-content code:not(pre code) { background: var(--theme-bg-tertiary); color: var(--theme-text-code); border-radius: 6px; padding: 0.15em 0.35em; }
+.markdown-content blockquote { border-left: 3px solid var(--theme-border-secondary); color: var(--theme-text-secondary); }
+.markdown-content a { color: var(--theme-text-link); text-underline-offset: 2px; }
+.markdown-content a:hover { text-decoration: underline; }
 .markdown-body {
     max-width: 100%;
     min-width: 0;
@@ -77,24 +86,27 @@
     font-style: italic;
 }
 
-.markdown-body a {
-    color: var(--primary);
+.markdown-body a,
+.markdown-content a {
+    color: var(--theme-text-link);
     font-weight: 500;
     text-decoration: none;
+    text-underline-offset: 2px;
     transition: color var(--transition-fast);
 }
 
-.markdown-body a:hover {
+.markdown-body a:hover,
+.markdown-content a:hover {
     text-decoration: underline;
 }
 
-.markdown-body blockquote {
-    color: inherit;
-    border-left: 3px solid currentColor;
+.markdown-body blockquote,
+.markdown-content blockquote {
+    color: var(--theme-text-secondary);
+    border-left: 3px solid var(--theme-border-secondary);
     background-color: transparent;
     border-radius: 0;
     margin: 0.5rem 0;
-    opacity: 0.85;
     padding: 0.25rem 0 0.25rem 1rem;
 }
 
@@ -174,10 +186,11 @@
 }
 
 /* Code */
-.markdown-body pre {
-    background-color: var(--amc-message-code-bg);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+.markdown-body pre,
+.markdown-content pre {
+    background: var(--theme-bg-code-block);
+    border: 1px solid var(--theme-border-primary);
+    border-radius: var(--radius-md);
     line-height: 1.5;
     margin: 0.75rem 0;
     overflow-x: auto;
@@ -196,16 +209,16 @@
     padding: 0;
 }
 
-.markdown-body code:not(pre code) {
-    color: var(--primary-text);
-    background-color: var(--primary-light);
-    border: 1px solid var(--primary-light);
+.markdown-body code:not(pre code),
+.markdown-content code:not(pre code) {
+    color: var(--theme-text-code);
+    background: var(--theme-bg-tertiary);
     border-radius: 6px;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: 0.9em;
     font-weight: 500;
     line-height: 1.4;
-    padding: 0.2em 0.4em;
+    padding: 0.15em 0.35em;
 }
 
 .markdown-body pre.code-block-wrapper {
@@ -222,10 +235,10 @@
     gap: 0.75rem;
     min-height: 38px;
     padding: 0.45rem 0.75rem;
-    background-color: color-mix(in srgb, var(--bg) 72%, var(--bg-secondary));
-    border-bottom: 1px solid var(--border);
+    background: var(--theme-bg-code-block-header);
+    border-bottom: 1px solid var(--theme-border-primary);
     border-radius: 12px 12px 0 0;
-    color: var(--text-muted);
+    color: var(--theme-text-secondary);
     font-size: 12px;
 }
 
