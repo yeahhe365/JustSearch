@@ -6,9 +6,12 @@
 // editable element. `Esc` closes it via the shared modal Esc handler in
 // main.js; this module keeps its own open/close state in sync with the modal
 // class so the `?` toggle never goes stale.
+// P1: grouping order input/generation/edit/sidebar/help aligns with AMC,
+//     search box uses same <mark> highlight as settings-search, empty state.
 // ===========================================================================
 
 import { t } from './i18n.js?v=1';
+import { escapeHtml } from './utils.js?v=14';
 
 export const SHORTCUTS = [
     { groupKey: 'shortcuts.group.input', key: 'Enter', descKey: 'shortcuts.desc.sendMessage' },
@@ -25,6 +28,25 @@ export const SHORTCUTS = [
     { groupKey: 'shortcuts.group.help', key: '?', descKey: 'shortcuts.desc.openHelp' },
 ];
 
+const GROUP_ORDER = [
+    'shortcuts.group.input',
+    'shortcuts.group.generation',
+    'shortcuts.group.edit',
+    'shortcuts.group.sidebar',
+    'shortcuts.group.help',
+];
+
+function escapeRegExp(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightText(text, q) {
+    if (!q) return escapeHtml(text);
+    const esc = escapeHtml(text);
+    const re = new RegExp(`(${escapeRegExp(q)})`, 'ig');
+    return esc.replace(re, '<mark class="settings-search-highlight">$1</mark>');
+}
+
 export function setupShortcutsHelp({ root = document } = {}) {
     const modal = root.getElementById('shortcuts-help-modal');
     const btn = root.getElementById('shortcuts-help-btn');
@@ -37,19 +59,22 @@ export function setupShortcutsHelp({ root = document } = {}) {
     }
 
     function render(query = '') {
-        const q = query.trim().toLowerCase();
+        const q = query.trim();
+        const qLower = q.toLowerCase();
         const groups = [];
         SHORTCUTS.forEach((s) => {
             const sGroup = t(s.groupKey);
             const sDesc = t(s.descKey);
-            if (q && !`${s.key} ${sDesc} ${sGroup}`.toLowerCase().includes(q)) return;
-            let g = groups.find((x) => x.name === sGroup);
+            if (qLower && !`${s.key} ${sDesc} ${sGroup}`.toLowerCase().includes(qLower)) return;
+            let g = groups.find((x) => x.key === s.groupKey);
             if (!g) {
-                g = { name: sGroup, items: [] };
+                g = { key: s.groupKey, name: sGroup, items: [] };
                 groups.push(g);
             }
-            g.items.push({ ...s, _desc: sDesc });
+            g.items.push({ ...s, _desc: sDesc, _group: sGroup });
         });
+        // Enforce canonical AMC order regardless of translation.
+        groups.sort((a, b) => GROUP_ORDER.indexOf(a.key) - GROUP_ORDER.indexOf(b.key));
         listEl.textContent = '';
         if (!groups.length) {
             const empty = root.createElement('div');
@@ -63,17 +88,18 @@ export function setupShortcutsHelp({ root = document } = {}) {
             groupEl.className = 'shortcuts-help-group';
             const title = root.createElement('div');
             title.className = 'shortcuts-help-group-title';
-            title.textContent = g.name;
+            // Highlight group title if it matches query.
+            title.innerHTML = highlightText(g.name, q);
             groupEl.appendChild(title);
             g.items.forEach((s) => {
                 const row = root.createElement('div');
                 row.className = 'shortcuts-help-row';
                 const kbd = root.createElement('kbd');
                 kbd.className = 'shortcuts-help-kbd';
-                kbd.textContent = s.key;
+                kbd.innerHTML = highlightText(s.key, q);
                 const desc = root.createElement('span');
                 desc.className = 'shortcuts-help-desc';
-                desc.textContent = s._desc;
+                desc.innerHTML = highlightText(s._desc, q);
                 row.appendChild(kbd);
                 row.appendChild(desc);
                 groupEl.appendChild(row);
@@ -104,6 +130,19 @@ export function setupShortcutsHelp({ root = document } = {}) {
 
     if (searchInput) {
         searchInput.addEventListener('input', () => render(searchInput.value));
+        // Esc: first clears search, second closes modal.
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                if (searchInput.value.trim()) {
+                    e.stopPropagation();
+                    searchInput.value = '';
+                    render('');
+                } else {
+                    // Allow global handler to close, also close directly.
+                    // Don't stopPropagation — let main.js handle it if present.
+                }
+            }
+        });
     }
 
     // `?` toggles the modal. Skip when typing in an editable element (the
