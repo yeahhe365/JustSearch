@@ -90,9 +90,6 @@
                     <img class="sidebar-brand-logo" src="/static/assets/justsearch-icon.png?v=12" alt="" width="28" height="28" decoding="async">
                 </div>
                 <div class="sidebar-header-buttons">
-                    <button id="shortcuts-help-btn" class="icon-btn" data-i18n-aria-label="sidebar.keyboardShortcuts" data-i18n-title="sidebar.keyboardShortcuts" aria-label="键盘快捷键" title="键盘快捷键">
-                        <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg>
-                    </button>
                     <button id="quick-theme-btn" class="icon-btn" data-i18n-aria-label="sidebar.toggleTheme" data-i18n-title="sidebar.toggleTheme" aria-label="切换主题" title="切换主题">
                         <svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
                     </button>
@@ -995,21 +992,6 @@
                 <button id="confirm-cancel-btn" class="secondary-btn" data-i18n="common.cancel">取消</button>
                 <button id="confirm-ok-btn" class="save-btn" data-i18n="common.ok">确定</button>
             </div>
-        </div>
-    </div>
-
-    <!-- Keyboard Shortcuts Help Modal (AMC-aligned HelpModal) -->
-    <div id="shortcuts-help-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="shortcuts-help-title">
-        <div class="modal-content shortcuts-help-content">
-            <div class="modal-header">
-                <h2 id="shortcuts-help-title" data-i18n="shortcuts.title">键盘快捷键</h2>
-                <span class="close-btn shortcuts-help-close" role="button" tabindex="0" data-i18n-aria-label="modal.close" aria-label="关闭">&times;</span>
-            </div>
-            <div class="shortcuts-help-search">
-                <span class="material-symbols-rounded shortcuts-help-search-icon" aria-hidden="true">search</span>
-                <input type="search" id="shortcuts-help-search-input" data-i18n-placeholder="shortcuts.searchPlaceholder" data-i18n-aria-label="shortcuts.searchPlaceholder" placeholder="搜索快捷键..." aria-label="搜索快捷键">
-            </div>
-            <div class="modal-body shortcuts-help-body" id="shortcuts-help-list"></div>
         </div>
     </div>
 

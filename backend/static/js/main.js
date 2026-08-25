@@ -1,11 +1,10 @@
 import { initializeAuth, normalizeSettings } from './modules/auth.js?v=1';
 import { initI18n, applyI18n } from './modules/i18n.js?v=1';
 import { state, setCurrentSessionId, setLiveArtifactsMode } from './modules/state.js?v=5';
-import { initUI, elements } from './modules/ui.js?v=43';
+import { initUI, elements, resetChatDomToHero } from './modules/ui.js?v=43';
 import { detachCurrentStream, setupChatHandler, syncQuickSettingsFromState } from './modules/chat.js?v=56';
 import { openHistorySearch, renderHistory, setupHistoryGroups, setupHistorySearch, updateActiveHistoryItem } from './modules/history-view.js?v=28';
 import { initEvidencePanel } from './modules/evidence-panel.js?v=5';
-import { setupShortcutsHelp } from './modules/shortcuts-help.js?v=2';
 import { setupSidebar, toggleSidebarFromShortcut } from './modules/sidebar.js?v=25';
 // 重块按需加载（对齐 AMC vite/chunks.ts HEAVY_PRELOAD_PATTERNS）：settings-modal、live-artifacts 延迟到首次使用
 let _settingsModalCache = null;
@@ -62,7 +61,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     setupSidebar(loadChat);
-    setupShortcutsHelp();
     // 懒加载设置弹窗（对齐 AMC  settings-options 懒块）：首屏不解析 73KB settings-modal
     let refreshSettingsForm = null;
     const { setupSettingsModal: setupModalFn } = await getSettingsModal();
@@ -86,6 +84,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         },
     }));
     // 预热 LiveArtifacts 块（空闲时），但不阻塞首屏
+    // 注意：当前 ui.js 静态 import 了 live-artifacts.js（main.js 又静态依赖 ui.js），
+    // 走到这里时该模块早已随首屏加载，下面的动态 import 只是缓存命中——
+    // 在解除这条静态依赖链之前，此预热实际是空操作，待未来重构后才会真正生效。
     if ('requestIdleCallback' in window) {
         requestIdleCallback(() => import('./modules/live-artifacts.js?v=53').catch(()=>{}), { timeout: 3000 });
     } else {
@@ -183,9 +184,7 @@ function restoreSessionFromUrl(chatHistory, loadChat) {
 function showHomeState() {
     detachCurrentStream(elements);
     setCurrentSessionId(null);
-    elements.chatContainer.innerHTML = '';
-    elements.heroSection.style.display = 'block';
-    elements.chatContainer.appendChild(elements.heroSection);
+    resetChatDomToHero();
     updateActiveHistoryItem(null);
 }
 
