@@ -11,10 +11,12 @@ import asyncio
 import copy
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import Boolean, Column, String, Text, DateTime, Integer, ForeignKey, JSON, select, delete, update, text
+from sqlalchemy import event as sa_event
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy.sql import func
 
@@ -203,19 +205,31 @@ async def init_db():
 
     os.makedirs(_DATA_DIR, exist_ok=True)
 
+    from sqlalchemy.pool import NullPool
     _engine = create_async_engine(
         _DATABASE_URL,
         echo=False,
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
-        pool_recycle=1800,  # Recycle connections after 30 minutes
-        connect_args={"check_same_thread": False},
+        poolclass=NullPool,
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
+
+    # SQLite 默认关闭外键约束，模型里的 ondelete="CASCADE" 形同虚设：
+    # delete_chat 会留下孤儿 chat_messages / chat_messages_fts 行（既永久
+    # 膨胀库文件，也会在重新导入同 id 备份时"复活"已删消息）。这里对池中
+    # 每个新连接打开 FK；级联删除会照常触发 FTS 同步触发器。
+    @sa_event.listens_for(_engine.sync_engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
     _async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
     # Enable WAL mode for better concurrent read/write performance
     async with _engine.begin() as conn:
+        await conn.execute(text("PRAGMA busy_timeout=5000"))
         await conn.execute(text("PRAGMA journal_mode=WAL"))
         await conn.execute(text("PRAGMA synchronous=NORMAL"))
         await conn.execute(text("PRAGMA cache_size=-64000"))  # 64MB cache
@@ -297,10 +311,20 @@ async def init_db():
         fts_count = (
             await conn.execute(text("SELECT count(*) FROM chat_messages_fts"))
         ).scalar_one()
-        if fts_count == 0:
+        msg_count = (
+            await conn.execute(text("SELECT count(*) FROM chat_messages"))
+        ).scalar_one()
+        if fts_count == 0 and msg_count > 0:
             await conn.execute(text(
                 "INSERT INTO chat_messages_fts(rowid, session_id, content) "
                 "SELECT id, session_id, content FROM chat_messages"
+            ))
+        elif fts_count != msg_count:
+            # 增量回填缺失的行（崩溃中断导致部分缺失）
+            await conn.execute(text(
+                "INSERT INTO chat_messages_fts(rowid, session_id, content) "
+                "SELECT id, session_id, content FROM chat_messages "
+                "WHERE id NOT IN (SELECT rowid FROM chat_messages_fts)"
             ))
 
     logger.info("Database initialised at %s", _DB_PATH)
@@ -340,13 +364,26 @@ async def _cleanup_old_sessions(max_age_days: int = 90):
             if result.rowcount > 0:
                 await session.commit()
                 logger.info("Cleaned up %d empty sessions older than %d days", result.rowcount, max_age_days)
+            else:
+                await session.rollback()
     except Exception as e:
-        logger.warning("Session cleanup failed: %s", e)
+        logger.warning("Session cleanup failed: %s", e, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
 # Chat helpers
 # ---------------------------------------------------------------------------
+
+# 每个会话一把 asyncio.Lock：save_chat_history / replace_messages_from 的
+# “读取现有消息 → 校验 → 写入”是多步操作，SQLite 事务不会阻止同一进程内两个
+# 协程交错执行（会导致双重追加）。锁按需创建；本应用规模下会话数有限，允许
+# 该 dict 随历史会话无界增长（每把锁仅几十字节，进程生命周期内不回收）。
+_session_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _get_session_lock(session_id: str) -> asyncio.Lock:
+    """Return the per-session write lock, creating it on first use."""
+    return _session_locks.setdefault(session_id, asyncio.Lock())
 
 
 def _session_id_from_legacy_path(value: str) -> Optional[str]:
@@ -431,76 +468,81 @@ async def save_chat_history(session_id: str, messages: list, title: Optional[str
     Incrementally append new messages to an existing session.
     Detects which messages are new by comparing against what's already stored.
     Falls back to full upsert for new sessions.
-    Uses optimistic concurrency control with a version check on the session row.
+    并发控制：整个“读已有消息 → 前缀校验 → 追加”流程在每会话的 asyncio.Lock
+    内执行（见 _get_session_lock），在同一进程内串行化同一会话的写入者，
+    防止并发保存时双重追加。
     """
     if not messages:
         return
 
-    async with await get_session() as session:
-        # Use a transaction with SERIALIZABLE isolation (SQLite default).
-        # Lock the session row to prevent concurrent modifications.
-        sess = (await session.execute(
-            select(ChatSession).where(ChatSession.id == session_id)
-        )).scalar_one_or_none()
+    async with _get_session_lock(session_id):
+        async with await get_session() as session:
+            sess = (await session.execute(
+                select(ChatSession).where(ChatSession.id == session_id)
+            )).scalar_one_or_none()
 
-        now = _utc_now()
+            now = _utc_now()
 
-        if sess is None:
-            if not title:
-                first_content = messages[0].get("content", "") if messages else ""
-                title = _extract_title(first_content)
-            sess = ChatSession(id=session_id, title=title, created_at=now, updated_at=now)
-            session.add(sess)
-            # New session – insert all messages
-            for msg in messages:
-                session.add(_message_from_dict(msg, session_id))
-            await session.commit()
-            return
-
-        if title:
-            sess.title = title
-        sess.updated_at = now
-
-        # 前缀校验：客户端传来的 messages 应与 DB 已存消息的前缀一致。
-        # 按 count 增量追加在并发/陈旧客户端下会静默丢新消息（count 比客户端
-        # 数组大时 new_msgs 为空或错位）。比较最后一条已存消息与客户端对应
-        # 位置的消息的 (role, content)，不一致说明视图已过期，直接返回不再
-        # 追加——新消息不会丢，客户端下次拉取完整历史即可拿到最新状态。
-        #
-        # 使用行级锁防止并发修改：在 SQLite 中通过 BEGIN IMMEDIATE 事务实现。
-        # 这里我们重新获取会话以确保在事务内读取最新状态。
-        existing_rows = (await session.execute(
-            select(ChatMessage).where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at, ChatMessage.id)
-        )).scalars().all()
-        existing_count = len(existing_rows)
-
-        if existing_count > len(messages):
-            logger.warning(
-                "save_chat_history: DB 已有 %d 条消息而客户端仅提供 %d 条，"
-                "前缀不匹配，跳过追加 (session=%s)",
-                existing_count, len(messages), session_id,
-            )
-            return
-        if existing_count > 0:
-            db_last = existing_rows[-1]
-            client_at_last = messages[existing_count - 1]
-            if str(db_last.role) != str(client_at_last.get("role", "")) or (
-                db_last.content or ""
-            ) != str(client_at_last.get("content", "") or ""):
-                logger.warning(
-                    "save_chat_history: 第 %d 条消息前缀不匹配(role/content 不一致)，"
-                    "跳过追加以避免并发下静默丢消息 (session=%s)",
-                    existing_count, session_id,
-                )
+            if sess is None:
+                if not title:
+                    first_content = messages[0].get("content", "") if messages else ""
+                    title = _extract_title(first_content)
+                sess = ChatSession(id=session_id, title=title, created_at=now, updated_at=now)
+                session.add(sess)
+                # New session – insert all messages
+                for msg in messages:
+                    session.add(_message_from_dict(msg, session_id))
+                await session.commit()
                 return
 
-        new_msgs = messages[existing_count:]
-        if new_msgs:
-            for msg in new_msgs:
-                session.add(_message_from_dict(msg, session_id))
+            if title:
+                sess.title = title
+            sess.updated_at = now
 
-        await session.commit()
+            # 前缀校验：客户端传来的 messages 应与 DB 已存消息的前缀一致。
+            # 按 count 增量追加在并发/陈旧客户端下会静默丢新消息（count 比客户端
+            # 数组大时 new_msgs 为空或错位）。比较最后一条已存消息与客户端对应
+            # 位置的消息的 (role, content)，不一致说明视图已过期，直接返回不再
+            # 追加——新消息不会丢，客户端下次拉取完整历史即可拿到最新状态。
+            #
+            # 并发防护由外层的每会话 asyncio.Lock 提供（进程内串行化写者）；
+            # SQLite 事务本身不会阻止两个协程交错读-改-写。
+            existing_rows = (await session.execute(
+                select(ChatMessage).where(ChatMessage.session_id == session_id)
+                .order_by(ChatMessage.created_at, ChatMessage.id)
+            )).scalars().all()
+            existing_count = len(existing_rows)
+
+            if existing_count > len(messages):
+                logger.warning(
+                    "save_chat_history: DB 已有 %d 条消息而客户端仅提供 %d 条，"
+                    "前缀不匹配，跳过追加 (session=%s)",
+                    existing_count, len(messages), session_id,
+                )
+                return
+            if existing_count > 0:
+                # 校验整个前缀，而非仅最后一条，避免中间被篡改仍穿透
+                mismatch = False
+                for db_msg, client_msg in zip(existing_rows, messages[:existing_count]):
+                    if str(db_msg.role) != str(client_msg.get("role", "")) or (
+                        db_msg.content or ""
+                    ) != str(client_msg.get("content", "") or ""):
+                        mismatch = True
+                        break
+                if mismatch:
+                    logger.warning(
+                        "save_chat_history: 前缀不匹配(role/content 不一致)，"
+                        "跳过追加以避免并发下静默丢消息 (session=%s, db=%d client=%d)",
+                        session_id, existing_count, len(messages),
+                    )
+                    return
+
+            new_msgs = messages[existing_count:]
+            if new_msgs:
+                for msg in new_msgs:
+                    session.add(_message_from_dict(msg, session_id))
+
+            await session.commit()
 
 
 async def list_chats(limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
@@ -516,38 +558,28 @@ async def list_chats(limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
     if limit == 0:
         return []
 
-    target_count = offset + limit
-    scan_offset = 0
-    batch_size = min(max(target_count, 100), 1000)
-    chats = []
-
+    # 直接 SQL 分页，附加 id tie-breaker 保证稳定排序
     async with await get_session() as session:
-        while len(chats) < target_count:
-            result = await session.execute(
-                select(ChatSession)
-                .order_by(ChatSession.is_pinned.desc(), ChatSession.updated_at.desc())
-                .limit(batch_size)
-                .offset(scan_offset)
-            )
-            sessions = result.scalars().all()
-            if not sessions:
-                break
-
-            for s in sessions:
-                session_id = normalize_route_safe_id(s.id)
-                if not session_id:
-                    continue
-                chats.append({
-                    "id": session_id,
-                    "title": s.title,
-                    "group_id": normalize_route_safe_id(s.group_id) if s.group_id else None,
-                    "is_pinned": bool(s.is_pinned),
-                    "timestamp": _format_utc_timestamp(s.updated_at),
-                })
-
-            scan_offset += len(sessions)
-
-    return chats[offset:target_count]
+        result = await session.execute(
+            select(ChatSession)
+            .order_by(ChatSession.is_pinned.desc(), ChatSession.updated_at.desc(), ChatSession.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        sessions = result.scalars().all()
+        chats = []
+        for s in sessions:
+            session_id = normalize_route_safe_id(s.id)
+            if not session_id:
+                continue
+            chats.append({
+                "id": session_id,
+                "title": s.title,
+                "group_id": normalize_route_safe_id(s.group_id) if s.group_id else None,
+                "is_pinned": bool(s.is_pinned),
+                "timestamp": _format_utc_timestamp(s.updated_at),
+            })
+    return chats
 
 
 def _group_to_dict(group: ChatGroup) -> Dict[str, Any]:
@@ -699,17 +731,35 @@ async def set_chat_pinned(session_id: str, is_pinned: bool) -> Optional[Dict[str
 
 
 async def delete_chat(session_id: str) -> bool:
+    # SQLite FK 级联不触发 FTS 触发器，必须显式清理
     async with await get_session() as session:
+        await session.execute(delete(ChatMessage).where(ChatMessage.session_id == session_id))
+        # 兜底：若触发器未执行，显式清 FTS
+        try:
+            await session.execute(text("DELETE FROM chat_messages_fts WHERE session_id=:sid"), {"sid": session_id})
+        except Exception:
+            pass
         result = await session.execute(
             delete(ChatSession).where(ChatSession.id == session_id)
         )
         await session.commit()
+        _session_locks.pop(session_id, None)
         return (result.rowcount or 0) > 0
 
 
+def generate_session_id() -> str:
+    """生成新会话 id 的公共入口（同步、自含实现，单一事实来源）。
+
+    chat 路由等外部调用方统一走这里，避免各处手拼同格式 id 造成漂移。
+    后缀取 8 个 hex（32 bit/秒内），同秒碰撞概率约 1/40 亿；
+    纯内部写入点（如 _copy_session）另配 IntegrityError 重试兜底。
+    """
+    return _utc_now().strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
+
+
 async def _new_session_id() -> str:
-    """Generate a route-safe session id matching chat.py's format."""
-    return datetime.now().strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:4]
+    """Legacy async alias — 委托同步实现，保留既有 await 调用点兼容。"""
+    return generate_session_id()
 
 
 def _session_summary_from_row(row) -> Dict[str, Any]:
@@ -735,29 +785,54 @@ async def _copy_session(
     and starts unpinned.
     """
     now = _utc_now()
-    new_id = await _new_session_id()
-    async with await get_session() as session:
-        sess = ChatSession(
-            id=new_id,
-            title=title,
-            group_id=source.get("group_id"),
-            is_pinned=False,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(sess)
-        for msg in messages:
-            session.add(_message_from_dict(msg, new_id, created_at=now))
-        await session.commit()
+    # 新 id 在 commit 前不会暴露给任何客户端，撞主键时换一个重试即可。
+    for attempt in range(2):
+        new_id = await _new_session_id()
+        try:
+            async with await get_session() as session:
+                sess = ChatSession(
+                    id=new_id,
+                    title=title,
+                    group_id=source.get("group_id"),
+                    is_pinned=False,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(sess)
+                for msg in messages:
+                    # 保留原始时序，避免所有消息坍缩到同一时间
+                    orig_created = msg.get("created_at") if isinstance(msg, dict) else None
+                    # 若原消息无时间或解析失败，回退到 now
+                    try:
+                        fallback = now
+                        if orig_created:
+                            # 尝试解析原时间，保持相对顺序
+                            fallback = orig_created if isinstance(orig_created, datetime) else now
+                    except Exception:
+                        fallback = now
+                    session.add(_message_from_dict(msg, new_id, created_at=fallback))
+                await session.commit()
 
-        row = (await session.execute(
-            select(ChatSession.id, ChatSession.title, ChatSession.group_id,
-                   ChatSession.is_pinned, ChatSession.updated_at)
-            .where(ChatSession.id == new_id)
-        )).first()
-        if row is None:
-            return None
-        return _session_summary_from_row(row)
+                row = (await session.execute(
+                    select(ChatSession.id, ChatSession.title, ChatSession.group_id,
+                           ChatSession.is_pinned, ChatSession.updated_at)
+                    .where(ChatSession.id == new_id)
+                )).first()
+                if row is None:
+                    return None
+                return _session_summary_from_row(row)
+        except IntegrityError as e:
+            # 仅 id 碰撞重试，group_id 外键错误等直接抛
+            if "chat_sessions.id" not in str(getattr(e, "orig", e)):
+                raise
+            # 回滚后再重试
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            if attempt == 1:
+                raise
+            logger.warning("_copy_session: 会话 id 冲突，重试生成新 id")
 
 
 async def duplicate_chat(session_id: str, new_title: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -804,44 +879,72 @@ async def fork_chat_from(
     return await _copy_session(source, prefix, title)
 
 
+async def update_chat_session_title(session_id: str, title: str) -> bool:
+    """Rename a session row directly (UPDATE ChatSession), returning whether it existed.
+
+    save_chat_history 对空会话（无消息）会提前返回，导致重命名静默失效；
+    重命名应走本函数直接更新标题。与旧行为一致地顺带更新 updated_at。
+    """
+    async with await get_session() as session:
+        result = await session.execute(
+            update(ChatSession)
+            .where(ChatSession.id == session_id)
+            .values(title=title, updated_at=_utc_now())
+        )
+        if (result.rowcount or 0) == 0:
+            await session.rollback()
+            return False
+        await session.commit()
+        return True
+
+
 async def delete_message(
     session_id: str,
     message_index: int,
     expected_content: Optional[str] = None,
-):
+) -> Union[bool, str]:
     """Delete a single message by its index (0-based) within a session.
 
-    ``expected_content`` is a concurrency guard: when provided and the message
-    at ``message_index`` has different content, the delete is refused (returns
-    False) instead of removing a message that drifted under concurrent edits.
+    返回三态，供路由区分“不存在”与“内容漂移”：
+    - ``True``：删除成功；
+    - ``"missing"``：会话不存在或下标越界（对应 HTTP 404）；
+    - ``"mismatch"``：``expected_content`` 并发防护命中——目标消息内容与客户端
+      所见不一致，拒绝删除以免删错消息（对应 HTTP 409）。
     """
-    async with await get_session() as session:
-        sess = (await session.execute(
-            select(ChatSession).where(ChatSession.id == session_id)
-        )).scalar_one_or_none()
-        if sess is None:
-            return False
+    async with _get_session_lock(session_id):
+        async with await get_session() as session:
+            sess = (await session.execute(
+                select(ChatSession).where(ChatSession.id == session_id)
+            )).scalar_one_or_none()
+            if sess is None:
+                return "missing"
 
-        msgs = (await session.execute(
-            select(ChatMessage).where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at, ChatMessage.id)
-        )).scalars().all()
+            # 高效取单条：避免全量加载大会话
+            try:
+                idx = int(message_index)
+            except (TypeError, ValueError):
+                return "missing"
+            if idx < 0:
+                return "missing"
+            row = (await session.execute(
+                select(ChatMessage).where(ChatMessage.session_id == session_id)
+                .order_by(ChatMessage.created_at, ChatMessage.id)
+                .limit(1).offset(idx)
+            )).scalars().first()
+            if row is None:
+                return "missing"
 
-        if message_index < 0 or message_index >= len(msgs):
-            return False
+            if expected_content is not None and (row.content or "") != str(expected_content):
+                logger.warning(
+                    "delete_message: 下标 %d 处的消息内容与客户端不一致，拒绝删除 (session=%s)",
+                    idx, session_id,
+                )
+                return "mismatch"
 
-        target = msgs[message_index]
-        if expected_content is not None and (target.content or "") != str(expected_content):
-            logger.warning(
-                "delete_message: 下标 %d 处的消息内容与客户端不一致，拒绝删除 (session=%s)",
-                message_index, session_id,
-            )
-            return False
-
-        await session.delete(target)
-        sess.updated_at = _utc_now()
-        await session.commit()
-        return True
+            await session.execute(delete(ChatMessage).where(ChatMessage.id == row.id))
+            sess.updated_at = _utc_now()
+            await session.commit()
+            return True
 
 
 async def replace_messages_from(
@@ -864,8 +967,8 @@ async def replace_messages_from(
     not match the stored prefix, the delete is refused (returns False) instead
     of truncating at an index that drifted under concurrent edits.
 
-    Uses optimistic concurrency control with prefix validation within the
-    same transaction to prevent concurrent modifications.
+    并发控制：读取尾部、删除、插入新消息都在每会话的 asyncio.Lock 内完成
+    （见 _get_session_lock），在同一进程内串行化同一会话的写入者。
     """
     if from_index is None or not new_messages:
         return False
@@ -876,49 +979,51 @@ async def replace_messages_from(
     if from_index < 0:
         from_index = 0
 
-    async with await get_session() as session:
-        sess = (await session.execute(
-            select(ChatSession).where(ChatSession.id == session_id)
-        )).scalar_one_or_none()
-        if sess is None:
-            return False
-
-        # All reads and writes happen in the same transaction.
-        # SQLite's WAL mode with SERIALIZABLE isolation ensures consistency.
-        msgs = (await session.execute(
-            select(ChatMessage).where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at, ChatMessage.id)
-        )).scalars().all()
-
-        if expected_prefix is not None:
-            prefix = msgs[:from_index]
-            if len(prefix) != len(expected_prefix):
-                logger.warning(
-                    "replace_messages_from: 前缀长度不匹配(DB=%d, 客户端=%d)，"
-                    "拒绝截断 (session=%s, from_index=%d)",
-                    len(prefix), len(expected_prefix), session_id, from_index,
-                )
+    async with _get_session_lock(session_id):
+        async with await get_session() as session:
+            sess = (await session.execute(
+                select(ChatSession).where(ChatSession.id == session_id)
+            )).scalar_one_or_none()
+            if sess is None:
                 return False
-            for db_msg, client_msg in zip(prefix, expected_prefix):
-                if str(db_msg.role) != str(client_msg.get("role", "")) or (
-                    db_msg.content or ""
-                ) != str(client_msg.get("content", "") or ""):
+
+            # All reads and writes happen inside the per-session lock, so no
+            # other coroutine can interleave a save between them.
+            msgs = (await session.execute(
+                select(ChatMessage).where(ChatMessage.session_id == session_id)
+                .order_by(ChatMessage.created_at, ChatMessage.id)
+            )).scalars().all()
+
+            if expected_prefix is not None:
+                prefix = msgs[:from_index]
+                if len(prefix) != len(expected_prefix):
                     logger.warning(
-                        "replace_messages_from: 前缀内容不匹配，拒绝截断 (session=%s, from_index=%d)",
-                        session_id, from_index,
+                        "replace_messages_from: 前缀长度不匹配(DB=%d, 客户端=%d)，"
+                        "拒绝截断 (session=%s, from_index=%d)",
+                        len(prefix), len(expected_prefix), session_id, from_index,
                     )
                     return False
+                for db_msg, client_msg in zip(prefix, expected_prefix):
+                    if str(db_msg.role) != str(client_msg.get("role", "")) or (
+                        db_msg.content or ""
+                    ) != str(client_msg.get("content", "") or ""):
+                        logger.warning(
+                            "replace_messages_from: 前缀内容不匹配，拒绝截断 (session=%s, from_index=%d)",
+                            session_id, from_index,
+                        )
+                        return False
 
-        if from_index > len(msgs):
-            from_index = len(msgs)
-        for m in msgs[from_index:]:
-            await session.delete(m)
-        for msg in new_messages:
-            session.add(_message_from_dict(msg, session_id))
-        if title:
-            sess.title = title
-        sess.updated_at = _utc_now()
-        await session.commit()
+            if from_index > len(msgs):
+                from_index = len(msgs)
+            if from_index < len(msgs):
+                ids_to_delete = [m.id for m in msgs[from_index:]]
+                await session.execute(delete(ChatMessage).where(ChatMessage.id.in_(ids_to_delete)))
+            for msg in new_messages:
+                session.add(_message_from_dict(msg, session_id))
+            if title:
+                sess.title = title
+            sess.updated_at = _utc_now()
+            await session.commit()
     return True
 
 
@@ -933,12 +1038,48 @@ async def delete_all_chats():
 async def export_history_package() -> Dict[str, Any]:
     """Return a portable JSON package containing all chats and chat groups."""
     groups = await list_chat_groups()
-    summaries = await list_chats(limit=100000)
-    history = []
-    for summary in summaries:
-        chat = await load_chat_history(summary["id"])
-        if chat:
-            history.append(chat)
+    # 批量加载避免 N+1（单会话 2 次查询 + 单消息表全量）
+    async with await get_session() as session:
+        sessions = (await session.execute(
+            select(ChatSession).order_by(ChatSession.updated_at.desc())
+        )).scalars().all()
+        if not sessions:
+            return {"type": "JustSearch-History", "version": 1, "history": [], "groups": groups}
+        session_ids = [s.id for s in sessions if normalize_route_safe_id(s.id)]
+        msgs_result = await session.execute(
+            select(ChatMessage).where(ChatMessage.session_id.in_(session_ids))
+            .order_by(ChatMessage.session_id, ChatMessage.created_at, ChatMessage.id)
+        )
+        msgs_by_session: Dict[str, list] = {sid: [] for sid in session_ids}
+        for m in msgs_result.scalars().all():
+            if m.session_id in msgs_by_session:
+                msgs_by_session[m.session_id].append(m)
+
+        history = []
+        for s in sessions:
+            sid = normalize_route_safe_id(s.id)
+            if not sid:
+                continue
+            msgs = msgs_by_session.get(s.id, [])
+            history.append({
+                "id": sid,
+                "title": s.title,
+                "group_id": normalize_route_safe_id(s.group_id) if s.group_id else None,
+                "timestamp": _format_utc_timestamp(s.updated_at),
+                "is_pinned": bool(s.is_pinned),
+                "messages": [
+                    {
+                        "role": m.role,
+                        "content": m.content,
+                        "logs": m.logs if isinstance(m.logs, list) else [],
+                        "sources": m.sources if isinstance(m.sources, list) else [],
+                        "stats": m.stats if isinstance(m.stats, dict) else {},
+                        "citations": m.citations if isinstance(m.citations, list) else [],
+                        "timestamp": _format_utc_timestamp(m.created_at),
+                    }
+                    for m in msgs
+                ],
+            })
     return {
         "type": "JustSearch-History",
         "version": 1,
@@ -1063,6 +1204,7 @@ async def import_history_package(payload: dict) -> Dict[str, int]:
     imported_groups = 0
     skipped_groups = 0
 
+    # 先处理分组（量小）
     async with await get_session() as session:
         existing_group_ids = {
             row[0]
@@ -1077,13 +1219,17 @@ async def import_history_package(payload: dict) -> Dict[str, int]:
             session.add(ChatGroup(**group))
             existing_group_ids.add(group["id"])
             imported_groups += 1
+        await session.commit()
 
+    # 分批导入会话，避免单事务长锁
+    async with await get_session() as session:
         existing_session_ids = {
             row[0]
             for row in (
                 await session.execute(select(ChatSession.id))
             ).all()
         }
+        batch = 0
         for chat in chats:
             if chat["id"] in existing_session_ids:
                 skipped_sessions += 1
@@ -1106,8 +1252,22 @@ async def import_history_package(payload: dict) -> Dict[str, int]:
                 ))
             existing_session_ids.add(chat["id"])
             imported_sessions += 1
-
-        await session.commit()
+            batch += 1
+            if batch >= 100:
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+                    skipped_sessions += batch
+                    imported_sessions -= batch
+                batch = 0
+        if batch > 0:
+            try:
+                await session.commit()
+            except IntegrityError as e:
+                await session.rollback()
+                # 单批失败不影响已提交批次
+                logger.warning("import batch commit failed: %s", e)
 
     return {
         "imported_sessions": imported_sessions,
@@ -1121,6 +1281,9 @@ def get_chat_path(session_id: str) -> str:
     """
     Legacy compatibility: no longer returns a real file path.
     We return a sentinel that load_chat_history can parse.
+
+    注意：legacy-only, kept for backward-compatible path reporting; not used by
+    production flows（仅 tests/test_auth_and_db.py 仍在使用）。
     """
     return os.path.join(_CHATS_DIR, f"{session_id}.json")
 
@@ -1142,6 +1305,7 @@ DEFAULT_SETTINGS = {
             "enabled": True,
         }
     ],
+    "available_models": [],
     "workflow_step_models": {
         "analysis": {"provider_id": "", "model_id": ""},
         "relevance": {"provider_id": "", "model_id": ""},
@@ -1285,6 +1449,69 @@ async def save_settings(settings: dict) -> bool:
         return False
 
 
+def _normalize_available_models(models: Any) -> list[dict]:
+    """Normalize available_models (global)."""
+    if not isinstance(models, list):
+        return []
+    seen: set[tuple[str, str]] = set()
+    normalized: list[dict] = []
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id", "")).strip()
+        if not mid:
+            continue
+        name = str(item.get("name", "")).strip() or mid
+        provider_id = str(item.get("providerId") or item.get("provider_id") or "").strip()
+        is_pinned = bool(item.get("isPinned", False))
+        key = (provider_id, mid)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"id": mid, "name": name, "isPinned": is_pinned, "providerId": provider_id})
+    return normalized
+
+
+def _migrate_legacy_available_models(settings: dict) -> dict:
+    """Migrate legacy providers[].model_id strings to global available_models."""
+    if settings.get("available_models"):
+        settings["available_models"] = _normalize_available_models(settings["available_models"])
+        return settings
+    providers = settings.get("providers", [])
+    if not isinstance(providers, list) or not providers:
+        settings["available_models"] = []
+        return settings
+    available: list[dict] = []
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        provider_id = str(provider.get("id", "")).strip()
+        if not provider_id:
+            continue
+        model_str = provider.get("model_id", "")
+        if not isinstance(model_str, str):
+            continue
+        for raw in [m.strip() for m in model_str.split(",") if m.strip()]:
+            # handle :: display name
+            if "::" in raw:
+                mid, display = raw.split("::", 1)
+                mid = mid.strip()
+                display = display.strip() or mid
+            elif ":" in raw and " " in raw:
+                mid, display = raw.split(":", 1)
+                mid = mid.strip()
+                display = display.strip() or mid
+            else:
+                mid = raw.split("/")[-1] if "/" in raw else raw
+                mid = mid.strip()
+                display = mid
+            if not mid:
+                continue
+            available.append({"id": mid, "name": display, "isPinned": False, "providerId": provider_id})
+    settings["available_models"] = _normalize_available_models(available)
+    return settings
+
+
 def _normalize_loaded_settings(
     settings: dict,
     *,
@@ -1313,6 +1540,7 @@ def _normalize_loaded_settings(
         result["workflow_step_models"] = _normalize_loaded_workflow_step_models(
             result.get("workflow_step_models")
         )
+        result = _migrate_legacy_available_models(result)
         return result
 
     if isinstance(result.get("providers"), list) and result["providers"]:
@@ -1343,6 +1571,7 @@ def _normalize_loaded_settings(
         result["workflow_step_models"] = _normalize_loaded_workflow_step_models(
             result.get("workflow_step_models")
         )
+        result = _migrate_legacy_available_models(result)
         return result
 
     legacy_provider = copy.deepcopy(DEFAULT_SETTINGS["providers"][0])
@@ -1358,6 +1587,7 @@ def _normalize_loaded_settings(
     result["workflow_step_models"] = _normalize_loaded_workflow_step_models(
         result.get("workflow_step_models")
     )
+    result = _migrate_legacy_available_models(result)
     return result
 
 

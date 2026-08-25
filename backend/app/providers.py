@@ -7,6 +7,9 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+import ipaddress
+import os
+
 from fastapi import HTTPException
 
 from .auth import _LOOPBACK_HOSTS
@@ -14,7 +17,6 @@ from .database import mask_api_key
 
 
 WORKFLOW_MODEL_STEP_IDS = ["analysis", "relevance", "interaction", "answer"]
-WORKFLOW_MODEL_STEPS = [{"id": step_id} for step_id in WORKFLOW_MODEL_STEP_IDS]
 DEFAULT_WORKFLOW_STEP_MODELS = {
     step_id: {"provider_id": "", "model_id": ""}
     for step_id in WORKFLOW_MODEL_STEP_IDS
@@ -41,6 +43,23 @@ def is_local_provider_base_url(base_url: Any) -> bool:
         return False
     return host in _LOCAL_PROVIDER_HOSTS or host.startswith("127.")
 
+
+def _is_private_hostname(host: str) -> bool:
+    if not host:
+        return True
+    h = host.lower().rstrip(".")
+    if h in ("localhost", "localhost.localdomain"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+        mapped = getattr(ip, "ipv4_mapped", None) or ip
+        # allow loopback only for local providers (already handled), otherwise block private
+        return not mapped.is_global
+    except ValueError:
+        # metadata service
+        if h in ("metadata.google.internal", "169.254.169.254"):
+            return True
+        return False
 
 def provider_allows_empty_api_key(provider: dict[str, Any]) -> bool:
     return is_local_provider_base_url(provider.get("base_url", ""))
@@ -149,6 +168,17 @@ def normalize_provider(provider: dict[str, Any]) -> dict[str, str | None]:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} 缺少 base_url")
     if enabled and not model_id:
         raise HTTPException(status_code=400, detail=f"provider {provider_id} 缺少 model_id")
+    if base_url:
+        parsed = urlparse(base_url)
+        if parsed.scheme not in ("http", "https"):
+            raise HTTPException(status_code=400, detail=f"provider {provider_id} base_url 必须为 http/https")
+        host = (parsed.hostname or "").strip()
+        # 非本地 provider 禁止指向内网/元数据，避免 SSRF
+        if host and not is_local_provider_base_url(base_url):
+            if _is_private_hostname(host):
+                raise HTTPException(status_code=400, detail=f"provider {provider_id} base_url 不允许指向内网地址")
+            if host == "169.254.169.254" or host.endswith(".internal"):
+                raise HTTPException(status_code=400, detail=f"provider {provider_id} base_url 不允许指向元数据服务")
 
     # Distinguish "api_key field omitted" (None) from "explicitly set to '' or a
     # mask". An omitted field must NOT wipe a previously stored key — the caller
@@ -189,14 +219,8 @@ def normalize_providers(
             raise HTTPException(status_code=400, detail=f"重复的 provider id: {provider_id}")
         seen.add(provider_id)
 
-        if item["api_key"] is None:
-            # Field omitted — carry over the existing key (never wipe it).
-            previous_provider_id = str(provider.get("previous_id", "")).strip()
-            current_provider = current_by_id.get(provider_id)
-            if current_provider is None and previous_provider_id:
-                current_provider = current_by_id.get(previous_provider_id)
-            item["api_key"] = str((current_provider or {}).get("api_key", "")).strip()
-        elif "****" in item["api_key"]:
+        # 字段省略（None）或被前端掩码（含 ****）→ 一律沿用已存 key，绝不覆盖。
+        if item["api_key"] is None or "****" in str(item["api_key"]):
             previous_provider_id = str(provider.get("previous_id", "")).strip()
             current_provider = current_by_id.get(provider_id)
             if current_provider is None and previous_provider_id:
@@ -326,3 +350,90 @@ def first_model_id(model_ids: str) -> str:
         raw = next((item.strip() for item in raw.split(",") if item.strip()), raw)
     model_id, _display_name = split_model_item(raw)
     return model_id
+
+
+def normalize_available_models(models: Any) -> list[dict[str, Any]]:
+    """Normalize global available_models list."""
+    if not isinstance(models, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id", "")).strip()
+        if not model_id:
+            continue
+        if is_unsupported_model_id(model_id):
+            continue
+        name = str(item.get("name", "")).strip() or model_id
+        provider_id = str(item.get("providerId") or item.get("provider_id") or "").strip()
+        is_pinned = bool(item.get("isPinned", False))
+        key = (provider_id, model_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(
+            {
+                "id": model_id,
+                "name": name,
+                "isPinned": is_pinned,
+                "providerId": provider_id,
+            }
+        )
+    return normalized
+
+
+def validate_available_models(models: Any) -> dict[str, Any]:
+    """Validate available_models, return {ok, message}."""
+    if not isinstance(models, list):
+        return {"ok": False, "message": "available_models 必须为列表"}
+    seen: set[tuple[str, str]] = set()
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id", "")).strip()
+        provider_id = str(item.get("providerId") or item.get("provider_id") or "").strip()
+        if not model_id:
+            continue
+        key = (provider_id, model_id)
+        if key in seen:
+            return {"ok": False, "message": f"重复的模型: {provider_id}/{model_id}"}
+        seen.add(key)
+    return {"ok": True, "message": ""}
+
+
+def migrate_legacy_models(settings: dict[str, Any]) -> dict[str, Any]:
+    """Migrate legacy providers[].model_id strings to global available_models."""
+    if not isinstance(settings, dict):
+        return settings
+    if settings.get("available_models"):
+        # Already migrated, normalize
+        settings["available_models"] = normalize_available_models(settings["available_models"])
+        return settings
+    providers = settings.get("providers", [])
+    if not isinstance(providers, list) or not providers:
+        settings["available_models"] = []
+        return settings
+    available: list[dict[str, Any]] = []
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        provider_id = str(provider.get("id", "")).strip()
+        if not provider_id:
+            continue
+        model_str = provider.get("model_id", "")
+        for item in supported_model_items(model_str):
+            model_id, display_name = split_model_item(item)
+            if not model_id:
+                continue
+            available.append(
+                {
+                    "id": model_id,
+                    "name": display_name or model_id,
+                    "isPinned": False,
+                    "providerId": provider_id,
+                }
+            )
+    settings["available_models"] = normalize_available_models(available)
+    return settings

@@ -1002,3 +1002,88 @@
 .shortcuts-settings-empty[hidden] {
     display: none !important;
 }
+
+/* Global ModelSelector — AMC ModelSelector parity */
+.model-selector-root {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.model-selector-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.model-selector-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.model-selector-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px;
+    border-radius: var(--amc-radius);
+    border: 1px solid var(--border-light);
+    background: var(--bg-secondary);
+    cursor: pointer;
+    transition: border-color var(--transition-fast), background-color var(--transition-fast);
+    text-align: left;
+    width: 100%;
+}
+
+.model-selector-item:hover {
+    border-color: var(--border);
+    background: var(--bg-elevated);
+}
+
+.model-editor-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--bg-input) 50%, transparent);
+}
+
+.model-editor-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.model-editor-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    border-radius: var(--amc-radius);
+    background: var(--bg-secondary);
+}
+
+.model-editor-row input,
+.model-editor-row select {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--amc-radius);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+/* Hide legacy per-provider model lists when global selector is present */
+#global-model-selector-root:not(:empty) ~ .provider-list-container .model-settings-group,
+.provider-card .model-settings-group {
+    display: none;
+}

@@ -40,6 +40,7 @@ import {
 } from './bridge.js?v=9';
 import { createActionIcon } from './settings-icons.js';
 import { setupShortcutsSettings } from './shortcuts-settings.js';
+import { createModelSelector } from './settings-model-selector.js';
 
 const WORKFLOW_STEPS = [
     { id: 'analysis', labelKey: 'settings.stepAnalysis' },
@@ -57,6 +58,8 @@ const SETTINGS_SAVE_STATES = {
     error: { icon: 'warning', textKey: 'settings.saveError' },
 };
 const SETTINGS_LAST_TAB_STORAGE_KEY = 'justsearch_settings_last_tab';
+
+let _globalModelSelectorHandle = null;
 
 let isApplyingSettingsForm = false;
 let requestSettingsAutoSave = () => {};
@@ -561,6 +564,7 @@ function fillSettingsForm(settings) {
             settings.providers || [],
             settings.default_provider_id || '',
         );
+        renderGlobalModelSelector(settings);
         document.getElementById('interactive-search-input').checked = coerceBooleanSetting(settings.interactive_search, true);
         const citationVerifyInput = document.getElementById('citation-verify-input');
         if (citationVerifyInput) {
@@ -624,6 +628,16 @@ function collectSettingsForm() {
         default_provider_id: defaultProvider?.value || providers[0]?.id || '',
         providers,
         workflow_step_models: collectWorkflowStepModels(),
+        available_models: (() => {
+            const root = document.getElementById('global-model-selector-root');
+            if (root && root.dataset.pendingModels) {
+                try {
+                    const parsed = JSON.parse(root.dataset.pendingModels);
+                    if (Array.isArray(parsed)) return parsed;
+                } catch {}
+            }
+            return Array.isArray(state.settings?.available_models) ? state.settings.available_models : [];
+        })(),
         interactive_search: document.getElementById('interactive-search-input').checked,
         citation_verification_enabled: citationVerifyInput
             ? citationVerifyInput.checked
@@ -1113,6 +1127,75 @@ function refreshWorkflowStepModelOptions({ providerIdMap = null } = {}) {
     renderWorkflowStepModels(current, providers, getSelectedDefaultProviderId() || providers[0]?.id || '');
 }
 
+function renderGlobalModelSelector(settings) {
+    const root = document.getElementById('global-model-selector-root');
+    if (!root) return;
+    root.textContent = '';
+    let availableModels = Array.isArray(settings.available_models) ? settings.available_models : [];
+    if (!availableModels.length && Array.isArray(settings.providers)) {
+        // Fallback: aggregate from providers[].model_id for legacy data
+        const migrated = [];
+        settings.providers.forEach((p) => {
+            const raw = String(p.model_id || '').trim();
+            if (!raw) return;
+            raw.split(',').forEach((item) => {
+                const trimmed = item.trim();
+                if (!trimmed) return;
+                let id = trimmed;
+                let name = trimmed;
+                if (trimmed.includes('::')) {
+                    const parts = trimmed.split('::');
+                    id = parts[0].trim();
+                    name = parts[1].trim() || id;
+                } else if (trimmed.includes(':') && trimmed.includes(' ')) {
+                    const idx = trimmed.indexOf(':');
+                    id = trimmed.slice(0, idx).trim();
+                    name = trimmed.slice(idx + 1).trim() || id;
+                } else {
+                    id = trimmed.split('/').pop().trim();
+                    name = id;
+                }
+                if (!id) return;
+                migrated.push({ id, name, isPinned: false, providerId: p.id });
+            });
+        });
+        availableModels = migrated;
+    }
+    // Check for pending edits from editor
+    try {
+        const pending = root.dataset.pendingModels;
+        if (pending) {
+            availableModels = JSON.parse(pending);
+        }
+    } catch {}
+    const handle = createModelSelector({
+        availableModels,
+        selectedModelId: (() => {
+            const defProv = settings.default_provider_id || '';
+            const match = availableModels.find((m) => m.providerId === defProv);
+            return match ? match.id : (availableModels[0]?.id || '');
+        })(),
+        providers: settings.providers || [],
+        onSelect: (modelId) => {
+            const model = availableModels.find((m) => m.id === modelId);
+            if (model && model.providerId) {
+                const radio = document.querySelector(`input[name="default-provider-radio"][value="${CSS.escape(model.providerId)}"]`);
+                if (radio && !radio.disabled) {
+                    radio.checked = true;
+                    syncDefaultProviderBadges();
+                }
+            }
+            requestSettingsAutoSave({ immediate: true });
+        },
+        onSave: (newModels) => {
+            root.dataset.pendingModels = JSON.stringify(newModels);
+            requestSettingsAutoSave({ immediate: true });
+        },
+    });
+    _globalModelSelectorHandle = handle;
+    root.appendChild(handle.container);
+}
+
 function getSelectedDefaultProviderId() {
     return document.querySelector('input[name="default-provider-radio"]:checked')?.value || '';
 }
@@ -1142,6 +1225,43 @@ function collectWorkflowStepModels() {
 }
 
 function getConfiguredModelOptions(providers) {
+    // AMC-aligned: prefer global available_models if present
+    const globalModels = Array.isArray(state.settings?.available_models) ? state.settings.available_models : [];
+    // Also check pending edits from global selector
+    const pendingRoot = document.getElementById('global-model-selector-root');
+    let effectiveModels = globalModels;
+    if (pendingRoot && pendingRoot.dataset.pendingModels) {
+        try {
+            const pending = JSON.parse(pendingRoot.dataset.pendingModels);
+            if (Array.isArray(pending) && pending.length) effectiveModels = pending;
+        } catch {}
+    }
+    if (effectiveModels.length) {
+        const options = [];
+        effectiveModels.forEach((model) => {
+            const providerId = String(model.providerId || model.provider_id || '').trim();
+            const modelId = String(model.id || '').trim();
+            if (!modelId) return;
+            // Only include if provider is enabled (if providerId given, check)
+            if (providerId) {
+                const provider = (providers || []).find((p) => String(p.id || '').trim() === providerId);
+                if (provider && !isProviderEnabled(provider)) return;
+            }
+            const provider = (providers || []).find((p) => String(p.id || '').trim() === providerId);
+            const providerName = provider ? (String(provider.name || providerId).trim() || providerId) : providerId || 'Provider';
+            const displayName = String(model.name || modelId).trim() || modelId;
+            options.push({
+                value: encodeStepModelValue(providerId, modelId),
+                providerId,
+                modelId,
+                modelLabel: displayName,
+                providerLabel: providerName,
+                label: displayName,
+                title: `${providerId} / ${modelId}`,
+            });
+        });
+        return options;
+    }
     const options = [];
     (Array.isArray(providers) ? providers : []).forEach((provider) => {
         const providerId = String(provider.id || '').trim();

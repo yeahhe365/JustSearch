@@ -13,10 +13,10 @@ from typing import Optional
 
 from ..database import (
     load_settings, save_settings, delete_all_chats,
-    DEFAULT_SETTINGS, load_chat_history,
+    DEFAULT_SETTINGS,
 )
-from ..browser_manager import BrowserManager
-from ..llm_client import _provider_error_message
+from ..browser_manager import BrowserManager, purge_expired_search_cache
+from ..llm_client import _provider_error_message, purge_analysis_cache
 from ..openai_client import create_openai_client
 from ..providers import (
     ensure_default_provider_id,
@@ -24,11 +24,14 @@ from ..providers import (
     is_local_provider_base_url,
     is_unsupported_model_id,
     mask_provider_secrets,
-    normalize_workflow_step_models,
+    migrate_legacy_models,
+    normalize_available_models,
     normalize_providers,
+    normalize_workflow_step_models,
     split_model_item,
+    validate_available_models,
 )
-from ..search_engine import get_all_engines
+from ..search_engine import clear_config_cache, get_all_engines
 from .history import _body_text
 
 logger = logging.getLogger(__name__)
@@ -58,6 +61,7 @@ class SettingsModel(BaseModel):
     theme: Optional[str] = "light"
     default_provider_id: Optional[str] = None
     providers: Optional[list[ProviderModel]] = None
+    available_models: Optional[list[dict]] = None
     workflow_step_models: Optional[dict[str, WorkflowStepModel]] = None
     search_engine: Optional[str] = "google"
     max_results: Optional[int] = 50
@@ -97,19 +101,19 @@ class EngineCheckRequest(BaseModel):
 
 
 def _reset_runtime_caches():
-    from .. import browser_manager, llm_client, search_engine
     from . import stats as stats_router
 
-    browser_manager._search_cache.clear()
-    llm_client._ANALYSIS_CACHE.clear()
+    # 通过 browser_manager / llm_client / search_engine 的公共 API 清缓存，
+    # 不再直接伸手拿各模块的私有全局变量。
+    purge_expired_search_cache(0)
+    purge_analysis_cache(0)
+    clear_config_cache()
     stats_router.github_stats_cache.update({
         "stars": 0,
         "last_updated": None,
         "last_error_at": None,
         "error": "",
     })
-    search_engine._config_cache = {}
-    search_engine._config_mtime = 0.0
 
 
 def _recreate_browser_user_data_dir(user_data_dir: str):
@@ -119,13 +123,18 @@ def _recreate_browser_user_data_dir(user_data_dir: str):
 
 
 async def _reset_browser_profile_data(user_data_dir: str):
-    """清理浏览器持久化数据。user_data/ 目录是历史遗留,这里只删除目录内容。"""
-    _recreate_browser_user_data_dir(user_data_dir)
+    """清理浏览器持久化数据。user_data/ 目录是历史遗留,这里只删除目录内容。
+
+    rmtree 是阻塞的文件系统操作，放到线程池执行，避免卡住事件循环
+    （ignore_errors 语义保持不变）。
+    """
+    await asyncio.to_thread(_recreate_browser_user_data_dir, user_data_dir)
 
 
 @router.get("/api/settings")
 async def get_settings_endpoint():
     settings = await load_settings()
+    settings = migrate_legacy_models(settings)
     return mask_provider_secrets(settings)
 
 
@@ -176,6 +185,13 @@ async def update_settings_endpoint(settings: SettingsModel):
             update["api_key"] = primary_provider.get("api_key", "")
             update["base_url"] = primary_provider.get("base_url", "")
             update["model_id"] = primary_provider.get("model_id", "")
+
+    if "available_models" in update:
+        normalized = normalize_available_models(update["available_models"])
+        validation = validate_available_models(normalized)
+        if not validation["ok"]:
+            raise HTTPException(status_code=400, detail=validation["message"])
+        update["available_models"] = normalized
 
     providers_for_steps = update.get("providers") or current.get("providers", [])
     if "workflow_step_models" in update:
@@ -258,13 +274,15 @@ async def _check_single_engine(engine: str, query: str) -> dict:
             "error": "检测超时",
         }
     except Exception as e:
-        logger.warning("Search engine check failed for %s: %s", engine, e)
+        # 完整异常只进服务端日志；对外仅返回通用提示，避免内部实现细节
+        # （异常字符串可能含路径/依赖信息）泄漏给客户端。
+        logger.error("Search engine check failed for %s", engine, exc_info=e)
         return {
             "engine": engine,
             "available": False,
             "result_count": 0,
             "reason": "other",
-            "error": str(e)[:200] or "检测失败",
+            "error": "引擎检测失败，请检查网络或 Base URL",
         }
 
 
@@ -303,8 +321,8 @@ async def validate_api_key_endpoint(body: dict = Body(...)):
     if not api_key and not is_local_provider_base_url(base_url):
         return {"valid": False, "error": "请先填写 API 密钥"}
 
+    client = create_openai_client(api_key=api_key, base_url=base_url)
     try:
-        client = create_openai_client(api_key=api_key, base_url=base_url)
         # Make a minimal request to validate
         response = await asyncio.wait_for(
             client.chat.completions.create(
@@ -329,7 +347,20 @@ async def validate_api_key_endpoint(body: dict = Body(...)):
         elif "429" in error_msg:
             return {"valid": True, "error": "密钥有效但触发限流"}  # Key works, just rate limited
         else:
-            return {"valid": False, "error": error_msg[:200]}
+            # 完整异常只进服务端日志（可能含代理解析细节/内网路径）；
+            # 对外一律通用提示，与引擎检测端点同一口径。
+            logger.error("validate-key failed for model=%s: %s", model_id, e, exc_info=True)
+            return {"valid": False, "error": "验证失败，请检查网络连接或 Base URL"}
+    finally:
+        # AsyncOpenAI 自带独立 httpx 连接池；不关闭则每次点击泄漏一个池。
+        try:
+            close = getattr(client, "close", None)
+            if close is not None:
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
+        except Exception as e:
+            logger.warning("validate-key: 关闭客户端失败: %s", e)
 
 
 @router.post("/api/clear-cache")
