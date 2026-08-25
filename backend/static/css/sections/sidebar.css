@@ -26,16 +26,16 @@
 }
 
 #sidebar.collapsed {
-    width: 60px;
+    width: 52.2px;
     padding: 16px 0;
 }
 
-/* Expanded Pane container */
+/* Expanded Pane container — AMC w-64 (256px) */
 .sidebar-expanded-pane {
     display: flex;
     flex-direction: column;
     height: 100%;
-    width: 272px; /* Fixed width of expanded content to prevent squishing during collapse transition */
+    width: 256px; /* Fixed width of expanded content to prevent squishing during collapse transition */
     flex-shrink: 0;
     opacity: 1;
     visibility: visible;
@@ -51,7 +51,7 @@
     transition-delay: 0s, 0s, var(--transition-normal);
 }
 
-/* Collapsed (Mini) Pane container */
+/* Collapsed (Mini) Pane container — AMC gap-[0.56rem] */
 .sidebar-collapsed-pane {
     position: absolute;
     inset: 16px 0;
@@ -59,7 +59,7 @@
     flex-direction: column;
     align-items: center;
     width: 100%;
-    gap: 12px;
+    gap: 0.56rem;
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
@@ -82,7 +82,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 12px;
+    border-radius: 8px;
     color: var(--sb-icon);
     background: transparent;
     border: none;
@@ -272,57 +272,31 @@
     overflow: hidden;
 }
 
-/* 主操作：新对话用主色渐变，成为侧栏视觉焦点 */
-.new-chat-btn {
-    background: var(--primary-gradient);
-    color: #ffffff;
-    font-weight: 600;
-    box-shadow: 0 4px 12px -2px rgba(79, 70, 229, 0.35);
-}
-
-.new-chat-btn .icon-svg {
-    color: rgba(255, 255, 255, 0.92);
-}
-
-.new-chat-btn:hover {
-    background: var(--primary-gradient);
-    color: #ffffff;
-    box-shadow: 0 6px 16px -2px rgba(79, 70, 229, 0.45);
-    transform: translateY(-1px);
-    filter: brightness(1.06);
-}
-
-.new-chat-btn:active {
-    transform: translateY(0);
-    filter: brightness(0.97);
-}
-
+/* AMC 对齐：三行操作统一为 SIDEBAR_ACTION_ROW_CLASS（透明 + hover tertiary），去渐变 */
+.new-chat-btn:hover,
 .history-search-btn:hover,
 .new-group-btn:hover {
     background-color: var(--sb-bg-hover);
     color: var(--sb-text-primary);
     box-shadow: none;
     transform: none;
+    filter: none;
 }
 
+.new-chat-btn:active,
 .history-search-btn:active,
 .new-group-btn:active {
     transform: none;
     box-shadow: none;
+    filter: none;
 }
 
+.new-chat-btn .icon-svg,
 .history-search-btn .icon-svg,
 .new-group-btn .icon-svg {
     width: 18px;
     height: 18px;
     color: var(--sb-icon);
-    flex-shrink: 0;
-}
-
-.new-chat-btn .icon-svg {
-    width: 18px;
-    height: 18px;
-    color: rgba(255, 255, 255, 0.95);
     flex-shrink: 0;
 }
 
@@ -337,42 +311,32 @@
     text-overflow: ellipsis;
 }
 
-/* Keyboard Shortcut Hints */
+/* Keyboard Shortcut Hints — AMC SidebarActions ShortcutHint 胶囊 */
 .sidebar-kbd {
-    min-width: 28px;
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 20px;
+    min-width: 20px;
+    padding: 0 4px;
+    border: 1px solid var(--theme-border-secondary);
+    border-radius: 6px;
+    background: var(--theme-bg-tertiary);
+    color: var(--theme-text-tertiary);
     font-family: inherit;
     font-size: 11px;
     font-weight: 500;
-    color: var(--sb-text-secondary);
-    background: transparent;
-    border: none;
-    border-radius: 0;
-    padding: 0;
-    box-shadow: none;
-    opacity: 0;
-    text-align: right;
+    line-height: 1;
+    text-align: center;
     pointer-events: none;
+    opacity: 0;
     transition: opacity var(--transition-fast);
 }
 
+.new-chat-btn:hover .sidebar-kbd,
 .history-search-btn:hover .sidebar-kbd,
 .new-group-btn:hover .sidebar-kbd {
-    background: transparent;
-    color: var(--sb-text-secondary);
-    border-color: transparent;
-    box-shadow: none;
-    opacity: 1;
-}
-
-.new-chat-btn .sidebar-kbd {
-    color: rgba(255, 255, 255, 0.92);
-    background: rgba(255, 255, 255, 0.16);
-    border-radius: 5px;
-    padding: 1px 6px;
-    min-width: 0;
-}
-
-.new-chat-btn:hover .sidebar-kbd {
     opacity: 1;
 }
 
@@ -852,7 +816,7 @@
     cursor: pointer;
     font-size: 14px;
     font-weight: 500;
-    transition: background-color var(--transition-fast), color var(--transition-fast);
+    transition: background-color var(--transition-fast), color var(--transition-fast), transform 0.15s ease;
 }
 
 .sidebar-footer-settings-btn:hover {
@@ -860,9 +824,13 @@
     color: var(--sb-text-primary);
 }
 
+.sidebar-footer-settings-btn:active {
+    transform: scale(0.98);
+}
+
 .sidebar-footer-settings-btn .icon-svg {
-    width: 18px;
-    height: 18px;
+    width: 20px;
+    height: 20px;
     color: var(--sb-icon);
     transition: color var(--transition-fast);
 }

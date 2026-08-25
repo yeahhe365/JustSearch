@@ -184,8 +184,8 @@ textarea:focus-visible {
     --scrollbar-thumb: var(--theme-scrollbar-thumb);
     --scrollbar-thumb-hover: #b9b9c2;
 
-    /* Misc */
-    --sidebar-width: 272px;
+    /* Misc — AMC 对齐：16rem(256px) */
+    --sidebar-width: 256px;
     --radius-sm: 8px;
     --radius-md: 12px;
     --radius-lg: 18px;
