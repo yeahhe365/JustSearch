@@ -20,7 +20,7 @@ const HARNESS_HTML = `<!doctype html><html><body>
         </div>
         <div id="settings-search-results" hidden></div>
         <button class="settings-tab-btn" data-tab="general"><span>常规设置</span></button>
-        <button class="settings-tab-btn" data-tab="api"><span>API 设置</span></button>
+        <button class="settings-tab-btn" data-tab="api"><span>模型设置</span></button>
         <div id="tab-general" class="settings-panel">
             <div class="settings-section-heading"><div class="panel-header-title">常规设置</div></div>
             <div class="settings-field-row">
@@ -31,7 +31,7 @@ const HARNESS_HTML = `<!doctype html><html><body>
             </div>
         </div>
         <div id="tab-api" class="settings-panel">
-            <div class="settings-section-heading"><div class="panel-header-title">API 设置</div></div>
+            <div class="settings-section-heading"><div class="panel-header-title">模型设置</div></div>
             <div class="settings-field-row">
                 <div class="settings-field-copy"><label for="key">API Key</label><span class="field-desc">模型服务密钥</span></div>
             </div>
@@ -88,7 +88,7 @@ test('settings search finds labels across tabs and jumps on click', async () => 
     input.dispatchEvent(new Event('input', { bubbles: true }));
     const rows = results.querySelectorAll('.settings-search-result');
     assert.equal(rows.length, 1, 'matches the API Key label');
-    assert.match(rows[0].textContent, /API 设置/);
+    assert.match(rows[0].textContent, /模型设置/);
     assert.match(rows[0].textContent, /API Key/);
 
     // Clicking the result should activate the api tab and reveal the field.

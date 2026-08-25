@@ -36,7 +36,10 @@ const ICON_MCP_INNER = '<path d="M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.
 // lucide — LayoutPanelLeft (AMC interface)
 const LUCIDE_LAYOUT_PANEL_LEFT = '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>';
 
-// lucide — KeyRound (AMC api) — use KeyRound path approximated from lucide key-round
+// lucide — Cloud (AMC models) — aligned with lucide-react Cloud
+const LUCIDE_CLOUD = '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>';
+
+// lucide — KeyRound (AMC api) — kept for reference, api tab now uses Cloud
 const LUCIDE_KEY_ROUND = '<path d="M2.586 17.414a2 2 0 0 0 2.828 0l6-6a2 2 0 0 0 0-2.828l-1.414-1.414a2 2 0 0 0-2.828 0l-6 6a2 2 0 0 0 0 2.828z"/><circle cx="7.5" cy="7.5" r="1.5"/><path d="M14 7h4"/><path d="M17 7v4"/>';
 
 // lucide generic
@@ -54,7 +57,7 @@ const LUCIDE_SETTINGS = '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.
 
 const TAB_MAP = {
   general: LUCIDE_LAYOUT_PANEL_LEFT,
-  api: LUCIDE_KEY_ROUND,
+  api: LUCIDE_CLOUD,
   bridge: ICON_MCP_INNER,
   system: ICON_DATA_INNER,
   about: ICON_ABOUT_INNER,

@@ -154,7 +154,7 @@ export const en = {
     // --- settings ---
     'settings.title': 'Settings',
     'settings.tabs.general': 'General',
-    'settings.tabs.api': 'API',
+    'settings.tabs.api': 'Models',
     'settings.tabs.bridge': 'Browser Bridge',
     'settings.tabs.maintenance': 'Maintenance',
     'settings.tabs.about': 'About',
@@ -447,7 +447,7 @@ export const en = {
     'shortcuts.desc.switchSuggestion': 'Switch between suggested questions',
     'shortcuts.desc.regenerate': 'Regenerate the last answer',
     'shortcuts.desc.cancelEdit': 'Cancel edit / close dialog',
-    'shortcuts.desc.newChat': 'New chat',
+    'shortcuts.desc.newChat': 'New chat (Reserved by the browser; may not work in-page)',
     'shortcuts.desc.searchHistory': 'Search chat history',
     'shortcuts.desc.toggleSidebar': 'Expand / collapse sidebar',
     'shortcuts.desc.openHelp': 'Open this help',

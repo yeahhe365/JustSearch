@@ -70,7 +70,7 @@ function installSettingsSearchGlobals() {
         </div>
         <div id="settings-search-results" hidden></div>
         <button class="settings-tab-btn" data-tab="general"><span>常规设置</span></button>
-        <button class="settings-tab-btn" data-tab="api"><span>API 设置</span></button>
+        <button class="settings-tab-btn" data-tab="api"><span>模型设置</span></button>
         <div id="tab-general" class="settings-panel active">
             <div class="settings-section-heading"><div class="panel-header-title">常规设置</div></div>
             <div class="settings-field-row">
@@ -82,7 +82,7 @@ function installSettingsSearchGlobals() {
             </div>
         </div>
         <div id="tab-api" class="settings-panel">
-            <div class="settings-section-heading"><div class="panel-header-title">API 设置</div></div>
+            <div class="settings-section-heading"><div class="panel-header-title">模型设置</div></div>
             <div class="settings-field-row">
                 <div class="settings-field-copy"><label for="key">API Key</label><span class="field-desc">模型服务密钥</span></div>
             </div>

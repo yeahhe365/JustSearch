@@ -154,7 +154,7 @@ export const zh = {
     // --- settings (initial: labels from index.html General/API/Bridge/System/About tabs) ---
     'settings.title': '设置',
     'settings.tabs.general': '常规设置',
-    'settings.tabs.api': 'API 设置',
+    'settings.tabs.api': '模型设置',
     'settings.tabs.bridge': '浏览器桥接',
     'settings.tabs.maintenance': '系统维护',
     'settings.tabs.about': '关于',
@@ -447,7 +447,7 @@ export const zh = {
     'shortcuts.desc.switchSuggestion': '在建议问题之间切换',
     'shortcuts.desc.regenerate': '重新生成上一条回答',
     'shortcuts.desc.cancelEdit': '取消编辑 / 关闭弹窗',
-    'shortcuts.desc.newChat': '新建对话',
+    'shortcuts.desc.newChat': '新建对话（浏览器保留快捷键，可能无法在页面内生效）',
     'shortcuts.desc.searchHistory': '搜索对话历史',
     'shortcuts.desc.toggleSidebar': '展开 / 收起侧栏',
     'shortcuts.desc.openHelp': '打开本帮助',
