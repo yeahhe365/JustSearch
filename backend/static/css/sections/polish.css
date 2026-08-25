@@ -490,8 +490,13 @@
     pointer-events: none;
 }
 
-.provider-key-check .material-symbols-rounded {
+.provider-key-check .material-symbols-rounded,
+.provider-key-check svg,
+.provider-check-icon svg {
     font-size: 16px;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
 }
 
 .provider-key-wrap.has-key .provider-key-check {
@@ -579,9 +584,13 @@
     word-break: break-word;
 }
 
-.provider-test-result .material-symbols-rounded {
+.provider-test-result .material-symbols-rounded,
+.provider-test-result svg,
+.provider-test-icon svg {
     flex-shrink: 0;
     font-size: 16px;
+    width: 16px;
+    height: 16px;
 }
 
 .provider-test-result.is-success {
@@ -798,4 +807,26 @@
 
 .model-manager-batch-message.is-error {
     color: var(--warning);
+}
+
+/* AMC-aligned settings SVG icons — handle both legacy material spans and new SVG */
+.provider-collapse-icon svg,
+.provider-delete-icon svg,
+.provider-check-icon svg,
+.model-panel-icon svg,
+.provider-manage-icon svg,
+.provider-add-icon svg,
+.provider-verified-icon svg,
+.model-row-delete-icon svg,
+.model-manager-delete-icon svg,
+.provider-test-icon svg,
+.engine-check-icon svg,
+.settings-save-status-icon svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+.provider-collapse-icon svg {
+    width: 18px;
+    height: 18px;
 }

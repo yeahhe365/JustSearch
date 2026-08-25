@@ -1112,14 +1112,23 @@
     font-weight: 600;
 }
 
-.settings-tab-btn .material-symbols-rounded {
+.settings-tab-btn .material-symbols-rounded,
+.settings-tab-btn svg {
     color: var(--text-muted);
     font-size: 19px;
     transition: color var(--transition-fast);
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
 }
 
-.settings-tab-btn.active .material-symbols-rounded {
+.settings-tab-btn.active .material-symbols-rounded,
+.settings-tab-btn.active svg {
     color: var(--text-primary);
+}
+
+.settings-tab-btn.active svg {
+    stroke-width: 2.2;
 }
 
 
@@ -1207,8 +1216,15 @@
     white-space: nowrap;
 }
 
-.settings-save-status .material-symbols-rounded {
+.settings-save-status .material-symbols-rounded,
+.settings-save-status svg,
+.settings-save-status .settings-save-status-icon svg,
+.settings-save-status .engine-check-icon svg,
+.settings-save-status .provider-test-icon svg {
     font-size: 16px;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
 }
 
 .settings-save-status.is-saved {
@@ -1231,7 +1247,8 @@
     color: var(--warning);
 }
 
-.settings-save-status.is-saving .material-symbols-rounded {
+.settings-save-status.is-saving .material-symbols-rounded,
+.settings-save-status.is-saving svg {
     animation: api-verify-spin 0.85s linear infinite;
 }
 
@@ -1400,8 +1417,13 @@
     font-weight: 650;
 }
 
-.engine-check-btn .material-symbols-rounded {
+.engine-check-btn .material-symbols-rounded,
+.engine-check-btn svg,
+.engine-check-btn .engine-check-icon svg {
     font-size: 18px;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
 }
 
 .engine-check-btn:disabled {
@@ -1410,7 +1432,11 @@
 }
 
 .engine-check-btn.is-checking .material-symbols-rounded,
-.engine-check-pending .material-symbols-rounded {
+.engine-check-pending .material-symbols-rounded,
+.engine-check-btn.is-checking svg,
+.engine-check-pending svg,
+.engine-check-btn.is-checking .engine-check-icon svg,
+.engine-check-pending .engine-check-icon svg {
     display: inline-flex;
     animation: api-verify-spin 0.85s linear infinite;
 }
@@ -1452,9 +1478,17 @@
 
 .engine-check-result .material-symbols-rounded,
 .engine-check-pending .material-symbols-rounded,
-.engine-check-empty .material-symbols-rounded {
+.engine-check-empty .material-symbols-rounded,
+.engine-check-result svg,
+.engine-check-pending svg,
+.engine-check-empty svg,
+.engine-check-result .engine-check-icon svg,
+.engine-check-pending .engine-check-icon svg,
+.engine-check-empty .engine-check-icon svg {
     flex: 0 0 auto;
     font-size: 19px;
+    width: 16px;
+    height: 16px;
 }
 
 .engine-check-result.available {
