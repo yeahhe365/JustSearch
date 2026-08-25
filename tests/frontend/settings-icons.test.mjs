@@ -8,13 +8,13 @@ global.document = dom.window.document;
 
 import { createSettingsTabIcon, createActionIcon } from '../../backend/static/js/modules/settings-icons.js';
 
-test('createSettingsTabIcon general returns LayoutPanelLeft SVG', () => {
+test('createSettingsTabIcon general returns Settings gear SVG', () => {
   const el = createSettingsTabIcon('general');
   assert.equal(el.tagName.toLowerCase(), 'svg');
   assert.equal(el.getAttribute('viewBox'), '0 0 24 24');
   assert.equal(el.getAttribute('fill'), 'none');
   assert.equal(el.getAttribute('stroke'), 'currentColor');
-  assert.ok(el.innerHTML.includes('M9') || el.innerHTML.includes('rect'));
+  assert.ok(el.innerHTML.includes('M12.22') || el.innerHTML.includes('circle'));
 });
 
 test('createSettingsTabIcon bridge returns IconMcp (not extension)', () => {
