@@ -156,7 +156,7 @@ export const zh = {
     'settings.tabs.general': '常规设置',
     'settings.tabs.api': '模型设置',
     'settings.tabs.bridge': '浏览器桥接',
-    'settings.tabs.maintenance': '系统维护',
+    'settings.tabs.maintenance': '数据管理',
     'settings.tabs.shortcuts': '快捷键',
     'settings.tabs.about': '关于',
     'settings.shortcuts.title': '快捷键',

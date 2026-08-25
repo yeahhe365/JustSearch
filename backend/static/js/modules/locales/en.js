@@ -156,7 +156,7 @@ export const en = {
     'settings.tabs.general': 'General',
     'settings.tabs.api': 'Models',
     'settings.tabs.bridge': 'Browser Bridge',
-    'settings.tabs.maintenance': 'Maintenance',
+    'settings.tabs.maintenance': 'Data',
     'settings.tabs.shortcuts': 'Shortcuts',
     'settings.tabs.about': 'About',
     'settings.shortcuts.title': 'Shortcuts',
