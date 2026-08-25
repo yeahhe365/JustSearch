@@ -407,6 +407,10 @@
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
                                 <span data-i18n="settings.tabs.maintenance">系统维护</span>
                             </button>
+                            <button class="settings-tab-btn" data-tab="shortcuts" role="tab" aria-selected="false" aria-controls="tab-shortcuts">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></svg>
+                                <span data-i18n="settings.tabs.shortcuts">快捷键</span>
+                            </button>
                             <button class="settings-tab-btn" data-tab="about" role="tab" aria-selected="false" aria-controls="tab-about">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
                                 <span data-i18n="settings.tabs.about">关于</span>
@@ -886,6 +890,38 @@
                                     </div>
                                     <button id="clear-cache-btn" class="danger-btn fill" data-i18n="settings.clearCacheBtn">清除全部缓存</button>
                                 </div>
+                            </div>
+                        </div>
+
+                        <!-- Tab: Shortcuts (AMC-aligned) -->
+                        <div id="tab-shortcuts" class="settings-panel" role="tabpanel">
+                            <div class="settings-section-heading">
+                                <div>
+                                    <div class="settings-section-kicker" data-i18n="settings.shortcuts.subtitle">查看所有可用的键盘快捷键</div>
+                                    <div class="panel-header-title" data-i18n="settings.shortcuts.title">快捷键</div>
+                                </div>
+                                <span class="shortcuts-settings-count" aria-live="polite"></span>
+                            </div>
+                            <div class="settings-card shortcuts-settings-card">
+                                <div class="shortcuts-settings-toolbar">
+                                    <div class="shortcuts-settings-search">
+                                        <span class="material-symbols-rounded" aria-hidden="true">search</span>
+                                        <input type="search" id="shortcuts-settings-search" class="shortcuts-settings-input" data-i18n-placeholder="settings.shortcuts.searchPlaceholder" placeholder="搜索快捷键..." aria-label="搜索快捷键" autocomplete="off" spellcheck="false">
+                                        <button type="button" id="shortcuts-settings-clear" class="shortcuts-settings-clear" aria-label="清除搜索" hidden>
+                                            <span class="material-symbols-rounded" aria-hidden="true">close</span>
+                                        </button>
+                                    </div>
+                                    <select id="shortcuts-settings-filter" class="shortcuts-settings-filter" aria-label="分类筛选">
+                                        <option value="all" data-i18n="settings.shortcuts.filterAll">全部</option>
+                                        <option value="shortcuts.group.input" data-i18n="shortcuts.group.input">输入</option>
+                                        <option value="shortcuts.group.generation" data-i18n="shortcuts.group.generation">生成</option>
+                                        <option value="shortcuts.group.edit" data-i18n="shortcuts.group.edit">编辑</option>
+                                        <option value="shortcuts.group.sidebar" data-i18n="shortcuts.group.sidebar">侧栏</option>
+                                        <option value="shortcuts.group.help" data-i18n="shortcuts.group.help">帮助</option>
+                                    </select>
+                                </div>
+                                <div id="shortcuts-settings-list" class="shortcuts-settings-list"></div>
+                                <div id="shortcuts-settings-empty" class="shortcuts-settings-empty" hidden data-i18n="settings.shortcuts.empty">未找到匹配的快捷键</div>
                             </div>
                         </div>
 

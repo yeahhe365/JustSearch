@@ -33,6 +33,12 @@ test('createSettingsTabIcon about returns IconAbout', () => {
   assert.ok(el.innerHTML.includes('circle'));
 });
 
+test('createSettingsTabIcon shortcuts returns Command SVG', () => {
+  const el = createSettingsTabIcon('shortcuts');
+  assert.equal(el.tagName.toLowerCase(), 'svg');
+  assert.ok(el.innerHTML.includes('M15 6v12'));
+});
+
 test('createActionIcon delete returns Trash2 path', () => {
   const el = createActionIcon('delete', 16);
   assert.equal(el.getAttribute('width'), '16');

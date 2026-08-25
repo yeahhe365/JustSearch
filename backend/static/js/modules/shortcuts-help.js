@@ -11,7 +11,9 @@
 // ===========================================================================
 
 import { t } from './i18n.js?v=1';
-import { escapeHtml } from './utils.js?v=14';
+// 高亮与 settings-search 完全共用：<mark class="settings-search-highlight">，
+// 实现见 utils.js 的 highlightText / escapeRegExp（原始文本匹配 + 逐段转义）。
+import { escapeRegExp, highlightText } from './utils.js?v=14';
 
 export const SHORTCUTS = [
     { groupKey: 'shortcuts.group.input', key: 'Enter', descKey: 'shortcuts.desc.sendMessage' },
@@ -28,7 +30,7 @@ export const SHORTCUTS = [
     { groupKey: 'shortcuts.group.help', key: '?', descKey: 'shortcuts.desc.openHelp' },
 ];
 
-const GROUP_ORDER = [
+export const GROUP_ORDER = [
     'shortcuts.group.input',
     'shortcuts.group.generation',
     'shortcuts.group.edit',
@@ -36,16 +38,7 @@ const GROUP_ORDER = [
     'shortcuts.group.help',
 ];
 
-function escapeRegExp(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function highlightText(text, q) {
-    if (!q) return escapeHtml(text);
-    const esc = escapeHtml(text);
-    const re = new RegExp(`(${escapeRegExp(q)})`, 'ig');
-    return esc.replace(re, '<mark class="settings-search-highlight">$1</mark>');
-}
+// escapeRegExp / highlightText 已上移 utils.js，与 settings-search 共用同一实现。
 
 export function setupShortcutsHelp({ root = document } = {}) {
     const modal = root.getElementById('shortcuts-help-modal');

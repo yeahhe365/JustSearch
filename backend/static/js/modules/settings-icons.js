@@ -39,6 +39,9 @@ const LUCIDE_LAYOUT_PANEL_LEFT = '<rect x="3" y="3" width="18" height="18" rx="2
 // lucide — Cloud (AMC models) — aligned with lucide-react Cloud
 const LUCIDE_CLOUD = '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>';
 
+// lucide — Command (AMC shortcuts) — ⌘
+const LUCIDE_COMMAND = '<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/>';
+
 // lucide — KeyRound (AMC api) — kept for reference, api tab now uses Cloud
 const LUCIDE_KEY_ROUND = '<path d="M2.586 17.414a2 2 0 0 0 2.828 0l6-6a2 2 0 0 0 0-2.828l-1.414-1.414a2 2 0 0 0-2.828 0l-6 6a2 2 0 0 0 0 2.828z"/><circle cx="7.5" cy="7.5" r="1.5"/><path d="M14 7h4"/><path d="M17 7v4"/>';
 
@@ -60,6 +63,7 @@ const TAB_MAP = {
   api: LUCIDE_CLOUD,
   bridge: ICON_MCP_INNER,
   system: ICON_DATA_INNER,
+  shortcuts: LUCIDE_COMMAND,
   about: ICON_ABOUT_INNER,
 };
 

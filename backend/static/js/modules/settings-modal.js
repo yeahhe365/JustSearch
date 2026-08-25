@@ -39,6 +39,7 @@ import {
     wireBridgeSettingsPanel,
 } from './bridge.js?v=9';
 import { createActionIcon } from './settings-icons.js';
+import { setupShortcutsSettings } from './shortcuts-settings.js';
 
 const WORKFLOW_STEPS = [
     { id: 'analysis', labelKey: 'settings.stepAnalysis' },
@@ -116,6 +117,7 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
 
     // AMC-style settings search across all tabs.
     setupSettingsSearch({ modalEl: elements.settingsModal });
+    const _shortcutsHandle = setupShortcutsSettings();
 
     let _settingsPreviouslyFocused = null;
 
@@ -434,6 +436,7 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
             if (typeof state.settings === 'object' && state.settings) {
                 fillSettingsForm(state.settings);
             }
+            _shortcutsHandle?.render();
         },
     };
 }
