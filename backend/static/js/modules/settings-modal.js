@@ -2,7 +2,7 @@ import { authFetch } from './auth.js?v=1';
 import { coerceBooleanSetting, setCurrentSessionId, state } from './state.js?v=5';
 import { abandonActiveChatWork } from './chat.js?v=56';
 import { showToast } from './toast.js';
-import { elements, showConfirm } from './ui.js?v=43';
+import { elements, resetChatDomToHero, showConfirm } from './ui.js?v=43';
 import { t, getLanguage, setLanguage } from './i18n.js?v=1';
 import { setupSettingsSearch } from './settings-search.js?v=2';
 import { renderHistory } from './history-view.js?v=28';
@@ -15,6 +15,7 @@ import {
 import {
     buildDisplayProviderRows,
     getBaseUrlWarning,
+    getEngineDisplayName,
     getProviderCatalogEntry,
     isProviderEnabled,
     mergeModelOptions,
@@ -37,6 +38,7 @@ import {
     normalizeBridgePollIntervalSec,
     wireBridgeSettingsPanel,
 } from './bridge.js?v=9';
+import { createActionIcon } from './settings-icons.js';
 
 const WORKFLOW_STEPS = [
     { id: 'analysis', labelKey: 'settings.stepAnalysis' },
@@ -310,7 +312,10 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
         try {
             if (await API.saveSettingsAPI(newSettings)) {
                 markSavedProviderIdentities();
-                lastSavedPayload = JSON.stringify(collectSettingsForm());
+                // 记录实际发送的 payload，而不是保存完成后重新收集的表单：
+                // 否则在途保存期间用户输入的编辑会被静默吸收，排队中的第二次
+                // 保存因「已保存」而提前返回，编辑内容丢失。
+                lastSavedPayload = payload;
                 setSettingsSaveStatus('saved');
                 updateModelSelector(state.settings);
                 if (typeof onSettingsSaved === 'function') {
@@ -713,10 +718,18 @@ function setSettingsSaveStatus(status, message = '') {
     const nextStatus = SETTINGS_SAVE_STATES[status] ? status : 'saved';
     const stateConfig = SETTINGS_SAVE_STATES[nextStatus];
     el.className = `settings-save-status is-${nextStatus}`;
-    const icon = el.querySelector('.material-symbols-rounded');
+    let icon = el.querySelector('.settings-save-status-icon');
+    if (!icon) {
+        icon = el.querySelector('.material-symbols-rounded');
+        if (icon) icon.classList.add('settings-save-status-icon');
+    }
     const text = el.querySelector('span:last-child');
     if (icon) {
-        icon.textContent = stateConfig.icon;
+        const iconMap = { check_circle: 'check_circle', sync: 'progress_activity', progress_activity: 'progress_activity', error: 'error', warning: 'error' };
+        const iconName = iconMap[stateConfig.icon] || 'check_circle';
+        icon.replaceChildren(createActionIcon(iconName, 16, 2));
+        // keep class for CSS
+        icon.className = 'settings-save-status-icon';
     }
     if (text) {
         text.textContent = message || t(stateConfig.textKey);
@@ -788,12 +801,14 @@ async function checkSearchEngines(e) {
     e.preventDefault();
     const checkEnginesBtn = e.currentTarget;
     const resultsEl = document.getElementById('engine-check-results');
-    const checkIcon = checkEnginesBtn.querySelector('.material-symbols-rounded');
+    let checkIcon = checkEnginesBtn.querySelector('.engine-check-icon');
+    if (!checkIcon) checkIcon = checkEnginesBtn.querySelector('.material-symbols-rounded');
 
     checkEnginesBtn.disabled = true;
     checkEnginesBtn.classList.add('is-checking');
     if (checkIcon) {
-        checkIcon.textContent = 'progress_activity';
+        checkIcon.replaceChildren(createActionIcon('progress_activity', 16, 2));
+        checkIcon.className = 'engine-check-icon';
     }
     if (resultsEl) {
         resultsEl.classList.add('active');
@@ -820,7 +835,7 @@ async function checkSearchEngines(e) {
         checkEnginesBtn.disabled = false;
         checkEnginesBtn.classList.remove('is-checking');
         if (checkIcon) {
-            checkIcon.textContent = 'network_check';
+            checkIcon.replaceChildren(createActionIcon('network_check', 16, 2));
         }
     }
 }
@@ -852,7 +867,7 @@ function renderEngineCheckResults(data) {
         const available = Boolean(result.available);
         const statusClass = available ? 'available' : 'unavailable';
         const icon = available ? 'check_circle' : 'error';
-        const label = getEngineDisplayName(result.engine);
+        const label = getEngineDisplayName(result.engine, t, { descriptive: true });
         const resultCount = Number(result.result_count || 0);
         const detail = available
             ? t('settings.engineAvailable', { count: Number.isFinite(resultCount) ? resultCount : 0 })
@@ -862,8 +877,8 @@ function renderEngineCheckResults(data) {
         item.className = `engine-check-result ${statusClass}`;
 
         const iconEl = document.createElement('span');
-        iconEl.className = 'material-symbols-rounded';
-        iconEl.textContent = icon;
+        iconEl.className = 'engine-check-icon';
+        iconEl.appendChild(createActionIcon(icon, 16, 2));
 
         const copy = document.createElement('div');
         copy.className = 'engine-check-copy';
@@ -891,8 +906,8 @@ function renderEngineCheckStatus(resultsEl, className, icon, message) {
     wrapper.className = className;
 
     const iconEl = document.createElement('span');
-    iconEl.className = 'material-symbols-rounded';
-    iconEl.textContent = icon;
+    iconEl.className = 'engine-check-icon';
+    iconEl.appendChild(createActionIcon(icon, 16, 2));
 
     const copy = document.createElement('span');
     copy.textContent = message;
@@ -901,18 +916,8 @@ function renderEngineCheckStatus(resultsEl, className, icon, message) {
     resultsEl.appendChild(wrapper);
 }
 
-function getEngineDisplayName(engine) {
-    const names = {
-        bing: 'Bing',
-        sogou: t('settings.engineSogou'),
-        baidu: t('settings.engineBaidu'),
-        yandex: 'Yandex',
-        duckduckgo: 'DuckDuckGo',
-        google: t('settings.engineGoogle'),
-        brave: 'Brave Search',
-    };
-    return names[engine] || engine || 'Unknown';
-}
+// 搜索引擎显示名已收敛到 provider-catalog.getEngineDisplayName（与 chat 快捷胶囊共用映射）；
+// 本页引擎检测结果使用 descriptive 变体，输出文案与旧实现逐字一致。
 
 async function runProviderConnectionTest(e) {
     e.preventDefault();
@@ -965,9 +970,10 @@ function renderConnectionTestResult(resultEl, state, message) {
     resultEl.hidden = false;
     resultEl.className = `provider-test-result is-${state}`;
     resultEl.replaceChildren();
+    const iconName = state === 'success' ? 'check_circle' : state === 'error' ? 'error' : 'progress_activity';
     const icon = document.createElement('span');
-    icon.className = 'material-symbols-rounded';
-    icon.textContent = state === 'success' ? 'check_circle' : state === 'error' ? 'error' : 'progress_activity';
+    icon.className = 'provider-test-icon';
+    icon.appendChild(createActionIcon(iconName, 16, 2));
     const text = document.createElement('span');
     text.textContent = message;
     resultEl.append(icon, text);
@@ -980,9 +986,7 @@ function resetConversationView(historyCallbacks) {
         elements.historySearchInput.value = '';
     }
     renderHistory([], state.currentSessionId, historyCallbacks, []);
-    elements.chatContainer.innerHTML = '';
-    elements.heroSection.style.display = 'block';
-    elements.chatContainer.appendChild(elements.heroSection);
+    resetChatDomToHero();
 }
 
 function initProviderListUI() {
@@ -1232,11 +1236,11 @@ function createProviderCard(provider, logo, defaultProviderId, index, options = 
                         </span>
                     </span>
                 </span>
-                <span class="material-symbols-rounded provider-collapse-icon">expand_more</span>
+                <span class="provider-collapse-icon" aria-hidden="true"></span>
             </button>
             <div class="provider-card-actions">
                 <button type="button" class="remove-provider-btn" title="${t('settings.providerDelete')}" aria-label="${t('settings.providerDelete')}">
-                    <span class="material-symbols-rounded">delete</span>
+                    <span class="provider-delete-icon" aria-hidden="true"></span>
                 </button>
             </div>
         </div>
@@ -1262,7 +1266,7 @@ function createProviderCard(provider, logo, defaultProviderId, index, options = 
                 <div class="provider-key-wrap">
                     <textarea rows="3" class="provider-api-key-input" spellcheck="false" placeholder="sk-..., sk-...">${escapeHtml(provider.api_key || '')}</textarea>
                     <span class="provider-key-check" aria-hidden="true">
-                        <span class="material-symbols-rounded">check</span>
+                        <span class="provider-check-icon" aria-hidden="true"></span>
                     </span>
                 </div>
             </div>
@@ -1276,17 +1280,17 @@ function createProviderCard(provider, logo, defaultProviderId, index, options = 
                     <button type="button" class="model-panel-toggle" aria-expanded="false">
                         <span class="model-panel-title">${t('settings.modelList')}</span>
                         <span class="model-panel-summary"></span>
-                        <span class="material-symbols-rounded model-panel-icon">expand_more</span>
+                        <span class="model-panel-icon" aria-hidden="true"></span>
                     </button>
                 </div>
                 <div class="model-list-container"></div>
                 <div class="model-actions-row">
                     <button type="button" class="provider-manage-models-btn">
-                        <span class="material-symbols-rounded">settings</span>
+                        <span class="provider-manage-icon" aria-hidden="true"></span>
                         <span>${t('settings.manageModels')}</span>
                     </button>
                     <button type="button" class="add-model-btn provider-add-model-btn">
-                        <span class="material-symbols-rounded">add</span>
+                        <span class="provider-add-icon" aria-hidden="true"></span>
                         <span>${t('settings.addModel')}</span>
                     </button>
                 </div>
@@ -1294,13 +1298,21 @@ function createProviderCard(provider, logo, defaultProviderId, index, options = 
             </div>
             <div class="provider-test-row">
                 <button type="button" class="provider-test-btn">
-                    <span class="material-symbols-rounded">verified</span>
+                    <span class="provider-verified-icon" aria-hidden="true"></span>
                     <span>${t('settings.testConnection')}</span>
                 </button>
                 <div class="provider-test-result" hidden role="status" aria-live="polite"></div>
             </div>
         </div>
     `;
+    // Fill AMC-aligned SVG icons (replaces previous material-symbols)
+    card.querySelector('.provider-collapse-icon')?.replaceChildren(createActionIcon('expand_more', 18, 2));
+    card.querySelector('.provider-delete-icon')?.replaceChildren(createActionIcon('delete', 16, 2));
+    card.querySelector('.provider-check-icon')?.replaceChildren(createActionIcon('check', 16, 2));
+    card.querySelector('.model-panel-icon')?.replaceChildren(createActionIcon('expand_more', 16, 2));
+    card.querySelector('.provider-manage-icon')?.replaceChildren(createActionIcon('settings', 16, 2));
+    card.querySelector('.provider-add-icon')?.replaceChildren(createActionIcon('add', 16, 2));
+    card.querySelector('.provider-verified-icon')?.replaceChildren(createActionIcon('verified', 16, 2));
 
     const idInput = card.querySelector('.provider-id-input');
     const radio = card.querySelector('input[name="default-provider-radio"]');
@@ -1337,7 +1349,7 @@ function createProviderCard(provider, logo, defaultProviderId, index, options = 
         collapseBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
         const icon = collapseBtn.querySelector('.provider-collapse-icon');
         if (icon) {
-            icon.textContent = collapsed ? 'expand_more' : 'expand_less';
+            icon.replaceChildren(createActionIcon(collapsed ? 'expand_more' : 'expand_less', 18, 2));
         }
     };
     collapseBtn.addEventListener('click', (event) => {
@@ -1502,10 +1514,11 @@ function setupProviderModelList(providerCard) {
         row.innerHTML = `
             <input type="text" class="model-id-input" placeholder="${t('settings.modelIdPlaceholder')}" value="${escapeHtml(id)}">
             <input type="text" class="model-name-input" placeholder="${t('settings.modelNamePlaceholder')}" value="${escapeHtml(name)}">
-            <button type="button" class="remove-model-btn" title="${t('settings.deleteModel')}">
-                <span class="material-symbols-rounded">delete</span>
+            <button type="button" class="remove-model-btn" title="${t('settings.deleteModel')}" aria-label="${t('settings.deleteModel')}">
+                <span class="model-row-delete-icon" aria-hidden="true"></span>
             </button>
         `;
+        row.querySelector('.model-row-delete-icon')?.replaceChildren(createActionIcon('delete', 16, 2));
         row.querySelector('.model-id-input').addEventListener('input', serialize);
         row.querySelector('.model-name-input').addEventListener('input', serialize);
         row.querySelector('.remove-model-btn').addEventListener('click', () => {
@@ -1523,7 +1536,7 @@ function setupProviderModelList(providerCard) {
         toggleButton.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
         const icon = toggleButton.querySelector('.model-panel-icon');
         if (icon) {
-            icon.textContent = collapsed ? 'expand_more' : 'expand_less';
+            icon.replaceChildren(createActionIcon(collapsed ? 'expand_more' : 'expand_less', 16, 2));
         }
     }
 
@@ -1606,9 +1619,10 @@ function openModelManagerForCard(providerCard) {
                 <input type="text" class="model-manager-id-input" value="${escapeHtml(row.id)}" placeholder="${t('settings.modelIdPlaceholder')}">
                 <input type="text" class="model-manager-name-input" value="${escapeHtml(row.name)}" placeholder="${t('settings.modelNamePlaceholder')}">
                 <button type="button" class="remove-model-btn" title="${t('settings.deleteModel')}" aria-label="${t('settings.deleteModel')}">
-                    <span class="material-symbols-rounded">delete</span>
+                    <span class="model-manager-delete-icon" aria-hidden="true"></span>
                 </button>
             `;
+            rowEl.querySelector('.model-manager-delete-icon')?.replaceChildren(createActionIcon('delete', 16, 2));
             const idInputEl = rowEl.querySelector('.model-manager-id-input');
             const nameInputEl = rowEl.querySelector('.model-manager-name-input');
             idInputEl.addEventListener('input', () => {
