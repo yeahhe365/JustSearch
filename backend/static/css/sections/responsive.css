@@ -171,11 +171,6 @@
         max-width: 100%;
     }
 
-    .suggestion-chip {
-        font-size: 12px;
-        padding: 4px 10px;
-    }
-
     .hero-hints {
         display: none !important;
     }
