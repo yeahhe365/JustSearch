@@ -4,7 +4,7 @@
 /* 标题度量与 AMC --app-text-measure 一致 */
 .markdown-content { max-width: var(--app-text-measure, 75ch); line-height: 1.65; }
 .markdown-content h1, .markdown-content h2 { letter-spacing: -0.015em; }
-.markdown-content pre { background: var(--theme-bg-code-block); border: 1px solid var(--theme-border-primary); border-radius: var(--radius-md); }
+.markdown-content pre { background: var(--amc-message-code-bg); border: 1px solid var(--theme-border-primary); border-radius: var(--radius-md); }
 .code-block-header { background: var(--theme-bg-code-block-header); border-bottom: 1px solid var(--theme-border-primary); color: var(--theme-text-secondary); }
 .markdown-content code:not(pre code) { background: var(--theme-bg-tertiary); color: var(--theme-text-code); border-radius: 6px; padding: 0.15em 0.35em; }
 .markdown-content blockquote { border-left: 3px solid var(--theme-border-secondary); color: var(--theme-text-secondary); }
@@ -188,7 +188,7 @@
 /* Code */
 .markdown-body pre,
 .markdown-content pre {
-    background: var(--theme-bg-code-block);
+    background: var(--amc-message-code-bg);
     border: 1px solid var(--theme-border-primary);
     border-radius: var(--radius-md);
     line-height: 1.5;

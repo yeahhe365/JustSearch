@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -40,8 +41,9 @@ def test_access_control_allows_loopback_without_token():
         return JSONResponse({"ok": True})
 
     async def run():
+        # Host 必须是回环才允许免 token 本地访问（DNS rebinding 防护）。
         transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 4321))
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
             response = await client.get("/api/ping")
         assert response.status_code == 200
         assert response.json() == {"ok": True}
@@ -49,8 +51,13 @@ def test_access_control_allows_loopback_without_token():
     asyncio.run(run())
 
 
-def test_access_control_allows_docker_bridge_gateway_without_token():
-    """Host → published port appears as bridge gateway (typically *.*.*.1)."""
+def test_access_control_allows_docker_bridge_gateway_without_token(monkeypatch):
+    """Host → published port appears as bridge gateway (typically *.*.*.1).
+
+    网关规则仅在容器内生效（_running_in_container 门禁）；裸机上同源地址
+    必须回退到 token 校验。
+    """
+    from backend.app import auth as auth_module
     from backend.app.auth import AccessControlMiddleware
 
     app = FastAPI()
@@ -60,14 +67,16 @@ def test_access_control_allows_docker_bridge_gateway_without_token():
     async def ping():
         return JSONResponse({"ok": True})
 
-    async def run():
+    async def run(in_container: bool):
+        monkeypatch.setattr(auth_module, "_running_in_container", lambda: in_container)
+        # Host 必须是回环才允许免 token 本地访问（DNS rebinding 防护）。
         transport = httpx.ASGITransport(app=app, client=("172.17.0.1", 4321))
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
             response = await client.get("/api/ping")
-        assert response.status_code == 200
-        assert response.json() == {"ok": True}
+        return response.status_code
 
-    asyncio.run(run())
+    assert asyncio.run(run(True)) == 200
+    assert asyncio.run(run(False)) == 401
 
 
 def test_access_control_rejects_docker_peer_container_without_token():
@@ -110,10 +119,14 @@ def test_access_control_rejects_arbitrary_172_prefix_without_token():
     asyncio.run(run())
 
 
-def test_is_loopback_host_docker_gateway_only():
+def test_is_loopback_host_docker_gateway_only(monkeypatch):
+    from backend.app import auth as auth_module
     from backend.app.auth import is_loopback_host
 
     assert is_loopback_host("127.0.0.1") is True
+
+    # 网关地址仅在容器内被视为可信"客户端 IP"。
+    monkeypatch.setattr(auth_module, "_running_in_container", lambda: True)
     assert is_loopback_host("172.17.0.1") is True
     assert is_loopback_host("172.18.0.1") is True
     assert is_loopback_host("10.0.0.1") is True
@@ -121,6 +134,10 @@ def test_is_loopback_host_docker_gateway_only():
     assert is_loopback_host("172.31.100.50") is False
     assert is_loopback_host("10.0.0.42") is False
     assert is_loopback_host("203.0.113.10") is False
+
+    monkeypatch.setattr(auth_module, "_running_in_container", lambda: False)
+    assert is_loopback_host("172.17.0.1") is False
+    assert is_loopback_host("10.0.0.1") is False
 
 
 def test_access_control_allows_remote_api_with_bearer_token():
@@ -158,7 +175,7 @@ def test_access_control_rejects_loopback_client_with_untrusted_origin():
 
     async def run():
         transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 4321))
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
             response = await client.get(
                 "/api/ping",
                 headers={"Origin": "https://evil.example"},
@@ -220,6 +237,8 @@ def test_html_bootstrap_includes_token_for_docker_gateway_client(monkeypatch):
 
     monkeypatch.setenv("JUSTSEARCH_AUTH_ENABLED", "true")
     monkeypatch.setattr(auth, "get_auth_token", lambda: "secret-token")
+    # 网关分支仅在容器内生效：以容器内视角运行本测试。
+    monkeypatch.setattr(auth, "_running_in_container", lambda: True)
 
     app = FastAPI()
 
@@ -3507,7 +3526,22 @@ def test_chat_endpoint_workflow_failure_keeps_truncated_tail(tmp_path, monkeypat
 
         assert response.status_code == 200
         # The failure surfaced as an SSE error, not a thrown 500.
-        assert "simulated upstream failure" in response.text
+        # 审计修复后内部异常文本不再透传给客户端（防信息泄露），只回通用文案。
+        # SSE data 行是 JSON 序列化后的内容，中文以 \uXXXX 转义出现，
+        # 因此解析事件而不是对原始文本做子串匹配。
+        error_events = []
+        for line in response.text.splitlines():
+            if not line.startswith("data: "):
+                continue
+            try:
+                event = json.loads(line[len("data: "):])
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "error":
+                error_events.append(event)
+        assert error_events, "workflow failure must emit an SSE error event"
+        assert any("生成过程中出现错误" in (e.get("content") or "") for e in error_events)
+        assert all("simulated upstream failure" not in (e.get("content") or "") for e in error_events)
 
         # The tail was NEVER deleted on disk — workflow failed before the
         # success-path replace_messages_from call.
@@ -5088,8 +5122,9 @@ def test_github_stats_endpoint_caches_recent_failures(monkeypatch):
 
         assert first.status_code == 200
         assert second.status_code == 200
-        assert first.json() == {"stars": 12, "error": "network down"}
-        assert second.json() == {"stars": 12, "error": "network down"}
+        # 异常细节（"network down"）只进服务端日志；对外/缓存均为通用文案。
+        assert first.json() == {"stars": 12, "error": "Failed to fetch from GitHub"}
+        assert second.json() == {"stars": 12, "error": "Failed to fetch from GitHub"}
         assert client.calls == 1
 
     try:
@@ -5127,8 +5162,9 @@ def test_github_stats_endpoint_retries_after_error_cache_expires():
     stats_router.github_stats_cache.update({
         "stars": 12,
         "last_updated": None,
-        "last_error_at": datetime.now() - timedelta(seconds=stats_router.GITHUB_STATS_ERROR_CACHE_TTL_SECONDS + 1),
-        "error": "network down",
+        # TTL 时间戳契约已切换为 time.monotonic()（单调时钟，防墙钟回拨）。
+        "last_error_at": time.monotonic() - stats_router.GITHUB_STATS_ERROR_CACHE_TTL_SECONDS - 1,
+        "error": "Failed to fetch from GitHub",
     })
     stats_router.set_httpx_client(client)
 

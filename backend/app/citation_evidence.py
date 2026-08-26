@@ -85,7 +85,6 @@ _NUMBER_UNIT_RE = re.compile(
     r"(?![\w.])",
     re.I,
 )
-_BARE_NUMBER_RE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?![\w.])")
 
 # Critical anchors: full dates or "substantial" numbers. A bare short integer
 # (e.g. 5, 7, 42) is intentionally NOT a critical anchor on its own.
@@ -104,7 +103,6 @@ _CRITICAL_NUMBER_RE = re.compile(
     r"(?![\w.])"
 )
 
-_TOKEN_RE = re.compile(r"[\w一-鿿]+", re.U)
 _CJK_RUN_RE = re.compile(r"[一-鿿]+")
 _LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
 
@@ -146,9 +144,9 @@ _UNIT_DIMENSIONS = {
     "元": "currency", "块": "currency", "美金": "currency", "美元": "currency",
     "欧元": "currency", "英镑": "currency", "人民币": "currency",
     "usd": "currency", "eur": "currency", "gbp": "currency", "cny": "currency", "rmb": "currency",
-    "km": "length", "m": "length", "cm": "length", "mm": "length",
-    "kg": "mass", "g": "mass",
-    "ms": "time", "s": "time", "h": "time", "hour": "time", "hours": "time",
+    "km": "length", "cm": "length", "mm": "length",
+    "kg": "mass",
+    "ms": "time", "hour": "time", "hours": "time",
     "天": "time", "日": "time", "月": "time", "年": "time", "岁": "time",
     "gb": "storage", "mb": "storage", "tb": "storage", "kb": "storage",
     "ghz": "frequency", "mhz": "frequency",
@@ -710,6 +708,26 @@ def _split_sentence_spans(text: str) -> list[tuple[int, int]]:
     if start < len(text or ""):
         spans.append((start, len(text or "")))
     return spans
+
+
+def _merge_candidates_by_start(
+    cands: list[dict[str, Any]], min_gap: int = 30
+) -> list[dict[str, Any]]:
+    """按 start 排序并合并相距小于 ``min_gap`` 的候选，保留更长的一条。
+
+    ``_segment_candidates`` 与 ``_find_evidence_for_claim`` 共用同一去重规则，
+    抽出此助手避免两处逻辑漂移。
+    """
+    ordered = sorted(cands, key=lambda c: c["start"])
+    merged: list[dict[str, Any]] = []
+    for c in ordered:
+        if merged and c["start"] - merged[-1]["start"] < min_gap:
+            # Prefer the longer / more coherent of the two.
+            if len(c["text"]) > len(merged[-1]["text"]):
+                merged[-1] = c
+            continue
+        merged.append(c)
+    return merged
 
 
 def _segment_candidates(text: str) -> list[dict[str, Any]]:

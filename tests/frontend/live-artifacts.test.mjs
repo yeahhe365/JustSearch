@@ -29,12 +29,10 @@ const {
     parseLiveArtifactInteractionSpec,
     processArtifactHtmlForDisplay,
     sanitizeClippingStylesInHtml,
-    scheduleFinalHeightSweep,
     forceOpenAllDetailsInHtml,
     resolveLiveArtifactsModeFlag,
     rebuildLiveArtifactFrames,
     syncInlineArtifactFrameHeight,
-    finalHeightSweepTimers,
 } = __liveArtifactsTestHooks;
 
 const require = createRequire(import.meta.url);
@@ -627,36 +625,10 @@ test('bridge scheduleResize has setTimeout fallback for background tabs', () => 
     assert.match(srcdoc, /setTimeout\(done,\s*120\)/);
 });
 
-test('scheduleFinalHeightSweep registers a grow-only timer per frame', () => {
-    // P0-2: after baking the final srcdoc, two delayed re-measures (allowShrink:false)
-    // cover "seed measured short + bridge resize lost". The timer set must be
-    // tracked on finalHeightSweepTimers so it can be cleared/replaced.
-    installBrowserGlobals(`
-        <!doctype html>
-        <body>
-            <div class="live-artifact-inline-viewport" style="height:320px"></div>
-        </body>
-    `);
-    const viewport = document.querySelector('.live-artifact-inline-viewport');
-    const frame = document.createElement('iframe');
-    frame.className = 'live-artifact-inline-iframe';
-    viewport.appendChild(frame);
-
-    const artifact = {
-        id: 'sweep-1',
-        renderable: true,
-        language: 'html',
-        isStreaming: false,
-        code: '<section style="display:block;width:100%"><h2>x</h2><p>body</p></section>',
-        sources: [],
-    };
-    scheduleFinalHeightSweep(viewport, frame, artifact, viewport, 1000);
-    const timers = finalHeightSweepTimers.get(frame);
-    assert.ok(timers && timers.size === 1, `expected 1 sweep timer, got ${timers?.size}`);
-});
-
-test('resize message with unknown frameId warns and does not throw', () => {
-    // P1-5 diagnostic: an unroutable resize must not crash the message handler.
+test('resize message with unknown frameId does not throw', () => {
+    // P1-5: an unroutable resize must not crash the message handler; it falls
+    // back to source matching silently (debug warn removed as normal
+    // scroll/remount flows hit this path routinely).
     installBrowserGlobals(`
         <!doctype html>
         <body>
@@ -671,25 +643,16 @@ test('resize message with unknown frameId warns and does not throw', () => {
         value: { id: 'mock-diag-window' },
     });
 
-    const warnings = [];
-    const originalWarn = console.warn;
-    console.warn = (...args) => warnings.push(args);
-    try {
-        // No throw, even though 'no-such-frame' is not in the DOM.
-        assert.doesNotThrow(() => handleArtifactFrameMessage({
-            source: frame.contentWindow,
-            data: {
-                channel: 'justsearch-live-artifacts',
-                event: 'resize',
-                height: 999,
-                frameId: 'no-such-frame',
-            },
-        }));
-        assert.equal(warnings.length, 1);
-        assert.match(String(warnings[0][0]), /resize 消息未找到目标 frame/);
-    } finally {
-        console.warn = originalWarn;
-    }
+    // No throw, even though 'no-such-frame' is not in the DOM.
+    assert.doesNotThrow(() => handleArtifactFrameMessage({
+        source: frame.contentWindow,
+        data: {
+            channel: 'justsearch-live-artifacts',
+            event: 'resize',
+            height: 999,
+            frameId: 'no-such-frame',
+        },
+    }));
 });
 
 test('details-toggle resize falls back to precomputed expanded height', () => {
@@ -2612,7 +2575,10 @@ test('bridge stream-render patches incrementally, preserving DOM node identity',
 test('Phase 2.2: off-screen artifact unloads, streaming artifact is skipped, remount restores frame', () => {
     installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
     const hooks = __liveArtifactsTestHooks;
-
+    // 生产默认禁用容器级卸载（滚动回看白屏根因，见 live-artifacts.js 注释）；
+    // 本用例验证卸载/重挂机制本身，显式启用并在 finally 恢复默认。
+    hooks.setViewportUnloadEnabled(true);
+    try {
     // Finished artifact → unload removes the iframe shell and caches height.
     const container = document.getElementById('message');
     renderLiveArtifactsForMessage(container, '<section style="height:120px"><h1>Done</h1></section>', {
@@ -2637,11 +2603,16 @@ test('Phase 2.2: off-screen artifact unloads, streaming artifact is skipped, rem
     assert.ok(remounted, 'remount recreates an iframe');
     assert.equal(remounted.dataset.liveArtifactFrameId, realFrameId, 'frame id preserved across remount');
     assert.notEqual(container.dataset.artifactUnloaded, '1', 'container no longer flagged unloaded');
+    } finally {
+        hooks.setViewportUnloadEnabled(false);
+    }
 });
 
 test('Phase 2.2: a streaming artifact is not unloaded off-screen', () => {
     installBrowserGlobals('<!doctype html><body><div id="message"></div></body>');
     const hooks = __liveArtifactsTestHooks;
+    hooks.setViewportUnloadEnabled(true);
+    try {
     const container = document.getElementById('message');
     renderLiveArtifactsForMessage(container, '<section><h2>Live</h2></section>', {
         messageId: 'unload-streaming',
@@ -2653,6 +2624,9 @@ test('Phase 2.2: a streaming artifact is not unloaded off-screen', () => {
     hooks.unloadArtifactFrame(container);
     assert.ok(container.querySelector('.live-artifact-inline-iframe'), 'streaming artifact is NOT unloaded');
     assert.notEqual(container.dataset.artifactUnloaded, '1', 'streaming container not flagged unloaded');
+    } finally {
+        hooks.setViewportUnloadEnabled(false);
+    }
 });
 
 test('Phase 3: hidden tab defers stream pushes, visible flush delivers the latest once', () => {

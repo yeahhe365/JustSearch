@@ -31,6 +31,30 @@ def _clone_search_results(results: List[Dict]) -> List[Dict]:
     return copy.deepcopy(results)
 
 
+def purge_expired_search_cache(max_age_seconds: float = 3600.0) -> int:
+    """清理过期搜索缓存，返回移除的条数（跨代理契约：函数名与签名勿改）。
+
+    缓存条目为 (results, time.time()) 时间戳元组；``max_age_seconds <= 0``
+    时清空全部。缺时间戳/结构损坏的条目视为过期一并清除。
+    """
+    now = time.time()
+    if max_age_seconds <= 0:
+        removed = len(_search_cache)
+        _search_cache.clear()
+        return removed
+    expired_keys = [
+        key
+        for key, entry in _search_cache.items()
+        if not isinstance(entry, tuple)
+        or len(entry) < 2
+        or not isinstance(entry[1], (int, float))
+        or now - entry[1] > max_age_seconds
+    ]
+    for key in expired_keys:
+        _search_cache.pop(key, None)
+    return len(expired_keys)
+
+
 def json_selector_arg(selector: str) -> str:
     """Serialize a CSS selector into a JS string literal for Runtime.evaluate."""
     return json.dumps(selector)
@@ -42,7 +66,9 @@ class BrowserManager:
         self.max_results = max_results
         # Load full engine config for fallback support, and single-engine config for direct use
         self.engine_config = load_selectors(None)  # full config dict (all engines)
-        self.current_engine_config = self.engine_config.get(engine, load_selectors(engine))
+        # 命中时不要急切求值 load_selectors(engine)（会重复读盘/构建）。
+        cfg = self.engine_config.get(engine)
+        self.current_engine_config = cfg if cfg is not None else load_selectors(engine)
 
     def _search_cache_key(self, query: str) -> str:
         """Include max_results so different result limits do not share a cache entry."""
@@ -355,20 +381,33 @@ class BrowserManager:
             return []
 
     async def _postprocess_search_results(self, results: List[Dict], log_func=None) -> List[Dict]:
-        """Resolve result-wrapper URLs and remove search-engine utility pages."""
-        processed = []
-        for item in results:
+        """Resolve result-wrapper URLs and remove search-engine utility pages.
+
+        逐条串行解析时,每条最长等 10s httpx 超时（20 条百度结果 ⇒ 分钟级）。
+        这里用 Semaphore(5) 限并发并行解析;gather 保序,失败回退原始 URL。
+        """
+        sem = asyncio.Semaphore(5)
+
+        async def resolve_one(item: Dict) -> Dict | None:
             url = item.get('url', '')
             if not url:
-                continue
-
-            resolved_url = await resolve_redirect_url(url, log_func=log_func)
+                return None
+            try:
+                async with sem:
+                    resolved_url = await resolve_redirect_url(url, log_func=log_func)
+            except Exception as e:
+                if log_func:
+                    log_func(f"浏览器: 解析跳转 URL 失败，保留原链接: {e}")
+                resolved_url = url
             if is_search_engine_internal_page(resolved_url):
-                continue
+                return None
 
             new_item = item.copy()
             new_item['url'] = resolved_url
-            processed.append(new_item)
+            return new_item
+
+        settled = await asyncio.gather(*(resolve_one(item) for item in results))
+        processed = [item for item in settled if item is not None]
 
         for i, item in enumerate(processed):
             item['id'] = i + 1

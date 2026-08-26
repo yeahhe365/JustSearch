@@ -5,9 +5,14 @@ Provides request ID tracking for correlating logs across a single search flow.
 
 import logging
 import contextvars
+import re
 
 # Request-scoped correlation ID
 _request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+
+# 控制字符（含换行/制表）：调用方会把原始用户输入写进日志（如 chat 路由记录
+# query 前 80 字符），不折叠的话攻击者可注入伪造的多行日志。
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def set_request_id(request_id: str) -> None:
@@ -21,10 +26,18 @@ def get_request_id() -> str:
 
 
 class RequestIdFilter(logging.Filter):
-    """Logging filter that injects request_id into log records."""
+    """Logging filter that injects request_id and sanitizes control chars."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = get_request_id()  # type: ignore[attr-defined]
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True  # 格式化本身出错时交给 handler 的常规报错路径。
+        if _CONTROL_CHARS_RE.search(message):
+            # 先插值成完整消息再折叠控制字符，防止日志伪造（log forging）。
+            record.msg = _CONTROL_CHARS_RE.sub(" ", message)
+            record.args = None
         return True
 
 

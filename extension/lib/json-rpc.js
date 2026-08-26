@@ -1,19 +1,18 @@
-// JSON-RPC 2.0 编解码。
-// 请求:{ jsonrpc:"2.0", id, method, params }
-// 响应:{ jsonrpc:"2.0", id, result | error }
-// 通知:{ jsonrpc:"2.0", method, params }  (无 id)
+// JSON-RPC 2.0 编解码(入站方向)。
+// 后端 → 扩展:带 id 的 request:{ jsonrpc:"2.0", id, method, params },本地
+// handler 执行后回 { jsonrpc:"2.0", id, result | error }。
+// 通知:{ jsonrpc:"2.0", method, params }(无 id),执行但不回包。
+// 扩展 → 后端只发通知(hello / 心跳 ping 均无 id,见 ws-transport.js),
+// 因此这里没有出站 pending-call 机制(原 sendRequest/_pending/_nextId 已删)。
 
 export class JsonRpcBridge {
   constructor(transport) {
     this.transport = transport;
-    this._nextId = 1;
-    this._pending = new Map();        // id -> { resolve, reject, timeoutId }
     this._requestHandlers = new Map();   // method -> async fn(params) -> result
     this._onRequestStarted = null;
     this._onRequestCompleted = null;
 
     transport.onMessage((msg) => this._onMessage(msg));
-    transport.onDisconnect(() => this._rejectAll("bridge disconnected"));
   }
 
   // 后端 → 扩展:注册本地能处理的请求方法。
@@ -28,75 +27,44 @@ export class JsonRpcBridge {
     this._onRequestCompleted = onRequestCompleted ?? null;
   }
 
-  // 扩展 → 后端:发送请求,等响应。
-  async sendRequest(method, params = {}, timeoutMs = 30000) {
-    const id = this._nextId++;
-    const message = { jsonrpc: "2.0", id, method, params };
-    return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        if (this._pending.has(id)) {
-          this._pending.delete(id);
-          reject(new Error(`JSON-RPC request "${method}" timed out after ${timeoutMs}ms`));
-        }
-      }, timeoutMs);
-      this._pending.set(id, { resolve, reject, timeoutId });
-      try {
-        this.transport.sendMessage(message);
-      } catch (err) {
-        clearTimeout(timeoutId);
-        this._pending.delete(id);
-        reject(err);
-      }
-    });
-  }
-
   async _onMessage(msg) {
     if (!msg || typeof msg !== "object") return;
+    if (typeof msg.method !== "string") return; // 无方法的杂散消息(如孤儿响应):忽略
 
-    // 响应:匹配 pending 请求。
-    if (typeof msg.id === "number" && (msg.result !== undefined || msg.error !== undefined)) {
-      const pending = this._pending.get(msg.id);
-      if (!pending) return;
-      clearTimeout(pending.timeoutId);
-      this._pending.delete(msg.id);
-      if (msg.error) pending.reject(new Error(msg.error.message ?? JSON.stringify(msg.error)));
-      else pending.resolve(msg.result);
-      return;
-    }
-
-    // 请求:调用本地 handler,回响应。
-    if (typeof msg.method === "string") {
-      const sessionId = extractSessionId(msg.params);
-      if (this._onRequestStarted) this._onRequestStarted(sessionId);
-      const completion = this._onRequestCompleted;
-      try {
-        const handler = this._requestHandlers.get(msg.method);
-        if (!handler) throw new Error(`No handler for method "${msg.method}"`);
-        const result = await handler(msg.params ?? {});
-        if (typeof msg.id === "number") {
+    // 请求/通知:调用本地 handler,带 id 时回响应。
+    const sessionId = extractSessionId(msg.params);
+    if (this._onRequestStarted) this._onRequestStarted(sessionId);
+    const completion = this._onRequestCompleted;
+    try {
+      const handler = this._requestHandlers.get(msg.method);
+      if (!handler) throw new Error(`No handler for method "${msg.method}"`);
+      const result = await handler(msg.params ?? {});
+      if (typeof msg.id === "number") {
+        // WS 可能在 handler 成功后、发送前断开:发送失败只记日志并吞掉。
+        // 若不捕获,catch 分支还会再发一次错误响应(同样会抛),未处理的
+        // rejection 会从 _onMessage 逃逸。
+        try {
           this.transport.sendMessage({ jsonrpc: "2.0", id: msg.id, result: result ?? null });
+        } catch (sendErr) {
+          console.warn("JSON-RPC: 响应发送失败(连接已断开):", sendErr?.message ?? sendErr);
         }
-      } catch (err) {
-        if (typeof msg.id === "number") {
+      }
+    } catch (err) {
+      if (typeof msg.id === "number") {
+        try {
           this.transport.sendMessage({
             jsonrpc: "2.0",
             id: msg.id,
             error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
           });
+        } catch (sendErr) {
+          // 断连时响应发不出去是正常的,吞掉即可。
+          console.warn("JSON-RPC: 错误响应发送失败(连接已断开):", sendErr?.message ?? sendErr);
         }
-      } finally {
-        if (completion) completion(sessionId);
       }
-      return;
+    } finally {
+      if (completion) completion(sessionId);
     }
-  }
-
-  _rejectAll(reason) {
-    for (const [, pending] of this._pending) {
-      clearTimeout(pending.timeoutId);
-      pending.reject(new Error(reason));
-    }
-    this._pending.clear();
   }
 }
 

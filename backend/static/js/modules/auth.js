@@ -39,6 +39,8 @@ export function buildAuthHeaders(token, headers = {}) {
 }
 
 export function buildAuthenticatedUrl(path, token = getAuthToken()) {
+    // Deprecated: token in URL leaks via Referer/history. Prefer authFetch with Bearer header.
+    // 仅保留给 localhost 回退测试路径使用；生产环境应使用 authFetch
     if (!token) {
         return path;
     }

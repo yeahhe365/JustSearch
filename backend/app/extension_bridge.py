@@ -102,7 +102,10 @@ class ExtensionConnection:
             self._reject_all("extension disconnected")
 
     def _on_message(self, msg: dict) -> asyncio.Task:
-        return asyncio.create_task(self._handle_message(msg))
+        task = asyncio.create_task(self._handle_message(msg))
+        # 任务异常必须显式消费，否则会变成 "Task exception was never retrieved"。
+        task.add_done_callback(self._consume_message_task_result)
+        return task
 
     async def _handle_message(self, msg: dict) -> None:
         # 响应:匹配 pending 请求。
@@ -208,13 +211,22 @@ class ExtensionConnection:
         except Exception as e:  # noqa: BLE001 - log-and-swallow by design
             logger.debug("[bridge] fire-and-forget send failed: %s", e)
 
+    def _consume_message_task_result(self, task: asyncio.Task) -> None:
+        """Consume a message-handler task result so stray exceptions surface in logs."""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # noqa: BLE001 - log-and-swallow by design
+            logger.error("[bridge] extension message handler failed: %s", e)
+
     def _reject_all(self, reason: str) -> None:
         self._closed = True
         for fut in list(self._pending.values()):
             if not fut.done():
                 try:
                     fut.set_exception(RuntimeError(reason))
-                except (InvalidStateError, asyncio.InvalidStateError):
+                except asyncio.InvalidStateError:
                     # Future was already completed between the check and set_exception
                     pass
         self._pending.clear()
@@ -240,7 +252,8 @@ async def handle_extension_websocket(websocket: WebSocket) -> None:
     if _REQUIRE_LOOPBACK:
         client = websocket.client
         host = getattr(client, "host", None) if client else None
-        if host not in _LOOPBACK_HOSTS:
+        from .auth import is_loopback_host
+        if not is_loopback_host(host):
             logger.warning("[bridge] reject non-loopback extension connection from %s", host)
             await websocket.close(code=4003)
             return
@@ -452,32 +465,46 @@ class TabPool:
         self.client = client
         self._pending_close: list[int] = []
         self._acquired: list[int] = []
+        self._lock = asyncio.Lock()
 
     async def acquire(self, session_id: Optional[str] = None) -> dict:
-        result = await self.client.create_tab(session_id=session_id)
+        # 加 15s 超时防止池耗尽永久挂起
+        try:
+            result = await asyncio.wait_for(self.client.create_tab(session_id=session_id), timeout=15)
+        except asyncio.TimeoutError:
+            raise RuntimeError("create_tab timeout after 15s")
         tab_id = result.get("tabId") if isinstance(result, dict) else None
         if tab_id is None:
             raise RuntimeError("create_tab returned no tabId")
         tab = {"tab_id": tab_id, **result}
-        self._acquired.append(tab_id)
+        async with self._lock:
+            self._acquired.append(tab_id)
         return tab
 
     async def release(self, tab: dict) -> None:
         tab_id = tab.get("tab_id")
         if tab_id is None:
             return
-        if tab_id in self._acquired:
-            self._acquired.remove(tab_id)
-        self._pending_close.append(tab_id)
+        async with self._lock:
+            if tab_id in self._acquired:
+                self._acquired.remove(tab_id)
+            self._pending_close.append(tab_id)
         # detach debugger,避免黄条残留;关闭交给 close_all_pending 批量做。
-        await self.client.detach_tab(tab_id)
+        try:
+            await self.client.detach_tab(tab_id)
+        except Exception:
+            pass
 
     async def close_all_pending(self, session_id: Optional[str] = None) -> None:
         """关闭所有已 release 但尚未关闭的 tab。workflow 一轮结束 + 周期清理都调。"""
-        ids = self._pending_close
-        self._pending_close = []
+        async with self._lock:
+            ids = self._pending_close
+            self._pending_close = []
         if ids:
-            await self.client.finalize_tabs(ids, session_id=session_id)
+            try:
+                await self.client.finalize_tabs(ids, session_id=session_id)
+            except Exception as e:
+                logger.debug("[TabPool] finalizeTabs failed: %s", e)
 
 
 # ---------------------------------------------------------------------------

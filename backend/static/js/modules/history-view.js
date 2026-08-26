@@ -1,4 +1,4 @@
-import { buildAuthenticatedUrl } from './auth.js?v=1';
+import { buildAuthenticatedUrl, getAuthToken } from './auth.js?v=1';
 import {
     createChatGroupAPI,
     deleteChatGroupAPI,
@@ -25,7 +25,8 @@ export function getCachedHistory() {
     return _fullHistory;
 }
 
-export function getCachedGroups() {
+// 仅模块内部（历史搜索重渲染）使用，无需导出。
+function getCachedGroups() {
     return _chatGroups;
 }
 
@@ -253,11 +254,36 @@ function createHistoryItem(chat, currentSessionId, callbacks) {
         '<svg class="icon-svg" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" x2="12" y1="15" y2="3"></line></svg>',
         (e) => {
             e.stopPropagation();
-            window.open(
-                buildAuthenticatedUrl(`/api/history/${encodePathSegment(chat.id)}/export`),
-                '_blank',
-                'noopener,noreferrer',
-            );
+            const token = getAuthToken();
+            // 若无 token（本地回环或测试环境），保持原有 window.open 行为以兼容测试
+            if (!token) {
+                window.open(
+                    buildAuthenticatedUrl(`/api/history/${encodePathSegment(chat.id)}/export`),
+                    '_blank',
+                    'noopener,noreferrer',
+                );
+                return;
+            }
+            // 有 token 时用安全 blob 下载避免 URL 泄露
+            (async () => {
+                try {
+                    const { authFetch } = await import('./auth.js?v=1');
+                    const resp = await authFetch(`/api/history/${encodePathSegment(chat.id)}/export`);
+                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                    const blob = await resp.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `chat-${chat.id}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                } catch (err) {
+                    const { showToast } = await import('./toast.js?v=1');
+                    showToast(String(err), 'error');
+                }
+            })();
         }
     ));
 
@@ -511,11 +537,11 @@ export function renderHistory(history, currentSessionId, callbacks, groups = _ch
     if (restUngrouped.length > 0) {
         renderUngroupedDropTarget(hasGroups || pinnedUngrouped.length > 0);
         renderDateGroups(restUngrouped, currentSessionId, callbacks);
-    } else if (searchTerm && _chatGroups.length === 0 && pinnedUngrouped.length === 0) {
-        renderEmptyHistory('search_off', '未找到匹配的对话');
     } else if (hasGroups && hasHistory && pinnedUngrouped.length === 0) {
         renderUngroupedDropTarget(true, true);
     }
+    // 注：此处无需"搜索无结果"兜底——无分组且无未分组会话时 filtered 必为空，
+    // 上方 !hasGroups && !hasHistory 分支已用 t('history.noResults') 渲染空态。
 
     setupHistoryDragAndDrop(callbacks);
 }

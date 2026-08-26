@@ -8,7 +8,8 @@
  */
 import { t } from './i18n.js?v=1';
 
-export const PROVIDER_CATALOG = [
+// 预置目录仅在本模块内使用（外部一律走 buildDisplayProviderRows / getProviderCatalogEntry）。
+const PROVIDER_CATALOG = [
     {
         id: 'openai',
         label: 'OpenAI',
@@ -75,7 +76,7 @@ export const PROVIDER_CATALOG = [
 ];
 
 /** Fallback logo for providers that are not in the catalog. */
-export const GENERIC_PROVIDER_LOGO = '/static/assets/providers/custom.png';
+const GENERIC_PROVIDER_LOGO = '/static/assets/providers/custom.png';
 
 /** A provider without an explicit enabled flag is treated as enabled. */
 export function isProviderEnabled(provider) {
@@ -90,9 +91,33 @@ export function getProviderCatalogEntry(providerId) {
     return PROVIDER_CATALOG.find((entry) => entry.id === providerId) || null;
 }
 
-export function getProviderLogo(providerId) {
+function getProviderLogo(providerId) {
     const entry = getProviderCatalogEntry(providerId);
     return entry ? entry.logo : GENERIC_PROVIDER_LOGO;
+}
+
+/**
+ * 搜索引擎 → 显示名（统一映射：chat 快捷胶囊与设置页引擎检测共用）。
+ * @param {string} engine 引擎 key（duckduckgo/google/bing/sogou/brave/baidu/yandex）
+ * @param {(key: string, vars?: object) => string} t i18n 翻译函数（运行时注入，切语言后刷新）
+ * @param {{ descriptive?: boolean }} [options]
+ *   - 默认（short）：chat 快捷设置的紧凑品牌名；
+ *   - descriptive: true：设置页引擎检测结果的说明性标签。
+ *   两个变体各自保持与重构前调用点的输出逐字一致。
+ * @returns {string}
+ */
+export function getEngineDisplayName(engine, t, options = {}) {
+    const descriptive = Boolean(options.descriptive);
+    switch (engine) {
+        case 'duckduckgo': return 'DuckDuckGo';
+        case 'google': return descriptive ? t('settings.engineGoogle') : 'Google';
+        case 'bing': return 'Bing';
+        case 'sogou': return descriptive ? t('settings.engineSogou') : t('engine.sogou');
+        case 'brave': return 'Brave Search';
+        case 'baidu': return descriptive ? t('settings.engineBaidu') : t('engine.baidu');
+        case 'yandex': return 'Yandex';
+        default: return descriptive ? (engine || 'Unknown') : (engine || 'Google');
+    }
 }
 
 /**

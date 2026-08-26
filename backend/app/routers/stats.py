@@ -9,7 +9,7 @@ import os
 import re
 import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -36,6 +36,8 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # GitHub stars cache
 # ---------------------------------------------------------------------------
+# GitHub star 缓存：时间戳一律用 time.monotonic()（单调时钟），避免系统
+# 墙钟在 DST/校时回拨时把 TTL 窗口拉长或缩短。字段存的是 float 秒。
 github_stats_cache = {
     "stars": 0,
     "last_updated": None,
@@ -55,7 +57,7 @@ def set_httpx_client(client: httpx.AsyncClient | None):
     _httpx_client = client
 
 
-def _cache_github_success(stars: int, fetched_at: datetime) -> dict:
+def _cache_github_success(stars: int, fetched_at: float) -> dict:
     github_stats_cache["stars"] = stars
     github_stats_cache["last_updated"] = fetched_at
     github_stats_cache["last_error_at"] = None
@@ -63,8 +65,9 @@ def _cache_github_success(stars: int, fetched_at: datetime) -> dict:
     return {"stars": stars}
 
 
-def _cache_github_error(error: str, failed_at: datetime) -> dict:
+def _cache_github_error(error: str, failed_at: float) -> dict:
     github_stats_cache["last_error_at"] = failed_at
+    # error 只存通用文案；完整异常由调用方写服务端日志，绝不外发/缓存。
     github_stats_cache["error"] = error
     return {"stars": github_stats_cache["stars"], "error": error}
 
@@ -78,16 +81,16 @@ async def _fetch_github_repo_stats():
 
 @router.get("/api/stats/github")
 async def get_github_stats():
-    now = datetime.now()
+    now = time.monotonic()
     if (
-        github_stats_cache["last_updated"]
-        and (now - github_stats_cache["last_updated"]).total_seconds() < GITHUB_STATS_CACHE_TTL_SECONDS
+        github_stats_cache["last_updated"] is not None
+        and now - github_stats_cache["last_updated"] < GITHUB_STATS_CACHE_TTL_SECONDS
     ):
         return {"stars": github_stats_cache["stars"]}
 
     if (
-        github_stats_cache["last_error_at"]
-        and (now - github_stats_cache["last_error_at"]).total_seconds() < GITHUB_STATS_ERROR_CACHE_TTL_SECONDS
+        github_stats_cache["last_error_at"] is not None
+        and now - github_stats_cache["last_error_at"] < GITHUB_STATS_ERROR_CACHE_TTL_SECONDS
     ):
         return {"stars": github_stats_cache["stars"], "error": github_stats_cache.get("error") or "Failed to fetch from GitHub"}
 
@@ -98,7 +101,8 @@ async def get_github_stats():
             return _cache_github_success(data.get("stargazers_count", 0), now)
         return _cache_github_error("Failed to fetch from GitHub", now)
     except Exception as e:
-        return _cache_github_error(str(e), now)
+        logger.error("GitHub stats fetch failed: %s", e, exc_info=True)
+        return _cache_github_error("Failed to fetch from GitHub", now)
 
 
 @router.get("/api/engines")
@@ -267,7 +271,7 @@ async def download_extension_package():
 @router.get("/api/health")
 async def health_check():
     from ..extension_bridge import get_bridge_client, get_extension_info, get_ws_endpoint, is_extension_connected
-    from ..database import _engine
+    from ..database import _DB_PATH, _engine
 
     # Memory usage info
     mem_mb = 0
@@ -284,14 +288,13 @@ async def health_check():
 
     # Database file size
     try:
-        from ..database import _DB_PATH
         if os.path.exists(_DB_PATH):
             db_size_mb = round(os.path.getsize(_DB_PATH) / 1024 / 1024, 2)
     except Exception:
         pass
 
     # Uptime calculation
-    uptime_seconds = int(time.monotonic() - _START_TIME) if _START_TIME else 0
+    uptime_seconds = int(time.monotonic() - _START_TIME)
 
     extension_connected = is_extension_connected()
     extension_info = get_extension_info()
@@ -333,10 +336,12 @@ async def health_check():
                 "加载已解压的扩展程序 → 选择 justsearch-bridge 目录"
             ),
         },
-        "db_pool_size": _engine.pool.size() if _engine and hasattr(_engine, 'pool') else 0,
-        "db_pool_checked_out": _engine.pool.checkedout() if _engine and hasattr(_engine, 'pool') else 0,
+        "db_pool_size": (getattr(_engine.pool, "size", lambda: 0)() if _engine and hasattr(_engine, 'pool') else 0),
+        "db_pool_checked_out": (getattr(_engine.pool, "checkedout", lambda: 0)() if _engine and hasattr(_engine, 'pool') else 0),
         "memory_mb": mem_mb,
         "db_size_mb": db_size_mb,
         "uptime_seconds": uptime_seconds,
-        "timestamp": datetime.now().isoformat(),
+        # 全库统一 naive-UTC 约定（见 database.py），加 Z 后缀明确语义；
+        # 用 timezone-aware now 再剥掉 tzinfo，避免 utcnow() 的弃用告警
+        "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
     }

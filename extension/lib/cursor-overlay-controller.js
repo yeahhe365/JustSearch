@@ -15,27 +15,13 @@ const EMPTY_CURSOR_OVERLAY_STATE = {
 };
 
 export class CursorOverlayController {
-  constructor(onBrowserControlActivityChanged = () => {}) {
+  constructor() {
     this.sessions = new Map();
     this.tabSessions = new Map();
     this.activeTabIds = new Set();
     this.listenersRegistered = false;
-    this.lastBrowserControlActive = false;
-    this.onBrowserControlActivityChanged = onBrowserControlActivityChanged;
     this.registerObservationListeners();
     void this.refreshActiveTabs();
-  }
-
-  setBrowserControlActivityChangeHandler(handler) {
-    this.onBrowserControlActivityChanged = handler;
-    this.updateBrowserControlActivity();
-  }
-
-  isBrowserControlActive() {
-    for (const session of this.sessions.values()) {
-      if (session.isRunning || session.activeRequests > 0) return true;
-    }
-    return false;
   }
 
   async startSession(sessionId, turnId, options = {}) {
@@ -47,15 +33,17 @@ export class CursorOverlayController {
     session.isRunning = true;
     this.clearIdleHideTimer(session);
     if (options.publishTabs !== false) await this.publishTabs(session.tabIds);
-    this.updateBrowserControlActivity();
   }
 
   async incrementActiveRequests(sessionId) {
+    // 生命周期钩子对每个入站 RPC 都触发(ping/navigate/evaluate…),此时 cursor
+    // session 通常还不存在;若在这里 ensureSession 会为非光标请求制造永久残留的
+    // 幽灵 session(空 tabIds、无人清理)。真实 cursor 流程由 moveMouse 处理器
+    // 内的 startSession 负责创建 session;decrement 侧本就容忍缺失,两侧对称。
     const session = this.sessions.get(sessionId);
     if (!session) return;
     this.clearIdleHideTimer(session);
     session.activeRequests++;
-    this.updateBrowserControlActivity();
   }
 
   async decrementActiveRequests(sessionId) {
@@ -67,7 +55,6 @@ export class CursorOverlayController {
     if (session.activeRequests === 0 && session.isRunning) {
       this.scheduleIdleHide(sessionId, session);
     }
-    this.updateBrowserControlActivity();
   }
 
   scheduleIdleHide(sessionId, session) {
@@ -104,9 +91,7 @@ export class CursorOverlayController {
     if (!session?.isRunning) return;
     this.clearIdleHideTimer(session);
     session.isRunning = false;
-    session.abortController?.abort();
     await this.publishTabs(session.tabIds);
-    this.updateBrowserControlActivity();
   }
 
   async trackTab(sessionId, tabId, options = {}) {
@@ -129,8 +114,6 @@ export class CursorOverlayController {
       tabSessionIds.delete(sessionId);
       if (tabSessionIds.size === 0) this.tabSessions.delete(tabId);
     }
-
-    this.updateBrowserControlActivity();
   }
 
   async setCursorState(sessionId, tabId, turnId, cursor, options = {}) {
@@ -171,7 +154,6 @@ export class CursorOverlayController {
         currentTurnId: null,
         cursorByTabId: new Map(),
         activeRequests: 0,
-        abortController: null,
         idleHideTimer: null,
       };
       this.sessions.set(sessionId, session);
@@ -226,13 +208,6 @@ export class CursorOverlayController {
     return null;
   }
 
-  updateBrowserControlActivity() {
-    const active = this.isBrowserControlActive();
-    if (active === this.lastBrowserControlActive) return;
-    this.lastBrowserControlActive = active;
-    this.onBrowserControlActivityChanged(active);
-  }
-
   untrackTabGlobally(tabId) {
     const sessionIds = this.tabSessions.get(tabId);
     if (sessionIds) {
@@ -247,7 +222,6 @@ export class CursorOverlayController {
       }
       this.tabSessions.delete(tabId);
     }
-    this.updateBrowserControlActivity();
   }
 
   registerObservationListeners() {

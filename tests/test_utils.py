@@ -303,7 +303,8 @@ class TestLLMResponseParsing:
         assert result["queries"] == ["URLSearchParams delete MDN"]
         assert result["resolved_query"] == "URLSearchParams delete MDN"
         assert "entities" in result
-        assert calls[0]["retries"] == 0
+        # 短操作现在带一次重试（审计修复：瞬时网络抖动不再直接降级）
+        assert calls[0]["retries"] == 1
 
     def test_assess_relevance_accepts_plain_string_response(self):
         client = LLMClient(api_key="test-key", base_url="https://example.test/v1")
@@ -328,7 +329,8 @@ class TestLLMResponseParsing:
         )
 
         assert result == [2, 4]
-        assert calls[0]["retries"] == 0
+        # 短操作现在带一次重试（审计修复：瞬时网络抖动不再直接降级）
+        assert calls[0]["retries"] == 1
 
     def test_analyze_task_propagates_provider_configuration_errors(self):
         client = LLMClient(api_key="test-key", base_url="https://example.test/v1")

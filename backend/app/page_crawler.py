@@ -16,7 +16,7 @@ from .extension_bridge import get_bridge_client, TabPool
 logger = logging.getLogger(__name__)
 
 # PDF URL pattern
-_PDF_PATTERN = re.compile(r'\.pdf(\?.*)?$', re.IGNORECASE)
+_PDF_PATTERN = re.compile(r'\.pdf(?:[?#].*)?$', re.IGNORECASE)
 
 # 虚拟光标 move_sequence 全局单调计数器(进程级)。扩展端用 (turn_id, move_sequence)
 # 去重贝塞尔路径并上报到达。进程重启会重置,但扩展端按 turn 去重,无冲突。
@@ -159,6 +159,36 @@ INTERACTIVE_ELEMENTS_JS = r"""(() => {
     const navPatterns = /^(back|next|previous|prev|1|2|3|4|5|6|7|8|9|10|first|last|<|>|<<|>>)$/i;
     const skipNoise = /^(skip to (main )?content|skip navigation|跳转到?内容|跳至(主)?内容|skip to main|跳过导航)$/i;
 
+    // SSRF 加固:解析后的 href 指向内网时排除该锚点候选。
+    // 覆盖 IPv4 段 0/8、10/8、127/8、169.254/16、172.16-31、192.168/16、
+    // 100.64-127(CGNAT)、198.18-19(benchmark),以及 IPv6 ::1、fc00::/7(fc/fd)、
+    // fe80::/10 与 localhost / *.local / *.internal。
+    function hrefTargetsInternalNetwork(href) {
+        let u;
+        try { u = new URL(href, location.href); } catch (e) { return false; }
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return true;
+        const host = (u.hostname || '').toLowerCase();
+        if (!host) return true;
+        if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) return true;
+        if (host.includes(':')) {
+            // IPv6 字符串前缀启发式。
+            return host === '::1' || host === '::'
+                || host.startsWith('fc') || host.startsWith('fd')
+                || /^fe[89ab]/.test(host);
+        }
+        const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+        if (!m) return false;
+        const o = m.slice(1).map(Number);
+        if (o.some(n => n > 255)) return false;
+        const a = o[0], b = o[1];
+        return a === 0 || a === 10 || a === 127
+            || (a === 172 && b >= 16 && b <= 31)
+            || (a === 192 && b === 168)
+            || (a === 169 && b === 254)
+            || (a === 100 && b >= 64 && b <= 127)
+            || (a === 198 && (b === 18 || b === 19));
+    }
+
     for (const el of candidates) {
         if (!isVisible(el)) continue;
         const text = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ');
@@ -168,6 +198,7 @@ INTERACTIVE_ELEMENTS_JS = r"""(() => {
         if (skipNoise.test(text)) continue;
         const href = (el.getAttribute && el.getAttribute('href')) || '';
         if (href === '#' || href === '#content' || href === '#bodyContent' || href === '#main') continue;
+        if ((el.tagName || '').toLowerCase() === 'a' && hrefTargetsInternalNetwork(el.href || href)) continue;
         const parent = el.closest('header, footer, nav, .navbar, .footer, .header, .sidebar, .nav-bar, #header, #footer, #nav');
         if (parent) continue;
         const rect = el.getBoundingClientRect();
@@ -188,7 +219,6 @@ INTERACTIVE_ELEMENTS_JS = r"""(() => {
 
 # Scroll target into view, re-measure center, return {x,y,ok} or null
 PREPARE_CLICK_JS_TMPL = r"""(() => {
-    const wantId = %s;
     const wantText = %s;
     // Prefer matching by re-running selection heuristics and id order is unstable
     // after DOM changes — match by text + similar position first.
@@ -280,7 +310,7 @@ async def _run_interactive_mode_locked(
         if isinstance(text_len, (int, float)) and text_len >= _INTERACTIVE_SKIP_MIN_CHARS:
             if log_func:
                 log_func(
-                    f"浏览器: 正文已约 {int(text_len)} 字符，跳过交互点击（阈值阈值 {_INTERACTIVE_SKIP_MIN_CHARS}）"
+                    f"浏览器: 正文已约 {int(text_len)} 字符，跳过交互点击（阈值 {_INTERACTIVE_SKIP_MIN_CHARS}）"
                 )
             return
     except Exception:
@@ -329,7 +359,7 @@ async def _run_interactive_mode_locked(
                 if want_text:
                     prep = await bridge.evaluate(
                         tab_id,
-                        PREPARE_CLICK_JS_TMPL % (_js_str(cid), _js_str(want_text)),
+                        PREPARE_CLICK_JS_TMPL % _js_str(want_text),
                         timeout_ms=10000,
                     )
                     if isinstance(prep, dict) and prep.get("ok"):
@@ -381,6 +411,31 @@ async def _run_interactive_mode_locked(
             await asyncio.sleep(1.0)
 
 
+async def _reenumerate_and_guard_url(
+    bridge, tab_id: int, final_url: str, log_func=None
+) -> tuple[str | None, str]:
+    """提取前最后复查 tab 当前 URL（SSRF 防护）。
+
+    交互模式点击 / 延迟 meta-refresh 可能在 settle 窗口内把 tab 再次导航走,
+    navigate 后的那次复查覆盖不到。返回 (updated_final_url, refusal):
+    - 命中内网地址 → (原 final_url, 拒绝文案),调用方直接返回 refusal;
+    - 其余情况 → (最新安全 URL 或原 final_url, None)。
+    """
+    try:
+        navigated = await bridge.get_tab_url(tab_id)
+    except Exception:
+        # 读不到真实 URL 时沿用已知安全的 final_url，不误拒。
+        navigated = final_url
+    if not navigated or navigated == final_url or navigated == "about:blank":
+        return final_url, None
+    # getaddrinfo 是阻塞调用,统一丢线程池,避免卡事件循环。
+    if await asyncio.to_thread(is_private_url, navigated):
+        if log_func:
+            log_func(f"浏览器: 拒绝访问内网地址 {navigated}")
+        return final_url, "错误: 不允许访问内网地址"
+    return navigated, None
+
+
 async def crawl_page(url: str, log_func=None,
                      interactive_mode: bool = False, query: str = None,
                      llm_client=None, session_id: str = None) -> str:
@@ -390,7 +445,8 @@ async def crawl_page(url: str, log_func=None,
     final_url = await resolve_redirect_url(url, log_func)
 
     # SSRF protection: block private/internal network addresses
-    if is_private_url(final_url):
+    # (getaddrinfo 阻塞,丢线程池执行,避免卡事件循环)
+    if await asyncio.to_thread(is_private_url, final_url):
         if log_func:
             log_func(f"浏览器: 拒绝访问内网地址 {final_url}")
         return "错误: 不允许访问内网地址"
@@ -419,10 +475,14 @@ async def crawl_page(url: str, log_func=None,
         try:
             if log_func:
                 log_func(f"浏览器: 正在加载页面...")
-            await bridge.navigate(tab_id, final_url, timeout_ms=20000)
+            await asyncio.wait_for(bridge.navigate(tab_id, final_url, timeout_ms=20000), timeout=25)
+        except asyncio.TimeoutError:
+            if log_func:
+                log_func(f"浏览器: 加载页面超时 {final_url}")
+            return "[CRAWL_TIMEOUT]"
         except Exception as e:
-            err_msg = str(e)
-            is_timeout = "Timeout" in err_msg or "timeout" in err_msg or "timed out" in err_msg
+            err_msg = str(e).lower()
+            is_timeout = "timed out" in err_msg or "timeout" in err_msg
             if log_func:
                 if is_timeout:
                     log_func(f"浏览器: 加载页面超时 {final_url}")
@@ -438,7 +498,7 @@ async def crawl_page(url: str, log_func=None,
         except Exception:
             navigated_url = final_url
         if navigated_url and navigated_url != final_url and navigated_url != "about:blank":
-            if is_private_url(navigated_url):
+            if await asyncio.to_thread(is_private_url, navigated_url):
                 if log_func:
                     log_func(f"浏览器: 拒绝访问跳转后的内网地址 {navigated_url}")
                 return "错误: 不允许访问内网地址"
@@ -580,7 +640,8 @@ async def crawl_page(url: str, log_func=None,
                 pass
 
         # Special handling for Zhihu — click "阅读全文" / "展开阅读全文" to expand
-        if "zhihu.com" in final_url:
+        # (排除 zhuanlan.zhihu.com,它由下方专栏分支专门处理,避免多跑一次 15s evaluate)
+        if "zhihu.com" in final_url and "zhuanlan.zhihu.com" not in final_url:
             try:
                 expanded = await bridge.evaluate(tab_id, r"""() => {
                     const btns = document.querySelectorAll('button');
@@ -867,7 +928,7 @@ async def crawl_page(url: str, log_func=None,
             if still_blocked:
                 if log_func:
                     log_func("浏览器: Cloudflare 验证未通过，跳过此页面")
-                return None
+                return ""
 
         # Interactive Mode
         if interactive_mode and query and llm_client:
@@ -879,6 +940,12 @@ async def crawl_page(url: str, log_func=None,
             except Exception as e:
                 if log_func:
                     log_func(f"浏览器: 交互模式执行出错: {e}")
+
+        # 提取前最后复查:交互点击 / 延迟 meta-refresh 可能已把 tab 带到另一页面,
+        # navigate 后的那次复查覆盖不到这里。
+        final_url, refusal = await _reenumerate_and_guard_url(bridge, tab_id, final_url, log_func)
+        if refusal:
+            return refusal
 
         if log_func:
             log_func(f"浏览器: 正在提取页面内容...")
@@ -901,15 +968,27 @@ async def crawl_page(url: str, log_func=None,
             content = prepend_text + content
 
         if log_func:
-            log_func(f"浏览器: 已爬取 {url} - 提取了 {len(content)} 个字符。")
+            log_func(f"浏览器: 已爬取 {final_url} - 提取了 {len(content)} 个字符。")
         return content.strip()
 
+    except asyncio.TimeoutError:
+        logger.warning("Crawl timeout for %s", url)
+        if log_func:
+            log_func(f"浏览器: 爬取超时 {url}")
+        return "[CRAWL_TIMEOUT]"
     except Exception as e:
         msg = f"Crawl error for {url}: {e}"
         logger.error(msg)
         if log_func:
             log_func(f"浏览器错误: {msg}")
-        return f"爬取页面时出错: {str(e)}"
+        # 不把错误文案当正文喂给 LLM，避免幻觉
+        return ""
     finally:
-        await tab_pool.release(tab)
-        await tab_pool.close_all_pending(session_id=session_id)
+        try:
+            await tab_pool.release(tab)
+        except Exception:
+            pass
+        try:
+            await tab_pool.close_all_pending(session_id=session_id)
+        except Exception:
+            pass

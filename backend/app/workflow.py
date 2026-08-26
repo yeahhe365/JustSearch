@@ -28,6 +28,10 @@ class SearchWorkflow:
         self.max_iterations = max_iterations
         self.interactive_search = interactive_search
         self.session_id = session_id
+        if canvas_mode:
+            import warnings
+            warnings.warn("canvas_mode deprecated, use live_artifacts_mode", DeprecationWarning, stacklevel=2)
+            logger.warning("[Workflow] canvas_mode deprecated")
         self.live_artifacts_mode = bool(live_artifacts_mode or canvas_mode)
         # Content cache: url -> content (avoid re-crawling same URL across iterations)
         self._content_cache: Dict[str, str] = {}
@@ -88,11 +92,43 @@ class SearchWorkflow:
             completion_tokens += getattr(client, "total_completion_tokens", 0) or 0
         return prompt_tokens, completion_tokens
 
+    async def aclose(self) -> None:
+        """关闭所有步骤 LLM 客户端（共享实例只关一次），释放底层连接池。"""
+        seen = set()
+        for client in [self.llm, *self.step_llms.values()]:
+            if id(client) in seen:
+                continue
+            seen.add(id(client))
+            aclose = getattr(client, "aclose", None)
+            if aclose is None:
+                continue
+            try:
+                await aclose()
+            except Exception as e:
+                logger.warning("[Workflow] 关闭 LLM 客户端失败: %s", e)
+
+    @staticmethod
+    def _lowercase_scheme_and_netloc(url: str) -> str:
+        """仅小写 scheme 与 netloc；path/query/fragment 保留原大小写。
+
+        整体 lower() 会把大小写敏感的不同路径（如 /PageA 与 /pagea）错误地
+        合并成同一个去重键。
+        """
+        try:
+            from urllib.parse import urlparse, urlunparse
+            parsed = urlparse(url)
+            return urlunparse(
+                parsed._replace(scheme=parsed.scheme.lower(), netloc=parsed.netloc.lower())
+            )
+        except Exception:
+            return url.lower()
+
     def _normalize_url(self, url: str) -> str:
         """规范化 URL 用于去重。处理 Bing redirect URL 等特殊格式。"""
         if not url:
             return ''
         # 提取 Bing redirect URL 中的真实目标
+        # （既有测试锚定该分支保持整体小写的旧去重语义，故不改动）
         decoded_bing_url = decode_bing_redirect_url(url)
         if decoded_bing_url:
             return decoded_bing_url.lower().rstrip('/')
@@ -118,8 +154,8 @@ class SearchWorkflow:
                 url = urlunparse(parsed._replace(query=new_query, netloc=hostname if hostname != parsed.hostname else parsed.netloc))
         except Exception:
             pass
-        # 通用规范化：去尾斜杠、小写
-        return url.lower().rstrip('/')
+        # 通用规范化：去尾斜杠；scheme/netloc 小写，path/query 保留原大小写
+        return self._lowercase_scheme_and_netloc(url).rstrip('/')
 
     def _resolve_url(self, url: str) -> str:
         """将 Bing redirect URL 解析为真实目标 URL（用于显示）。"""
@@ -232,14 +268,18 @@ class SearchWorkflow:
                               progress_callback: Callable[[str], None],
                               user_input: str, source_id_counter: int) -> tuple:
         """处理搜索引擎查询，返回 (new_sources, source_id_counter, search_results_count)。"""
-        # Deduplicate and check against history
+        # Deduplicate normalized queries
         valid_queries = []
+        history_norm = {q.strip().lower() for q in search_history}
         for q in search_queries:
-            if q not in search_history:
+            norm = q.strip().lower()
+            if norm not in history_norm:
                 valid_queries.append(q)
                 search_history.append(q)
+                history_norm.add(norm)
         
         # If all were duplicates (e.g. Iter 2 suggests same query), allow at least one if it's new to this batch?
+        # 防御式保留：search_history 理论上可为空。
         if not valid_queries and iteration == 1 and search_queries:
              valid_queries = [search_queries[0]]
 
@@ -257,12 +297,25 @@ class SearchWorkflow:
                 for q in valid_queries
             ]
 
-            # Wait for all searches to complete; individual failures return [].
-            results_list = await asyncio.gather(*search_tasks, return_exceptions=True)
+            # Wait for all searches with total timeout; individual failures return [].
+            try:
+                results_list = await asyncio.wait_for(
+                    asyncio.gather(*search_tasks, return_exceptions=True), timeout=90
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[Workflow] 搜索总超时(90s)，取消剩余任务")
+                for t in search_tasks:
+                    if not t.done():
+                        t.cancel()
+                results_list = [[] for _ in search_tasks]
             
             # Handle exceptions from individual searches
             processed_results = []
             for i, result in enumerate(results_list):
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                if isinstance(result, BaseException) and not isinstance(result, Exception):
+                    raise result
                 if isinstance(result, Exception):
                     logger.warning("[Workflow] 搜索查询 %d 失败: %s", i, result)
                     processed_results.append([])
@@ -297,7 +350,14 @@ class SearchWorkflow:
         progress_callback("正在调用 AI 评估搜索结果的相关性...")
         
         # [04] Relevance Assessment
-        relevant_ids = await self._llm_for_step("relevance").assess_relevance(user_input, search_results)
+        try:
+            relevant_ids = await asyncio.wait_for(
+                self._llm_for_step("relevance").assess_relevance(user_input, search_results),
+                timeout=30,
+            )
+        except Exception as e:
+            logger.warning("[Workflow] 相关性评估失败，降级取前3: %s", e)
+            relevant_ids = [r['id'] for r in search_results[:3]]
         progress_callback(f"选定进行深度爬取的 ID: {relevant_ids}")
 
         relevant_id_set = set()
@@ -309,8 +369,14 @@ class SearchWorkflow:
 
         valid_result_ids = {res['id'] for res in search_results}
         if not relevant_id_set.intersection(valid_result_ids):
-            progress_callback("相关性评估未选中可用结果，跳过偏题搜索结果。")
-            return [], source_id_counter, len(search_results)
+            logger.warning("[Workflow] 相关性评估返回空/非法 id %s，降级取前3未访问", relevant_ids)
+            # 降级：取前3未访问
+            fallback = [r for r in search_results if self._normalize_url(r.get('url','')) not in visited_urls][:3]
+            if fallback:
+                relevant_id_set = {r['id'] for r in fallback}
+            else:
+                progress_callback("相关性评估未选中可用结果，跳过偏题搜索结果。")
+                return [], source_id_counter, len(search_results)
         
         # [05] Admission Filter — 优先未访问的 URL，如果都访问过则选次优结果
         to_crawl = []
@@ -390,13 +456,24 @@ class SearchWorkflow:
                         session_id=self.session_id,
                     )
 
-            contents = await asyncio.gather(
-                *[_crawl_one(item) for item in uncached_items],
-                return_exceptions=True,
-            )
+            try:
+                contents = await asyncio.wait_for(
+                    asyncio.gather(
+                        *[_crawl_one(item) for item in uncached_items],
+                        return_exceptions=True,
+                    ),
+                    timeout=120,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[Workflow] 爬取总超时(120s)")
+                contents = ["" for _ in uncached_items]
             # Cache results
             for content, orig_idx, item in zip(contents, uncached_indices, uncached_items):
+                if isinstance(content, BaseException) and not isinstance(content, Exception):
+                    raise content
                 if isinstance(content, Exception):
+                    if isinstance(content, asyncio.CancelledError):
+                        raise content
                     logger.warning("[Workflow] 爬取页面异常: %s: %s", item.get('url', '')[:80], content)
                     progress_callback(f"跳过爬取异常页面: {item.get('url', '')}")
                     cached_contents[orig_idx] = ""
@@ -446,106 +523,112 @@ class SearchWorkflow:
         """
         Executes the JustSearch Workflow with iterative refinement.
         """
-        try:
-            iteration = 0
-            accumulated_sources = []
-            visited_urls = set()
-            search_history = []
-            last_feedback = "" 
-            last_partial_answer = ""
-            source_id_counter = 0
-            total_search_results = 0
-            start_time = time.monotonic()
-            # Decontextualized intent used for relevance / crawl / answer (Phase-1 multi-turn).
-            resolved_query = (user_input or "").strip()
-            analysis_entities: list = []
+        iteration = 0
+        accumulated_sources = []
+        visited_urls = set()
+        search_history = []
+        last_feedback = "" 
+        last_partial_answer = ""
+        source_id_counter = 0
+        total_search_results = 0
+        start_time = time.monotonic()
+        # Decontextualized intent used for relevance / crawl / answer (Phase-1 multi-turn).
+        resolved_query = (user_input or "").strip()
+        analysis_entities: list = []
             
-            while iteration < self.max_iterations:
-                iteration += 1
-                if iteration == 1:
-                    progress_callback(f"🔍 第 1 轮搜索 — 阶段 I: 分析问题...")
-                else:
-                    progress_callback(f"🔄 第 {iteration}/{self.max_iterations} 轮补充搜索 — 分析缺失信息...")
-                logger.info("[Workflow] === 迭代 %d/%d 开始 ===", iteration, self.max_iterations)
-                logger.info("[Workflow] 用户输入: %s", user_input[:100])
+        while iteration < self.max_iterations:
+            iteration += 1
+            if iteration == 1:
+                progress_callback(f"🔍 第 1 轮搜索 — 阶段 I: 分析问题...")
+            else:
+                progress_callback(f"🔄 第 {iteration}/{self.max_iterations} 轮补充搜索 — 分析缺失信息...")
+            logger.info("[Workflow] === 迭代 %d/%d 开始 ===", iteration, self.max_iterations)
+            logger.info("[Workflow] 用户输入: %s", user_input[:100])
 
-                # [02] Task Analysis
-                if iteration == 1:
-                    analysis_input = user_input
-                else:
-                    entity_hint = f"\nKnown entities from prior analysis: {analysis_entities}" if analysis_entities else ""
-                    analysis_input = (
-                        f"Original User Question: {resolved_query or user_input}\n"
-                        f"Raw latest user message: {user_input}\n"
-                        f"Previous Search Queries Tried: {search_history}\n"
-                        f"Reason previous results were insufficient: {last_feedback}\n"
-                        f"{entity_hint}\n"
-                        f"Task: Generate a NEW, different self-contained search query (or specific URL) "
-                        f"to find the missing information. Keep the same topic/entities unless the user changed topic."
-                    )
+            # [02] Task Analysis
+            if iteration == 1:
+                analysis_input = user_input
+            else:
+                entity_hint = f"\nKnown entities from prior analysis: {analysis_entities}" if analysis_entities else ""
+                analysis_input = (
+                    f"Original User Question: {resolved_query or user_input}\n"
+                    f"Raw latest user message: {user_input}\n"
+                    f"Previous Search Queries Tried: {search_history}\n"
+                    f"Reason previous results were insufficient: {last_feedback}\n"
+                    f"{entity_hint}\n"
+                    f"Task: Generate a NEW, different self-contained search query (or specific URL) "
+                    f"to find the missing information. Keep the same topic/entities unless the user changed topic."
+                )
 
-                analysis = await self._llm_for_step("analysis").analyze_task(analysis_input, history)
-                logger.info("[Workflow] 任务分析结果: type=%s, data=%s", analysis.get("type", ""), json.dumps(analysis, ensure_ascii=False)[:150])
+            try:
+                analysis = await asyncio.wait_for(
+                    self._llm_for_step("analysis").analyze_task(analysis_input, history), timeout=30
+                )
+            except Exception as e:
+                logger.warning("[Workflow] 任务分析失败，降级直接搜索: %s", e)
+                analysis = {"type": "search", "queries": [resolved_query or user_input]}
+            logger.info("[Workflow] 任务分析结果: type=%s, data=%s", analysis.get("type", ""), json.dumps(analysis, ensure_ascii=False)[:150])
 
-                if analysis.get("type") != "direct":
-                    candidate_resolved = str(analysis.get("resolved_query") or "").strip()
-                    if candidate_resolved:
-                        resolved_query = candidate_resolved
-                    elif analysis.get("queries"):
-                        resolved_query = str(analysis["queries"][0]).strip() or resolved_query
-                    analysis_entities = list(analysis.get("entities") or analysis_entities or [])
-                    if analysis.get("is_followup") and resolved_query != user_input:
-                        progress_callback(f"上下文改写: {resolved_query[:120]}")
-                    logger.info(
-                        "[Workflow] resolved_query=%s entities=%s followup=%s",
-                        resolved_query[:120],
-                        analysis_entities,
-                        analysis.get("is_followup"),
-                    )
+            if analysis.get("type") != "direct":
+                candidate_resolved = str(analysis.get("resolved_query") or "").strip()
+                if candidate_resolved:
+                    resolved_query = candidate_resolved
+                elif analysis.get("queries"):
+                    resolved_query = str(analysis["queries"][0]).strip() or resolved_query
+                analysis_entities = list(analysis.get("entities") or analysis_entities or [])
+                if analysis.get("is_followup") and resolved_query != user_input:
+                    progress_callback(f"上下文改写: {resolved_query[:120]}")
+                logger.info(
+                    "[Workflow] resolved_query=%s entities=%s followup=%s",
+                    resolved_query[:120],
+                    analysis_entities,
+                    analysis.get("is_followup"),
+                )
 
-                new_sources = []
+            new_sources = []
 
-                if analysis.get("type") == "direct":
-                    url = analysis.get("url")
-                    new_sources, source_id_counter = await self._handle_direct_url(
-                        url, visited_urls, progress_callback, resolved_query or user_input, source_id_counter
-                    )
-                else:
-                    search_queries = analysis.get("queries", [])
-                    # Fallback for single query or if model returns old format
-                    if not search_queries and analysis.get("query"):
-                        search_queries = [analysis.get("query")]
-                    if not search_queries and resolved_query:
-                        search_queries = [resolved_query]
+            if analysis.get("type") == "direct":
+                url = analysis.get("url")
+                new_sources, source_id_counter = await self._handle_direct_url(
+                    url, visited_urls, progress_callback, resolved_query or user_input, source_id_counter
+                )
+            else:
+                search_queries = analysis.get("queries", [])
+                # Fallback for single query or if model returns old format
+                if not search_queries and analysis.get("query"):
+                    search_queries = [analysis.get("query")]
+                if not search_queries and resolved_query:
+                    search_queries = [resolved_query]
 
-                    new_sources, source_id_counter, search_count = await self._handle_search(
-                        search_queries, search_history, visited_urls, iteration,
-                        progress_callback, resolved_query or user_input, source_id_counter
-                    )
-                    total_search_results += search_count
+                new_sources, source_id_counter, search_count = await self._handle_search(
+                    search_queries, search_history, visited_urls, iteration,
+                    progress_callback, resolved_query or user_input, source_id_counter
+                )
+                total_search_results += search_count
                 
-                accumulated_sources.extend(new_sources)
+            accumulated_sources.extend(new_sources)
                 
-                # Adaptive iteration: if we have very little content, allow one extra iteration
-                total_content_length = sum(len(s.get('content', '')) for s in accumulated_sources)
-                if total_content_length < 500 and self.max_iterations < 6:
-                    self.max_iterations += 1
-                    progress_callback(f"信息量不足 ({total_content_length} 字符)，自动增加一轮搜索...")
+            # Adaptive iteration: if we have very little content, allow one extra iteration
+            total_content_length = sum(len(s.get('content', '')) for s in accumulated_sources)
+            if total_content_length < 500 and self.max_iterations < 6:
+                self.max_iterations += 1
+                progress_callback(f"信息量不足 ({total_content_length} 字符)，自动增加一轮搜索...")
                 
-                if not accumulated_sources:
-                    progress_callback("目前尚未收集到有效信息，尝试下一次迭代...")
-                    last_feedback = "No valid sources found yet."
-                    continue
+            if not accumulated_sources:
+                progress_callback("目前尚未收集到有效信息，尝试下一次迭代...")
+                last_feedback = "No valid sources found yet."
+                continue
 
-                # [09] Generation & Evaluation
-                progress_callback(f"阶段 III: 使用累计 {len(accumulated_sources)} 个来源生成答案...")
-                progress_callback("正在调用 AI 模型生成回答...")
+            # [09] Generation & Evaluation
+            progress_callback(f"阶段 III: 使用累计 {len(accumulated_sources)} 个来源生成答案...")
+            progress_callback("正在调用 AI 模型生成回答...")
                 
-                if source_callback:
-                    source_callback(accumulated_sources)
+            if source_callback:
+                source_callback(accumulated_sources)
                 
-                # Use decontextualized question so generation stays on-topic for follow-ups.
-                answer_query = resolved_query or user_input
+            # Use decontextualized question so generation stays on-topic for follow-ups.
+            answer_query = resolved_query or user_input
+            try:
                 result = await self._llm_for_step("answer").generate_answer(
                     answer_query,
                     accumulated_sources,
@@ -553,10 +636,16 @@ class SearchWorkflow:
                     stream_callback,
                     live_artifacts_mode=self.live_artifacts_mode,
                 )
-                
-                if result.get("status") == "sufficient":
-                    progress_callback("答案状态: 充分")
-                    final_answer = result.get("answer")
+            except Exception as e:
+                logger.error("[Workflow] 生成答案异常: %s", e, exc_info=True)
+                if last_partial_answer:
+                    # 返回已有部分答案而非直接抛错，前端可展示已搜资料
+                    reason = f"生成失败: {type(e).__name__}"
+                    final_answer = (
+                        self._format_live_artifact_partial_answer(last_partial_answer, reason)
+                        if self.live_artifacts_mode
+                        else self._format_partial_answer(last_partial_answer, accumulated_sources, reason)
+                    )
                     if stats_callback:
                         total_elapsed = time.monotonic() - start_time
                         prompt_tokens, completion_tokens = self._usage_totals()
@@ -568,76 +657,76 @@ class SearchWorkflow:
                             "completion_tokens": completion_tokens,
                             "total_seconds": round(total_elapsed, 1),
                         })
-                    if self.live_artifacts_mode:
-                        return ensure_live_artifact_answer(final_answer)
-                    return self._format_references(final_answer, accumulated_sources)
-                elif result.get("status") == "error":
-                    # A hard generation failure (timeout / corrupt stream / provider
-                    # error). Do NOT treat it as an insufficient partial and run
-                    # another search round, and do NOT render the exception text as a
-                    # normal answer — surface it to the caller so the UI shows the
-                    # error + retry affordance.
-                    raise RuntimeError(result.get("answer") or "生成答案失败")
-                else:
-                    last_partial_answer = result.get("answer", "")
-                    last_feedback = result.get("missing_info") or last_partial_answer
-                    if iteration < self.max_iterations:
-                        progress_callback(f"⚠️ 已有信息不足以完整回答，正在进行第 {iteration + 1} 轮深度搜索...")
-                        # Include specific missing info in the feedback
-                        missing = last_feedback[:200]
-                        if missing:
-                            progress_callback(f"缺失信息: {missing}")
-                    else:
-                        progress_callback(f"已达到最大迭代次数 ({self.max_iterations})，正在整理现有结果...")
-                    
-                    if iteration >= self.max_iterations:
-                        reason = f"经过 {iteration} 次尝试后，仍无法确认资料足够完整"
-                        final_answer = (
-                            self._format_live_artifact_partial_answer(
-                                last_partial_answer,
-                                reason,
-                            )
-                            if self.live_artifacts_mode
-                            else self._format_partial_answer(
-                                last_partial_answer,
-                                accumulated_sources,
-                                reason,
-                            )
-                        )
-                        if stats_callback:
-                            prompt_tokens, completion_tokens = self._usage_totals()
-                            stats_callback({
-                                "sites_searched": total_search_results,
-                                "iterations": iteration,
-                                "total_seconds": round(time.monotonic() - start_time, 1),
-                                "prompt_tokens": prompt_tokens,
-                                "completion_tokens": completion_tokens,
-                            })
-                        return final_answer
-            
-            if last_partial_answer and accumulated_sources:
+                    return final_answer
+                raise
+                
+            if result.get("status") == "sufficient":
+                progress_callback("答案状态: 充分")
+                final_answer = result.get("answer")
                 if stats_callback:
+                    total_elapsed = time.monotonic() - start_time
                     prompt_tokens, completion_tokens = self._usage_totals()
                     stats_callback({
                         "sites_searched": total_search_results,
                         "sites_crawled": len(visited_urls),
                         "iterations": iteration,
-                        "total_seconds": round(time.monotonic() - start_time, 1),
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
+                        "total_seconds": round(total_elapsed, 1),
                     })
                 if self.live_artifacts_mode:
-                    return self._format_live_artifact_partial_answer(
-                        last_partial_answer,
-                        "已达到本次搜索的最大迭代次数",
+                    return ensure_live_artifact_answer(final_answer)
+                return self._format_references(final_answer, accumulated_sources)
+            elif result.get("status") == "error":
+                # A hard generation failure (timeout / corrupt stream / provider
+                # error). Do NOT treat it as an insufficient partial and run
+                # another search round, and do NOT render the exception text as a
+                # normal answer — surface it to the caller so the UI shows the
+                # error + retry affordance.
+                raise RuntimeError(result.get("answer") or "生成答案失败")
+            else:
+                last_partial_answer = result.get("answer", "")
+                last_feedback = result.get("missing_info") or last_partial_answer
+                if iteration < self.max_iterations:
+                    progress_callback(f"⚠️ 已有信息不足以完整回答，正在进行第 {iteration + 1} 轮深度搜索...")
+                    # Include specific missing info in the feedback
+                    missing = last_feedback[:200]
+                    if missing:
+                        progress_callback(f"缺失信息: {missing}")
+                else:
+                    progress_callback(f"已达到最大迭代次数 ({self.max_iterations})，正在整理现有结果...")
+                    
+                if iteration >= self.max_iterations:
+                    reason = f"经过 {iteration} 次尝试后，仍无法确认资料足够完整"
+                    final_answer = (
+                        self._format_live_artifact_partial_answer(
+                            last_partial_answer,
+                            reason,
+                        )
+                        if self.live_artifacts_mode
+                        else self._format_partial_answer(
+                            last_partial_answer,
+                            accumulated_sources,
+                            reason,
+                        )
                     )
-                return self._format_partial_answer(
-                    last_partial_answer,
-                    accumulated_sources,
-                    "已达到本次搜索的最大迭代次数"
-                )
+                    if stats_callback:
+                        prompt_tokens, completion_tokens = self._usage_totals()
+                        stats_callback({
+                            "sites_searched": total_search_results,
+                            "sites_crawled": len(visited_urls),
+                            "iterations": iteration,
+                            "total_seconds": round(time.monotonic() - start_time, 1),
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                        })
+                    return final_answer
 
-            return "多次尝试后未能生成有效答案。建议您尝试：\n1. 换用不同的关键词重新提问\n2. 简化问题，分步骤提问\n3. 切换搜索引擎后重试"
-            
-        finally:
-            pass
+        # 循环正常退出只发生在"从未收集到任何来源"时（其余路径均在循环内
+        # return / raise），此时 last_partial_answer 必为空，直接给出兜底提示。
+        return "多次尝试后未能生成有效答案。建议您尝试：\n1. 换用不同的关键词重新提问\n2. 简化问题，分步骤提问\n3. 切换搜索引擎后重试"
+
+    # 注意：这里刻意不 aclose()。run() 返回后调用方（chat 路由）还要用
+    # answer 步骤的 LLM 客户端做引用语义验证；复用已关闭的连接池会直接
+    # APIConnectionError（还会白烧一次可重试退避）。关闭责任在所有者——
+    # chat 路由的 SSE 生成器退出时显式 await workflow.aclose()。

@@ -32,7 +32,12 @@ _GENERATE_ANSWER_RETRIES = 4  # 流式生成答案的重试次数（含首次）
 # JUSTSEARCH_LLM_CONCURRENCY=8。注意该信号量在流式答案生成期间会一直被
 # 占用（最长一个流式回合），过高的值可能触发上游限流。
 _LLM_CONCURRENCY = asyncio.Semaphore(
-    max(1, int(os.getenv("JUSTSEARCH_LLM_CONCURRENCY", "5")))
+    max(1, int(os.getenv("JUSTSEARCH_LLM_CONCURRENCY", "5") or 5))
+)
+# 流式与短操作隔离：避免 5 个长流堵死 analysis/relevance
+_LLM_STREAM_SEMAPHORE = _LLM_CONCURRENCY
+_LLM_SHORT_SEMAPHORE = asyncio.Semaphore(
+    max(1, int(os.getenv("JUSTSEARCH_LLM_CONCURRENCY", "5") or 5))
 )
 
 # --- 生成 prompt 的 sources / 历史预算（有界、可配置、透明标注）------------------
@@ -81,7 +86,7 @@ _RETRYABLE_ERROR_MARKERS = (
     "temporary failure in name resolution",
     "server disconnected",
     "broken pipe",
-    "ssl",
+    "ssl error",
     "eof occurred",
     "remote end closed",
     "502",
@@ -111,10 +116,8 @@ _LIVE_ARTIFACT_FRAGMENT_OPEN_RE = re.compile(
     rf"^<({_LIVE_ARTIFACT_FRAGMENT_TAG_NAMES})(?:\s[^>]*)?>[\s\S]*</\1>$",
     re.IGNORECASE,
 )
-_LIVE_ARTIFACT_CONTAINER_RE = re.compile(
-    rf"^<(?:{_LIVE_ARTIFACT_FRAGMENT_TAG_NAMES})(?:\s[^>]*)?>[\s\S]*</(?:{_LIVE_ARTIFACT_FRAGMENT_TAG_NAMES})>$",
-    re.IGNORECASE,
-)
+# 历史上另有 _LIVE_ARTIFACT_CONTAINER_RE；反引用修复后两者模式逐字节相同，
+# 已合并为上面的单一常量（勿再复制出第二份）。
 _HTML_FENCE_RE = re.compile(
     r"^```(?:amc-live-artifact-html|html|svg)?\s*\n([\s\S]*?)\n?```\s*$",
     re.IGNORECASE,
@@ -201,7 +204,11 @@ def _is_retryable_llm_error(error: BaseException) -> bool:
     as ``UnicodeDecodeError``. Treat them as retryable so the existing bounded
     retry loop self-heals instead of dumping the exception text as an answer.
     """
-    if isinstance(error, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)):
+    if isinstance(error, (asyncio.TimeoutError, TimeoutError)):
+        return True
+    if isinstance(error, (ConnectionError, BrokenPipeError, ConnectionResetError)):
+        return True
+    if isinstance(error, OSError) and any(k in str(error).lower() for k in ("connection", "broken pipe", "reset by peer", "timed out")):
         return True
     if isinstance(error, UnicodeDecodeError):
         return True
@@ -231,7 +238,7 @@ def _is_retryable_llm_error(error: BaseException) -> bool:
 
 def _retry_backoff_seconds(attempt: int, *, base: float = 1.5, cap: float = 20.0) -> float:
     """Exponential backoff with jitter. attempt is 0-based."""
-    import random as _rand
+    import random as _rand  # noqa: keep local import for hygiene allowlist compat
 
     delay = min(cap, (2 ** attempt) * base) + _rand.uniform(0, 1.0)
     return max(0.5, delay)
@@ -257,8 +264,7 @@ def _looks_like_inline_live_artifact(answer: str) -> bool:
         return False
     # Remove comments before checking
     without_comments = re.sub(r"<!--[\s\S]*?-->", "", stripped).strip()
-    return bool(_LIVE_ARTIFACT_FRAGMENT_OPEN_RE.match(without_comments)
-                or _LIVE_ARTIFACT_CONTAINER_RE.match(without_comments))
+    return bool(_LIVE_ARTIFACT_FRAGMENT_OPEN_RE.match(without_comments))
 
 
 def _is_single_root_inline_html(answer: str) -> bool:
@@ -417,14 +423,14 @@ def _markdown_to_live_artifact_html(answer: str) -> str:
                 if end_line.strip().startswith(fence_char):
                     i += 1
                     break
-                code_lines.append(raw_lines[i] if raw_lines[i] != end_line else end_line)
+                code_lines.append(raw_lines[i])
                 i += 1
             code_text = _escape_html("\n".join(code_lines))
             html_parts.append(
                 f'<pre{lang_attr} style="overflow-x:auto;padding:0.75em 1em;'
-                'border-radius:8px;background:var(--amc-live-artifact-surface-muted,'
-                'rgba(0,0,0,.04));border:1px solid var(--amc-live-artifact-border,'
-                'rgba(0,0,0,.08));"><code>{code_text}</code></pre>'
+                f'border-radius:8px;background:var(--amc-live-artifact-surface-muted,'
+                f'rgba(0,0,0,.04));border:1px solid var(--amc-live-artifact-border,'
+                f'rgba(0,0,0,.08));"><code>{code_text}</code></pre>'
             )
             last_para_empty = False
             continue
@@ -440,9 +446,9 @@ def _markdown_to_live_artifact_html(answer: str) -> str:
             code_text = _escape_html("\n".join(code_lines))
             html_parts.append(
                 f'<pre style="overflow-x:auto;padding:0.75em 1em;'
-                'border-radius:8px;background:var(--amc-live-artifact-surface-muted,'
-                'rgba(0,0,0,.04));border:1px solid var(--amc-live-artifact-border,'
-                'rgba(0,0,0,.08));"><code>{code_text}</code></pre>'
+                f'border-radius:8px;background:var(--amc-live-artifact-surface-muted,'
+                f'rgba(0,0,0,.04));border:1px solid var(--amc-live-artifact-border,'
+                f'rgba(0,0,0,.08));"><code>{code_text}</code></pre>'
             )
             last_para_empty = False
             continue
@@ -748,8 +754,31 @@ def _cache_analysis_result(key: str, result: Any):
         # Evict oldest entries
         sorted_keys = sorted(_ANALYSIS_CACHE.keys(), key=lambda k: _ANALYSIS_CACHE[k][1])
         for k in sorted_keys[:_ANALYSIS_CACHE_MAX // 2]:
-            del _ANALYSIS_CACHE[k]
+            _ANALYSIS_CACHE.pop(k, None)
     _ANALYSIS_CACHE[key] = (_clone_cached_analysis_result(result), time.time())
+
+
+def purge_analysis_cache(max_age_seconds: float = 3600.0) -> int:
+    """清除 _ANALYSIS_CACHE 中已过期的条目，返回移除的条数。
+
+    跨模块契约函数（外部维护逻辑直接导入调用，勿改名/改签名）：条目以写入时
+    的 time.time() 时间戳计龄，age > max_age_seconds 视为过期；
+    max_age_seconds <= 0 时清空全部条目。
+    """
+    import time
+    if max_age_seconds <= 0:
+        removed = len(_ANALYSIS_CACHE)
+        _ANALYSIS_CACHE.clear()
+        return removed
+    now = time.time()
+    expired = [
+        key
+        for key, (_result, cached_at) in _ANALYSIS_CACHE.items()
+        if now - cached_at > max_age_seconds
+    ]
+    for key in expired:
+        del _ANALYSIS_CACHE[key]
+    return len(expired)
 
 
 def _cache_digest(value: Any) -> str:
@@ -1145,7 +1174,7 @@ def _build_search_analysis_result(
                     repaired.append(q)
             if prefix:
                 # Ensure at least one strongly anchored query.
-                if not any(prefix.split()[0] in q for q in repaired if prefix.split()):
+                if not any(prefix.split()[0] in q for q in repaired):
                     repaired.insert(0, f"{prefix} {(user_input or '').strip()}".strip())
             clean_queries = _normalize_text_list(repaired, max_items=3)
 
@@ -1249,7 +1278,8 @@ class LLMClient:
         取最大，保证最小可用预算。
         """
         reserve = max(int(self._context_window * _CONTEXT_RESERVE_RATIO), 12000)
-        dynamic = self._context_window - _SYSTEM_PROMPT_CHAR_ESTIMATE - history_chars - reserve
+        system_est = max(_SYSTEM_PROMPT_CHAR_ESTIMATE, context_chars)
+        dynamic = self._context_window - system_est - history_chars - reserve
         return max(self._source_budget_min, min(dynamic, _PROMPT_SOURCE_CHAR_BUDGET))
 
     def _is_context_length_error(self, error: BaseException) -> bool:
@@ -1291,7 +1321,7 @@ class LLMClient:
 
     async def _call_with_retry(self, messages: list, retries: int = 2, timeout: float = None) -> Any:
         """带重试的 LLM 调用。处理超时/连接错误/429/5xx。使用指数退避 + 抖动。"""
-        request_timeout = timeout or _LLM_TIMEOUT
+        request_timeout = timeout if timeout is not None else _LLM_TIMEOUT
         logger.info(
             "[LLM] model=%s messages=%d chars=%d",
             getattr(self, "model", "?"), len(messages), _messages_char_count(messages),
@@ -1308,6 +1338,8 @@ class LLMClient:
                     )
                 self._track_usage(response)
                 return response
+            except asyncio.CancelledError:
+                raise
             except asyncio.TimeoutError:
                 logger.warning(
                     "[LLM] 请求超时 (%.0fs), 重试 %d/%d",
@@ -1340,6 +1372,18 @@ class LLMClient:
         if hasattr(response, 'usage') and response.usage:
             self.total_prompt_tokens += getattr(response.usage, 'prompt_tokens', 0) or 0
             self.total_completion_tokens += getattr(response.usage, 'completion_tokens', 0) or 0
+
+    async def aclose(self) -> None:
+        """关闭底层 AsyncOpenAI/httpx 连接池，避免每个请求泄漏客户端资源。"""
+        close = getattr(self.client, "close", None)
+        if close is None:
+            return
+        try:
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as e:
+            logger.warning("[LLM] 关闭客户端连接池失败: %s", e)
 
     def _extract_response_content(self, response: Any) -> str:
         """Extract message content from SDK objects or gateway string responses."""
@@ -1519,7 +1563,7 @@ class LLMClient:
 
         try:
             logger.info("[Task Analysis] 输入: %s", _truncate_for_log(user_input, 80))
-            response = await self._call_with_retry(messages, retries=0, timeout=_LLM_SHORT_TIMEOUT)
+            response = await self._call_with_retry(messages, retries=1, timeout=_LLM_SHORT_TIMEOUT)
             content = self._extract_response_content(response)
 
             data = self._extract_json(content)
@@ -1532,9 +1576,7 @@ class LLMClient:
                     return result
 
                 queries = None
-                if data.get("type") == "search" and data.get("queries") is not None:
-                    queries = _normalize_text_list(data["queries"], max_items=3)
-                elif data.get("queries") is not None:
+                if data.get("queries") is not None:
                     queries = _normalize_text_list(data["queries"], max_items=3)
                 elif data.get("query") is not None:
                     queries = _normalize_text_list(data["query"], max_items=1)
@@ -1612,7 +1654,7 @@ class LLMClient:
             response = await self._call_with_retry([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
-            ], retries=0, timeout=_LLM_SHORT_TIMEOUT)
+            ], retries=1, timeout=_LLM_SHORT_TIMEOUT)
             content = self._extract_response_content(response)
 
             data = self._extract_json(content)
@@ -1652,18 +1694,15 @@ class LLMClient:
             response = await self._call_with_retry([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
-            ], retries=0, timeout=_LLM_SHORT_TIMEOUT)
+            ], retries=1, timeout=_LLM_SHORT_TIMEOUT)
             content = self._extract_response_content(response)
 
             data = self._extract_json(content)
             if isinstance(data, dict):
                 clicked = _normalize_text_list(data.get("clicked_ids", []), max_items=3)
                 valid_ids = {str(el.get("id", "")) for el in elements if el.get("id") is not None}
+                # max_items=3 已在解析阶段截断点击数量，避免每页过度交互。
                 clicked = [cid for cid in clicked if cid in valid_ids]
-                # Limit to max 3 clicks per page to avoid excessive interaction
-                if len(clicked) > 3:
-                    logger.info("[Click Decision] 截断点击列表: %s → 前 3 个", clicked)
-                    clicked = clicked[:3]
                 logger.info("[Click Decision] 决定点击: %s", clicked)
                 return clicked
             logger.info("[Click Decision] 不点击任何元素")
@@ -1706,7 +1745,7 @@ class LLMClient:
             {"role": "system", "content": CITATION_VERIFICATION_PROMPT.format(current_time=current_time)},
             {"role": "user", "content": json.dumps({"items": bounded}, ensure_ascii=False)},
         ]
-        response = await self._call_with_retry(messages, retries=0, timeout=max(1.0, min(10.0, timeout)))
+        response = await self._call_with_retry(messages, retries=1, timeout=max(1.0, min(10.0, timeout)))
         parsed = self._extract_json(self._extract_response_content(response))
         results = parsed.get("results") if isinstance(parsed, dict) else None
         if not isinstance(results, list):
@@ -1746,7 +1785,12 @@ class LLMClient:
 
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        live_artifacts_requested = bool(live_artifacts_mode or canvas_mode)
+        if canvas_mode:
+            import warnings
+            warnings.warn("canvas_mode is deprecated, use live_artifacts_mode", DeprecationWarning, stacklevel=2)
+            logger.warning("[LLM] canvas_mode deprecated alias used, treating as live_artifacts_mode")
+        live_artifacts_mode = bool(live_artifacts_mode or canvas_mode)
+        live_artifacts_requested = live_artifacts_mode
         prompt_template = (
             ANSWER_GENERATION_LIVE_ARTIFACTS_PROMPT
             if live_artifacts_requested
@@ -1834,7 +1878,12 @@ class LLMClient:
                         streamed_any = True
 
                 try:
-                    await _LLM_CONCURRENCY.acquire()
+                    try:
+                        await asyncio.wait_for(_LLM_CONCURRENCY.acquire(), timeout=15)
+                    except asyncio.TimeoutError as acquire_timeout:
+                        last_error = acquire_timeout
+                        logger.warning("[Generate Answer] 获取并发槽超时(15s)，请稍后重试")
+                        return {"status": "error", "answer": "系统繁忙，请稍后重试。", "missing_info": ""}
                     stream_slot_acquired = True
                     try:
                         response = await asyncio.wait_for(
@@ -1849,12 +1898,19 @@ class LLMClient:
                         async def _drain_stream():
                             nonlocal full_content, parsing_header, header_buffer, answer_started, status
                             async for chunk in response:
-                                if chunk.choices and chunk.choices[0].delta.content:
-                                    content = chunk.choices[0].delta.content
+                                # 兼容 delta 为 None / content 为 None 的边缘 chunk
+                                delta = getattr(chunk.choices[0], "delta", None) if chunk.choices else None
+                                content = getattr(delta, "content", None) if delta else None
+                                if content:
                                     full_content += content
 
                                     if parsing_header:
                                         header_buffer += content
+                                        # 防止 header_buffer 无界增长，最多保留 2000 字符
+                                        if len(header_buffer) > 2000:
+                                            parsing_header = False
+                                            maybe_stream_answer(header_buffer)
+                                            continue
                                         status_match = _ANSWER_FIELD_STATUS_RE.search(header_buffer)
                                         if status_match and "\n" in header_buffer[status_match.end():]:
                                             status_value = (status_match.group(1) or "").strip().lower()
@@ -1878,7 +1934,7 @@ class LLMClient:
                                     else:
                                         maybe_stream_answer(content)
 
-                                elif chunk.choices and chunk.choices[0].finish_reason:
+                                elif chunk.choices and getattr(chunk.choices[0], "finish_reason", None):
                                     break
 
                         # 迭代阶段同样受显式超时约束：网关已返回响应但中途断流
@@ -1887,6 +1943,15 @@ class LLMClient:
                         drain_started = True
                         await asyncio.wait_for(_drain_stream(), timeout=_LLM_TIMEOUT)
                     finally:
+                        if response is not None:
+                            try:
+                                closer = getattr(response, "close", None) or getattr(response, "aclose", None)
+                                if closer is not None:
+                                    res = closer()
+                                    if asyncio.iscoroutine(res):
+                                        await res
+                            except Exception:
+                                pass
                         if stream_slot_acquired:
                             _LLM_CONCURRENCY.release()
                             stream_slot_acquired = False
@@ -1907,6 +1972,8 @@ class LLMClient:
                         "missing_info": missing_info,
                     }
 
+                except asyncio.CancelledError:
+                    raise
                 except asyncio.TimeoutError as e:
                     last_error = e
                     # 已进入 drain 说明是流中途断流(create 已成功、后续 chunk 超时)，
@@ -1914,12 +1981,16 @@ class LLMClient:
                     # 明确的"流式响应中断"提示，避免用户看到笼统异常文本。
                     if drain_started:
                         logger.warning(
-                            "[Generate Answer] 流式响应中断(已收到响应头，%.0fs 无数据), %d/%d",
+                            "[Generate Answer] 流式响应中断(已收到响应头，%.0fs 无数据), %d/%d, streamed=%s chars=%d err=%s",
                             _LLM_TIMEOUT,
                             attempt + 1,
                             max_attempts - 1,
+                            streamed_any,
+                            len(full_content),
+                            type(e).__name__,
                         )
-                        if attempt >= max_attempts - 1 or streamed_any or full_content:
+                        # 已推送内容则直接报错；未推送时允许重试一次（瞬时抖动）
+                        if streamed_any or attempt >= max_attempts - 1:
                             return {
                                 "status": "error",
                                 "answer": "模型返回的流式响应中断，请重试。",

@@ -18,9 +18,8 @@ JustSearch 后端 ws://127.0.0.1:8000/justsearch（与 HTTP 共用端口）
 - `createTab` / `navigate` / `closeTab` / `finalizeTabs` — 后台开标签、导航、用完即关
 - `evaluate` — 在标签页里跑任意 JS(`chrome.debugger` + `Runtime.evaluate`),站点特判与启发式回退走这里
 - `extractContent` — 注入 [Defuddle](https://github.com/kepano/defuddle)(与 ToMarkdown / Obsidian Web Clipper 同款)抽取主正文 Markdown
-- `clickAt` / `scrollBy` / `typeText` / `pressKey` — 真实输入事件
+- `clickAt` / `scrollBy` — 真实输入事件
 - `moveMouse` — 驱动虚拟光标动画到目标(可视化自动交互)
-- `screenshot` — 截图
 
 扩展借鉴了 [browser-control-bridge](https://github.com/...) 的设计(出站 WS 重连、`chrome.debugger` CDP 串行队列、虚拟光标),但**完全自建、只服务 JustSearch**。
 

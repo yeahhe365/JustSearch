@@ -13,7 +13,7 @@ WORKDIR /build
 COPY package.json package-lock.json ./
 COPY scripts/ ./scripts/
 COPY backend/static/ ./backend/static/
-RUN npm install --no-audit --no-fund \
+RUN npm ci --no-audit --no-fund \
     && npm run build
 
 # ---- Stage 2: Production image ----

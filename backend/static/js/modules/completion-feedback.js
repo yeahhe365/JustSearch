@@ -12,6 +12,10 @@ const FIRST_NOTE_DURATION_S = 0.15;
 const SECOND_NOTE_DURATION_S = 0.2;
 const NOTIFICATION_AUTO_CLOSE_MS = 7000;
 
+// AudioContext 单例：浏览器对同页面 AudioContext 数量有上限（约 6 个），
+// 每次播放都新建会导致之后声音永久失效。惰性创建后跨播放复用，不再 close。
+let _audioCtx = null;
+
 /**
  * Strip markdown so a notification body reads as plain text, and cap its
  * length (mirrors AMC buildCompletionNotificationBody).
@@ -66,7 +70,8 @@ export function playCompletionSound() {
     try {
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
         if (!AudioContextClass) return;
-        const ctx = new AudioContextClass();
+        if (!_audioCtx) _audioCtx = new AudioContextClass();
+        const ctx = _audioCtx;
         if (ctx.state === 'suspended') ctx.resume().catch(() => {});
         const notes = [
             { frequency: NOTE_E5_FREQUENCY, startTime: 0, duration: FIRST_NOTE_DURATION_S },

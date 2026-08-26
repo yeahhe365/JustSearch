@@ -9,7 +9,8 @@
 // ===========================================================================
 
 import { t } from './i18n.js?v=1';
-import { escapeHtml } from './utils.js?v=14';
+// 高亮工具（escapeRegExp/highlightText）与 shortcuts-help 共用，见 utils.js
+import { escapeRegExp, highlightText } from './utils.js?v=14';
 
 export function setupSettingsSearch({ modalEl, root = document }) {
     const input = root.getElementById('settings-search-input');
@@ -68,16 +69,8 @@ export function setupSettingsSearch({ modalEl, root = document }) {
             .slice(0, 30);
     }
 
-    function escapeRegExp(str) {
-        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    }
-
-    function highlightText(text, q) {
-        if (!q) return escapeHtml(text);
-        const esc = escapeHtml(text);
-        const re = new RegExp(`(${escapeRegExp(q)})`, 'ig');
-        return esc.replace(re, '<mark class="settings-search-highlight">$1</mark>');
-    }
+    // escapeRegExp / highlightText 已上移 utils.js 与 shortcuts-help 共用
+    // （在原始文本上匹配、逐段转义后包 <mark>，见 utils.highlightText）。
 
     function reveal(element) {
         if (typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'center' });

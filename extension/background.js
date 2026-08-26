@@ -7,10 +7,16 @@ import { registerHandlers, setCursorOverlayController, notifyCursorArrived } fro
 import { registerDetachListener, detachAll } from "./lib/debugger-api.js";
 import { publishStatus } from "./popup/status-store.js";
 import { CursorOverlayController } from "./lib/cursor-overlay-controller.js";
+import { TabGroupStore } from "./lib/tab-groups.js";
 
 const HEARTBEAT_TIMEOUT_ALARM = "justsearch-heartbeat-watchdog";
 
 registerDetachListener();
+
+// MV3 同步注册规则:tabGroups 事件监听必须在 SW 首次求值的同步栈里注册,
+// 否则唤醒挂起 SW 的事件会在异步 init 完成前被丢弃。状态加载仍在
+// TabGroupStore#ensureInit 里异步进行。
+TabGroupStore.getInstance().registerEventListeners();
 
 const transport = new WebSocketTransport();
 const bridge = new JsonRpcBridge(transport);
@@ -51,7 +57,9 @@ chrome.alarms.create(HEARTBEAT_TIMEOUT_ALARM, { periodInMinutes: 2 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== HEARTBEAT_TIMEOUT_ALARM) return;
   return (async () => {
-    if (!transport.getStatus().state.includes("connected")) {
+    // 注意用严格比较:"disconnected".includes("connected") === true,
+    // 用 includes 会让断连状态跳过清理。
+    if (transport.getStatus().state !== "connected") {
       // WS 不通:停所有光标 session(隐藏光标)+ 清掉残留 debugger attach。
       await cursorOverlays.stopActiveSessions().catch(() => {});
       await detachAll().catch(() => {});

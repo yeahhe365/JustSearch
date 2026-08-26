@@ -33,8 +33,8 @@ export const md = {
         const rawHtml = instance.render(text);
         const sanitized = window.DOMPurify.sanitize(rawHtml, {
             ADD_ATTR: ['target'],
-            FORBID_TAGS: ['style', 'form', 'input'],
-            FORBID_ATTR: ['style', 'onerror', 'onload', 'onclick', 'onmouseover'],
+            FORBID_TAGS: ['style', 'form', 'input', 'script', 'iframe', 'object', 'embed', 'link', 'meta', 'base'],
+            FORBID_ATTR: [/^on.*/i, 'style'],
         });
         // 为所有链接添加 target="_blank"，在新标签页打开
         const withTarget = sanitized.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ');
@@ -58,6 +58,31 @@ export function escapeHtml(value) {
         '"': '&quot;',
         "'": '&#39;',
     }[char]));
+}
+
+/** Escape regex metacharacters so a user query can be embedded literally. */
+export function escapeRegExp(str) {
+    return String(str ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 搜索命中高亮（settings-search 与 shortcuts-help 共用）。
+ * 在原始文本上做大小写不敏感匹配并切分，再逐段转义后用
+ * <mark class="settings-search-highlight"> 包裹命中段——不能在已转义文本上
+ * 做正则替换，否则 text/query 含 & < > " ' 时会破坏转义结果。
+ */
+export function highlightText(text, query) {
+    const raw = String(text ?? '');
+    if (!query) return escapeHtml(raw);
+    const re = new RegExp(`(${escapeRegExp(query)})`, 'ig');
+    const parts = raw.split(re); // 单捕获组：奇数下标为命中段
+    return parts
+        .map((part, i) => (
+            i % 2 === 1
+                ? `<mark class="settings-search-highlight">${escapeHtml(part)}</mark>`
+                : escapeHtml(part)
+        ))
+        .join('');
 }
 
 /**
@@ -174,6 +199,13 @@ export function applyFontSizes(settings) {
 }
 
 export function applyTheme(theme) {
+    // 记录应用前的解析主题：仅当解析结果实际变化时才跨标签广播，
+    // 否则对端收到 SETTINGS_UPDATED 再调 applyTheme 会再次广播，
+    // 形成无限跨标签回声风暴（见 main.js 的 bc.onmessage）。
+    const prevResolved = typeof document !== 'undefined'
+        ? document.documentElement.getAttribute('data-theme')
+        : null;
+
     // 持久化到 localStorage，供 <head> 内联脚本在下次加载时同步读取，避免 FOUC。
     try {
         if (theme) {
@@ -225,8 +257,9 @@ export function applyTheme(theme) {
     } catch {}
 
     // AMC对齐：BroadcastChannel 跨标签同步主题（参考 AMC settingsStore BroadcastChannel）
+    // 仅在解析后的主题相对调用前发生变化时广播；对端二次应用时值未变即终止回声。
     try {
-        if (typeof BroadcastChannel !== 'undefined') {
+        if (typeof BroadcastChannel !== 'undefined' && resolvedTheme !== prevResolved) {
             const bc = new BroadcastChannel('justsearch_settings');
             bc.postMessage({ type: 'SETTINGS_UPDATED', theme });
             bc.close();

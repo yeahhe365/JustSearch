@@ -18,6 +18,21 @@ const FRAME_CONTEXTS_MAX = 100;
 import { t } from './i18n.js?v=1';
 import { escapeHtml, getSafeUrl } from './utils.js?v=14';
 
+/**
+ * 校验 message 事件的 source 是否来自本页面内的某个 <iframe>
+ * （Live Artifact 预览框架）。contentWindow 访问可能因跨域受限，
+ * 统一 try/catch；不匹配任何框架的事件视为不可信。
+ */
+function isKnownIframeWindow(source) {
+    const frames = document.querySelectorAll('iframe');
+    for (const frame of frames) {
+        let win = null;
+        try { win = frame.contentWindow; } catch { continue; }
+        if (win && win === source) return true;
+    }
+    return false;
+}
+
 function ensurePanel() {
     if (panelEl) return panelEl;
     if (typeof document === 'undefined') return null;
@@ -59,7 +74,12 @@ function ensurePanel() {
     window.addEventListener('message', (event) => {
         const data = event?.data;
         if (!data || data.channel !== 'justsearch-live-artifacts') return;
+        if (event.origin && event.origin !== "null" && event.origin !== location.origin) return;
         if (data.event !== 'citation-click') return;
+        // 加固：带 source 的事件必须来自页面内某个 iframe 的 contentWindow，
+        // 其他窗口（不可信来源）派发的 citation-click 一律忽略。
+        // source 为空仅见于同页合成事件（测试/旧环境），仍交由下方 frameId 注册表校验。
+        if (event.source && !isKnownIframeWindow(event.source)) return;
         const sourceId = data.sourceId;
         if (sourceId === undefined || sourceId === null || sourceId === '') return;
         const frameCtx = getFrameEvidenceContext(data.frameId);

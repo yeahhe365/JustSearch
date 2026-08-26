@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "JustSearch Bridge",
   "version": "0.2.0",
+  "minimum_chrome_version": "102",
   "description": "把用户真实 Chrome 的标签页控制权交给本地 JustSearch 后端,用于搜索与爬取。含 Defuddle 正文抽取。",
   "permissions": [
     "debugger",
@@ -9,8 +10,7 @@
     "tabGroups",
     "storage",
     "scripting",
-    "alarms",
-    "activeTab"
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"

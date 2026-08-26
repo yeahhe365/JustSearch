@@ -30,3 +30,7 @@ crawled_debug.txt
 *.patch
 benchmark_results/
 .trae/
+backups/
+tests/
+docs/
+backend/static/build/

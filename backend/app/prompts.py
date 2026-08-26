@@ -427,9 +427,6 @@ Artifacts must look like carefully designed modern SaaS UI (Linear / Stripe / Gi
 - instruction ≤ 2000; title/source ≤ 500; state serialized ≤ 6000 chars
 """
 
-# Backward-compatible alias used by imports and hygiene checks.
-LIVE_ARTIFACTS_PROMPT = LIVE_ARTIFACTS_PROMPT_ZH
-
 
 def select_live_artifacts_protocol(query: str = "") -> str:
     """Return the ZH protocol for Chinese questions; otherwise the EN protocol."""
@@ -448,7 +445,7 @@ Return "CONTRADICTED" when the passage explicitly negates the claim or states an
 Return "NOT_ENOUGH_INFO" when the passage is merely related, lacks the needed fact, or is insufficient to decide.
 
 Return strict JSON only:
-{{"results": [{{"id": "<claim id>", "verdict": "SUPPORTED|CONTRADICTED|NOT_ENOUGH_INFO", "confidence": 0.0-1.0, "reason": "<short>}}]}}
+{{"results": [{{"id": "<claim id>", "verdict": "SUPPORTED|CONTRADICTED|NOT_ENOUGH_INFO", "confidence": 0.9, "reason": "<short>"}}]}}
 
 Rules:
 - Every input id must appear exactly once in the output.

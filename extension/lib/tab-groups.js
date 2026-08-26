@@ -24,8 +24,9 @@ export class TabGroupStore {
   }
 
   async ensureInit() {
+    // 只做异步状态加载与呈现协调;事件监听的注册已拆出(MV3 要求监听必须在
+    // SW 首次求值的同步栈里注册,放进这里的 await 链会丢掉唤醒 SW 的事件)。
     this.initializePromise ??= this.loadFromStorage().then(async () => {
-      this.registerEventListeners();
       await this.reconcileAllGroupPresentations();
     });
     await this.initializePromise;
@@ -40,6 +41,18 @@ export class TabGroupStore {
       await this.reconcileGroupPresentation(existing.chromeGroupId);
       if (changed) await this.saveToStorage();
       return existing;
+    }
+
+    // SW 重启后内存里的 agent 标签集合为空,上面的探测会落空,但持久化的
+    // 托管分组可能还活着。先探活复用,避免重建第二个同名 "JustSearch" 分组。
+    const aliveGroupId = await this.findAlivePersistedGroupId();
+    if (aliveGroupId != null) {
+      const persisted = this.groupMetadata.get(aliveGroupId);
+      const changed = this.syncSessionTitle(persisted, sessionId);
+      await this.addTabToGroup(persisted, tabId);
+      await this.reconcileGroupPresentation(aliveGroupId);
+      if (changed) await this.saveToStorage();
+      return persisted;
     }
 
     const group = await this.createGroup(tabId, this.sessionGroupTitles.get(sessionId));
@@ -95,9 +108,15 @@ export class TabGroupStore {
     if (changed) await this.saveToStorage();
   }
 
-  async getManagedGroupIdContainingTabs(tabIds) {
+  // 从持久化的托管分组(TAB_GROUPS 存储,经 ensureInit 载入 groupMetadata)
+  // 里逐个用 chrome.tabGroups.get 探活,返回第一个仍存在的组 id;
+  // 探测失败(组已被关)视为死亡并跳过。找不到返回 null。
+  async findAlivePersistedGroupId() {
     await this.ensureInit();
-    return (await this.findManagedGroupContainingTabs(tabIds))?.chromeGroupId ?? null;
+    for (const groupId of this.groupMetadata.keys()) {
+      if (await this.readGroup(groupId)) return groupId;
+    }
+    return null;
   }
 
   // --- private methods ---
@@ -155,18 +174,26 @@ export class TabGroupStore {
     }
   }
 
+  // 由 background.js 在顶层同步调用(SW 求值栈内),不在 ensureInit 的异步链里。
+  // 每个 API 入口单独特性探测,缺 API(tabGroups 权限/版本不足)时静默降级。
   registerEventListeners() {
-    if (this.listenersRegistered || !chrome.tabGroups) return;
+    if (this.listenersRegistered) return;
     this.listenersRegistered = true;
-    chrome.tabGroups.onCreated?.addListener((group) => {
-      void this.handleObservedGroup(group);
-    });
-    chrome.tabGroups.onUpdated?.addListener((group) => {
-      void this.handleObservedGroup(group);
-    });
-    chrome.tabGroups.onRemoved?.addListener((group) => {
-      this.handleRemovedGroup(group.id);
-    });
+    if (chrome.tabGroups?.onCreated) {
+      chrome.tabGroups.onCreated.addListener((group) => {
+        void this.handleObservedGroup(group);
+      });
+    }
+    if (chrome.tabGroups?.onUpdated) {
+      chrome.tabGroups.onUpdated.addListener((group) => {
+        void this.handleObservedGroup(group);
+      });
+    }
+    if (chrome.tabGroups?.onRemoved) {
+      chrome.tabGroups.onRemoved.addListener((group) => {
+        this.handleRemovedGroup(group.id);
+      });
+    }
   }
 
   async handleObservedGroup(group) {

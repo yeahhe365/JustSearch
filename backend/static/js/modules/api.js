@@ -581,6 +581,10 @@ export async function streamChat(query, callbacks) {
                 }
             }
 
+            // 终帧 flush：多字节 UTF-8 序列跨最后一个 chunk 边界时残留在
+            // decoder 里；不 flush 会静默丢掉结尾事件（如最终 answer 烘焙）。
+            buffer += decoder.decode();
+
             if (buffer.trim() && processSseBlock(buffer)) {
                 return;
             }

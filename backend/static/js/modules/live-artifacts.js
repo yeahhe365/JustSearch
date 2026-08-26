@@ -193,6 +193,49 @@ const INLINE_ARTIFACT_DEFAULT_HEIGHT = 320;
 const INLINE_ARTIFACT_MAX_HEIGHT = 50000;
 const FRAME_HEIGHT_CACHE_MAX = 200;
 const frameHeightCache = new Map();
+
+// AMC previewDocument.ts helpers: DOM-based injection anchored to real head/body
+// (replaces fragile String.replace(/<\/body>/i) which mis-inserts inside <script> strings).
+function parsePreviewDocument(srcDoc) {
+    const Parser =
+        (typeof window !== 'undefined' && window.DOMParser) ||
+        (typeof globalThis !== 'undefined' && globalThis.DOMParser) ||
+        (typeof DOMParser !== 'undefined' ? DOMParser : null);
+    if (!Parser) return null;
+    try {
+        return new Parser().parseFromString(String(srcDoc || ''), 'text/html');
+    } catch {
+        return null;
+    }
+}
+function injectIntoParsedDocument(parsedDocument, injections) {
+    const doc = parsedDocument;
+    injections.headElements?.forEach((html) => {
+        const template = doc.createElement('template');
+        template.innerHTML = html;
+        // Prepend so CSP/style appears before existing <title> (keeps legacy test expectation
+        // "<head><meta ..." while still anchored to real head via DOMParser). AMC appends,
+        // but both are anchored; prepend keeps JustSearch existing order without string fragility.
+        if (doc.head.firstChild) {
+            doc.head.insertBefore(template.content.cloneNode(true), doc.head.firstChild);
+        } else {
+            doc.head.appendChild(template.content.cloneNode(true));
+        }
+    });
+    if (injections.bodyEndHtml) {
+        const template = doc.createElement('template');
+        template.innerHTML = injections.bodyEndHtml;
+        doc.body.appendChild(template.content.cloneNode(true));
+    }
+    return `<!DOCTYPE html>${doc.documentElement.outerHTML}`;
+}
+function appendBridgeScriptToDocument(parsedDocument, bridgeHtml) {
+    const template = parsedDocument.createElement('template');
+    template.innerHTML = bridgeHtml;
+    parsedDocument.body.appendChild(template.content.cloneNode(true));
+    return `<!DOCTYPE html>${parsedDocument.documentElement.outerHTML}`;
+}
+
 const registry = new Map();
 
 let artifactCounter = 0;
@@ -334,19 +377,33 @@ export function refreshLiveArtifactPreviews(settings) {
 
     // Refresh only mounted frames. Phase 2.1 forbids swapping srcdoc on a live
     // iframe (that navigates → blank window), so push the freshly-processed
-    // content over postMessage with the new theme instead. Off-screen frames were
-    // unmounted (Phase 2.2); their registry srcdoc is already updated and they
-    // rebuild with the new values when they scroll back into view.
+    // content over postMessage with the new theme instead — 但 stream-render
+    // 补丁只有流式壳（含 [data-amc-stream-preview-root]）能理解；终态已烘焙的
+    // frame 会静默忽略，导致主题/字号切换对可见旧产物不生效。因此先探测支持：
+    // 支持补丁的流式 frame 走 postMessage，其余终态 frame 用刷新后的 srcdoc
+    // 强制重载。Off-screen frames were unmounted (Phase 2.2); their registry
+    // srcdoc is already updated and they rebuild with the new values when they
+    // scroll back into view.
     document.querySelectorAll('.live-artifact-inline-iframe').forEach((frame) => {
         const frameId = frame.dataset.liveArtifactFrameId || '';
         const artifact = frameId ? registry.get(frameId) : null;
-        if (artifact) {
-            const html = artifact.isStreaming
-                ? (artifact.streamHtml || artifact.code || '')
-                : (artifact.code || '');
+        if (!artifact) return;
+        let supportsStreamPatch = false;
+        try {
+            supportsStreamPatch = Boolean(
+                frame.contentDocument?.querySelector('[data-amc-stream-preview-root]'),
+            );
+        } catch {
+            supportsStreamPatch = false; // 跨源/未挂载无法探测 → 按不支持处理
+        }
+        if (supportsStreamPatch && artifact.isStreaming) {
+            const html = artifact.streamHtml || artifact.code || '';
             if (html) {
-                postInlineArtifactStream(frame, html, { streaming: artifact.isStreaming });
+                postInlineArtifactStream(frame, html, { streaming: true });
             }
+        } else if (!artifact.isStreaming && artifact.srcdoc) {
+            // 终态 frame：复用 ping 兜底的强制重载 helper 应用新主题/字号。
+            forceReloadIframeDocument(frame, artifact.srcdoc);
         }
     });
 
@@ -1038,16 +1095,42 @@ ${js}
         return html;
     }
 
-    if (css && !/<\/head>/i.test(html)) {
-        html = html.replace(/<html[^>]*>/i, match => `${match}\n<head><style>\n${css}\n</style></head>`);
-    } else if (css) {
-        html = html.replace(/<\/head>/i, `<style>\n${css}\n</style>\n</head>`);
-    }
-
-    if (js && !/<\/body>/i.test(html)) {
-        html += `\n<script>\n${js}\n</script>`;
-    } else if (js) {
-        html = html.replace(/<\/body>/i, `<script>\n${js}\n</script>\n</body>`);
+    if (css || js) {
+        const parsed = parsePreviewDocument(html);
+        if (parsed) {
+            if (css) {
+                const styleEl = parsed.createElement('style');
+                styleEl.textContent = css;
+                if (parsed.head) parsed.head.appendChild(styleEl);
+                else {
+                    const head = parsed.createElement('head');
+                    head.appendChild(styleEl);
+                    parsed.documentElement.insertBefore(head, parsed.body);
+                }
+            }
+            if (js) {
+                const scriptEl = parsed.createElement('script');
+                scriptEl.textContent = js;
+                if (parsed.body) parsed.body.appendChild(scriptEl);
+                else {
+                    const body = parsed.createElement('body');
+                    body.appendChild(scriptEl);
+                    parsed.documentElement.appendChild(body);
+                }
+            }
+            return `<!DOCTYPE html>${parsed.documentElement.outerHTML}`;
+        }
+        // Fallback to string (should not happen in browser)
+        if (css && !/<\/head>/i.test(html)) {
+            html = html.replace(/<html[^>]*>/i, match => `${match}\n<head><style>\n${css}\n</style></head>`);
+        } else if (css) {
+            html = html.replace(/<\/head>/i, `<style>\n${css}\n</style>\n</head>`);
+        }
+        if (js && !/<\/body>/i.test(html)) {
+            html += `\n<script>\n${js}\n</script>`;
+        } else if (js) {
+            html = html.replace(/<\/body>/i, `<script>\n${js}\n</script>\n</body>`);
+        }
     }
 
     return html;
@@ -1113,12 +1196,20 @@ function shouldMergeSupportingBlocks(block, language) {
  * final-state rendering is byte-for-byte unchanged.
  */
 const _finalBakeCache = new Map(); // hash -> baked html, 对齐 AMC 缓存最终态
+// 共享的内容指纹核心：length + 31 进制滚动哈希。_hashForBake 用十进制无符号
+// 输出、高度探针 memo 键用 base36 —— 各自格式化以保持既有输出逐字节不变。
+function _artifactContentDigest(value) {
+    const text = String(value || '');
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) {
+        hash = (hash * 31 + text.charCodeAt(i)) | 0;
+    }
+    return { text, hashUnsigned: hash >>> 0 };
+}
 function _hashForBake(html, themeId, sources) {
-    let h = 0;
-    const s = String(html || '');
-    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    const { text, hashUnsigned } = _artifactContentDigest(html);
     const srcKey = Array.isArray(sources) ? sources.length + ':' + (sources[0]?.url || '').slice(0, 32) : '0';
-    return `${s.length}:${h >>> 0}:${themeId}:${srcKey}`;
+    return `${text.length}:${hashUnsigned}:${themeId}:${srcKey}`;
 }
 function processArtifactHtmlForDisplay(html, { streaming = false, sources = [], themeId } = {}) {
     const resolvedTheme = themeId || resolveLiveArtifactThemeId();
@@ -1151,6 +1242,28 @@ function processArtifactHtmlForDisplay(html, { streaming = false, sources = [], 
     return out;
 }
 
+function buildStreamingHtmlPreviewSrcDoc(options = {}) {
+    const frameId = String(options.frameId || '');
+    const baseFontSize = options.baseFontSize !== undefined
+        ? clampLiveArtifactFontSize(options.baseFontSize)
+        : resolveLiveArtifactFontSizePx();
+    const themeId = options.themeId !== undefined
+        ? options.themeId
+        : resolveLiveArtifactThemeId();
+    // AMC buildStreamingHtmlPreviewSrcDoc: empty shell <div data-amc-stream-preview-root>, no content sanitize.
+    // JustSearch equivalent: shell + CSP/theme/font/bridge, no processArtifactHtmlForDisplay heavy pipeline.
+    const shell = `<!DOCTYPE html><html><head></head><body>${STREAM_PREVIEW_ROOT}</body></html>`;
+    return injectPreviewSecurityPolicy(
+        injectPreviewBridge(
+            injectPreviewBaseFontSize(
+                injectPreviewTheme(injectPreviewBaseStyles(shell), themeId),
+                baseFontSize,
+            ),
+            frameId,
+        ),
+    );
+}
+
 function buildSrcdoc(code, language, sources = [], options = {}) {
     const frameId = String(options.frameId || '');
     const baseFontSize = options.baseFontSize !== undefined
@@ -1159,6 +1272,12 @@ function buildSrcdoc(code, language, sources = [], options = {}) {
     const themeId = options.themeId !== undefined
         ? options.themeId
         : resolveLiveArtifactThemeId();
+    // AMC ArtifactFrame:123-125 if(isLoading) return '' — streaming path skips finalSrcDoc heavy build.
+    // JustSearch: isStreaming true => directly return streaming shell (STREAM_PREVIEW_ROOT), no DOMParser/sanitize.
+    const isStreaming = Boolean(options.isStreaming) || String(code || '') === STREAM_PREVIEW_ROOT;
+    if (isStreaming && language !== 'svg') {
+        return buildStreamingHtmlPreviewSrcDoc({ frameId, baseFontSize, themeId });
+    }
     let srcdoc;
     if (language === 'svg') {
         srcdoc = `<!doctype html>
@@ -1177,9 +1296,7 @@ ${code}
 </body>
 </html>`;
     } else {
-        // Streaming shells bake only the (empty) preview root; real content rides
-        // postMessage and is processed by the light streaming path. Final-state
-        // content goes through the full chain here (see processArtifactHtmlForDisplay).
+        // Streaming shells already returned above; final-state content goes through full chain here.
         srcdoc = processArtifactHtmlForDisplay(code, { streaming: false, sources, themeId });
     }
     // Order mirrors AMC prepareHtmlPreviewSrcDoc: security → theme → font → bridge.
@@ -1386,21 +1503,30 @@ function createArtifactCitationLink(id, source, safeUrl, tracker, groupIndex, ma
 function injectPreviewHeadStyle(srcdoc, style) {
     const code = String(srcdoc || '');
     if (!style) return code;
-    if (code.includes(PREVIEW_CONTENT_SECURITY_POLICY_META)) {
-        return code.replace(PREVIEW_CONTENT_SECURITY_POLICY_META, `${PREVIEW_CONTENT_SECURITY_POLICY_META}${style}`);
+    const parsed = parsePreviewDocument(code);
+    if (!parsed) return code;
+    // Guard on element existence, not String.includes (AMC previewDocument.ts:326)
+    // Detect known markers inside style to avoid duplicate injection.
+    if (style.includes('data-amc-preview-base') && parsed.head.querySelector('style[data-amc-preview-base]')) {
+        return code;
     }
-    if (/<head\b[^>]*>/i.test(code)) {
-        return code.replace(/<head\b[^>]*>/i, headTag => `${headTag}${style}`);
+    if (style.includes(PREVIEW_THEME_ATTRIBUTE) && parsed.head.querySelector(`style[${PREVIEW_THEME_ATTRIBUTE}]`)) {
+        return code;
     }
-    if (/<html\b[^>]*>/i.test(code)) {
-        return code.replace(/<html\b[^>]*>/i, htmlTag => `${htmlTag}<head>${style}</head>`);
+    if (style.includes(PREVIEW_BASE_FONT_SIZE_ATTRIBUTE) && parsed.head.querySelector(`style[${PREVIEW_BASE_FONT_SIZE_ATTRIBUTE}]`)) {
+        return code;
     }
-    return `<!doctype html><html><head>${style}</head><body>${code}</body></html>`;
+    if (style.includes('http-equiv="Content-Security-Policy"') && parsed.head.querySelector('meta[http-equiv="Content-Security-Policy"]')) {
+        return code;
+    }
+    return injectIntoParsedDocument(parsed, { headElements: [style] });
 }
 
 function injectPreviewBaseStyles(srcdoc) {
     const code = String(srcdoc || '');
-    if (code.includes('data-amc-preview-base')) {
+    const parsed = parsePreviewDocument(code);
+    if (!parsed) return code;
+    if (parsed.head.querySelector('style[data-amc-preview-base]')) {
         return code;
     }
     return injectPreviewHeadStyle(code, PREVIEW_BASE_STYLES);
@@ -1646,10 +1772,12 @@ function buildPreviewThemeStyle(themeId) {
 
 function injectPreviewTheme(srcdoc, themeId) {
     const code = String(srcdoc || '');
-    if (code.includes(PREVIEW_THEME_ATTRIBUTE)) {
+    const parsed = parsePreviewDocument(code);
+    if (!parsed) return code;
+    if (parsed.head.querySelector(`style[${PREVIEW_THEME_ATTRIBUTE}]`)) {
         return code;
     }
-    return injectPreviewHeadStyle(code, buildPreviewThemeStyle(themeId));
+    return injectIntoParsedDocument(parsed, { headElements: [buildPreviewThemeStyle(themeId)] });
 }
 
 function buildPreviewBaseFontSizeStyle(baseFontSize) {
@@ -1659,10 +1787,12 @@ function buildPreviewBaseFontSizeStyle(baseFontSize) {
 
 function injectPreviewBaseFontSize(srcdoc, baseFontSize) {
     const code = String(srcdoc || '');
-    if (code.includes(PREVIEW_BASE_FONT_SIZE_ATTRIBUTE)) {
+    const parsed = parsePreviewDocument(code);
+    if (!parsed) return code;
+    if (parsed.head.querySelector(`style[${PREVIEW_BASE_FONT_SIZE_ATTRIBUTE}]`)) {
         return code;
     }
-    return injectPreviewHeadStyle(code, buildPreviewBaseFontSizeStyle(baseFontSize));
+    return injectIntoParsedDocument(parsed, { headElements: [buildPreviewBaseFontSizeStyle(baseFontSize)] });
 }
 
 function injectPreviewBridge(code, frameId = '') {
@@ -2099,6 +2229,7 @@ function injectPreviewBridge(code, frameId = '') {
     }
   };
   window.addEventListener('message', (event) => {
+    if (event.source && event.source !== window.parent) return;
     if (!event.data || event.data.channel !== 'justsearch-live-artifacts') return;
     if (event.data.event === 'ping') {
       try { parent.postMessage({ channel: 'justsearch-live-artifacts', event: 'pong', frameId: FRAME_ID }, '*'); } catch {}
@@ -2249,26 +2380,19 @@ function injectPreviewBridge(code, frameId = '') {
 })();
 </script>`;
 
-    if (/<\/body>/i.test(code)) {
-        return code.replace(/<\/body>/i, `${bridge}</body>`);
-    }
-    if (/<\/html>/i.test(code)) {
-        return code.replace(/<\/html>/i, `${bridge}</html>`);
-    }
-    return `<!doctype html><html><body>${code}${bridge}</body></html>`;
+    const parsed = parsePreviewDocument(code);
+    if (!parsed) return code;
+    return appendBridgeScriptToDocument(parsed, bridge);
 }
 
 function injectPreviewSecurityPolicy(srcdoc) {
-    if (srcdoc.includes(PREVIEW_CONTENT_SECURITY_POLICY)) {
-        return srcdoc;
+    const code = String(srcdoc || '');
+    const parsed = parsePreviewDocument(code);
+    if (!parsed) return code;
+    if (parsed.head.querySelector('meta[http-equiv="Content-Security-Policy"]')) {
+        return code;
     }
-    if (/<head\b[^>]*>/i.test(srcdoc)) {
-        return srcdoc.replace(/<head\b[^>]*>/i, headTag => `${headTag}${PREVIEW_CONTENT_SECURITY_POLICY_META}`);
-    }
-    if (/<html\b[^>]*>/i.test(srcdoc)) {
-        return srcdoc.replace(/<html\b[^>]*>/i, htmlTag => `${htmlTag}<head>${PREVIEW_CONTENT_SECURITY_POLICY_META}</head>`);
-    }
-    return `<!doctype html><html><head>${PREVIEW_CONTENT_SECURITY_POLICY_META}</head><body>${srcdoc}</body></html>`;
+    return injectIntoParsedDocument(parsed, { headElements: [PREVIEW_CONTENT_SECURITY_POLICY_META] });
 }
 
 function getArtifactTitle(block, language, index) {
@@ -2469,12 +2593,9 @@ function renderArtifactStrip(container, artifacts, isStreaming) {
 }
 
 function hashArtifactContent(value) {
-    const text = String(value || '');
-    let hash = 0;
-    for (let i = 0; i < text.length; i += 1) {
-        hash = (hash * 31 + text.charCodeAt(i)) | 0;
-    }
-    return `${text.length}:${(hash >>> 0).toString(36)}`;
+    // 与 _hashForBake 共享同一指纹核心；base36 输出格式保持不变。
+    const { text, hashUnsigned } = _artifactContentDigest(value);
+    return `${text.length}:${hashUnsigned.toString(36)}`;
 }
 
 // Memoize the parent-side height probe by (content hash + width + forceOpen).
@@ -2794,6 +2915,12 @@ function attachLiveArtifactFrameLoadHandler(frame, viewport, container) {
 }
 
 function renderInlineArtifactFrame(container, artifact) {
+    // 含 Live Artifact 的消息禁用 content-visibility:auto（见 chat.css :has() 覆盖）：
+    // Chrome 对 srcdoc iframe 在 content-visibility 隐藏后重绘会白屏。
+    // :has() 需浏览器支持且流式时序可能滞后，JS 兜底加类保证立即生效。
+    try {
+        container?.closest?.('.message')?.classList?.add('live-artifact-message');
+    } catch {}
     let frameShell = container.querySelector(':scope > .live-artifact-inline-frame');
     let viewport = frameShell?.querySelector('.live-artifact-inline-viewport');
     let frame = frameShell?.querySelector('.live-artifact-inline-iframe');
@@ -2887,47 +3014,6 @@ function renderInlineArtifactFrame(container, artifact) {
     syncPendingStreamToFrame(frame, artifact);
 }
 
-const finalHeightSweepTimers = new WeakMap(); // frame -> Set<number>
-
-/**
- * Final-state backstop: after baking completes, re-run the parent probe after
- * ``delay`` ms. Only grows the viewport (syncInlineArtifactFrameHeight uses
- * allowShrink:false). Covers "seed measured short + bridge resize lost".
- */
-function scheduleFinalHeightSweep(viewport, frame, artifact, container, delay) {
-    let timers = finalHeightSweepTimers.get(frame);
-    if (!timers) {
-        timers = new Set();
-        finalHeightSweepTimers.set(frame, timers);
-    }
-    const timer = setTimeout(() => {
-        timers.delete(timer);
-        if (timers.size === 0) {
-            finalHeightSweepTimers.delete(frame);
-        }
-        try {
-            syncInlineArtifactFrameHeight(viewport, frame, artifact, container);
-        } catch (err) {
-            console.warn('[Live Artifacts] final height sweep failed', err);
-        }
-    }, delay);
-    timers.add(timer);
-}
-
-/**
- * Cancel all pending final-height sweeps for a frame. Called when the frame is
- * unmounted (off-screen unload) or replaced so the timer closure cannot fire
- * against a detached node and trigger a stale layout.
- */
-function clearFinalHeightSweeps(frame) {
-    if (!frame) return;
-    const timers = finalHeightSweepTimers.get(frame);
-    if (!timers) return;
-    timers.forEach((timer) => clearTimeout(timer));
-    timers.clear();
-    finalHeightSweepTimers.delete(frame);
-}
-
 function syncPendingStreamToFrame(frame, artifact) {
     if (!frame || !artifact) return;
     const html = artifact.isStreaming
@@ -2987,13 +3073,9 @@ function postInlineArtifactStream(frame, html, options = {}) {
         }
     };
     // Retries cover the common race where srcdoc navigation has not installed the
-    // bridge listener yet (setTimeout(0) alone is often too early). 去重重试，避免最终态白闪：最终态仅 1 次重试，流式 1 次
+    // bridge listener yet. 统一为单次 50ms 重试（终态与流式相同），避免最终态白闪。
     send();
-    if (isFinal) {
-        setTimeout(send, 50);
-    } else {
-        setTimeout(send, 50);
-    }
+    setTimeout(send, 50);
 }
 
 /**
@@ -3511,6 +3593,8 @@ function wirePanelEvents() {
 function handleArtifactFrameMessage(event) {
     const data = event.data || {};
     if (data.channel !== 'justsearch-live-artifacts') return;
+    // 加固：仅接受来自已知 iframe 或同源父窗口的消息，避免外部页面伪造
+    if (event.origin && event.origin !== "null" && event.origin !== location.origin) return;
     const sourceFrame = findArtifactFrameByMessage(event);
     if (!sourceFrame) return;
 
@@ -3619,14 +3703,8 @@ function findArtifactFrameByMessage(event) {
         if (byId) {
             return { frame: byId, kind: 'inline' };
         }
-        // Diagnostic: a resize the parent could not route. If this fires after
-        // the fixes, the bridge message-routing is the culprit (not the probe).
-        if (data.event === 'resize') {
-            console.warn('[Live Artifacts] resize 消息未找到目标 frame', {
-                frameId,
-                available: frames.map(f => f.dataset.liveArtifactFrameId || '(empty)'),
-            });
-        }
+        // 无法按 frameId 路由时静默回落到 source 匹配（正常的滚动/重挂载流程会
+        // 频繁出现这种情况，不打日志）。
     }
     return findArtifactFrameByMessageSource(event?.source);
 }
@@ -3773,7 +3851,15 @@ function renderPanel(artifact) {
     panelState.empty.hidden = canPreview;
     if (canPreview) {
         panelState.frame.style.colorScheme = resolveLiveArtifactThemeId();
-        panelState.frame.srcdoc = artifact.srcdoc;
+        if (artifact.isStreaming && panelState.frame.srcdoc) {
+            // 流式期间绝不重赋 srcdoc（重赋会触发整帧导航 → 白闪，违反本文件的
+            // 挂载壳不变量）：已挂载的面板壳保持不动，内容照常经 postMessage 增
+            // 量推送。完成时 isStreaming 翻转，走下方唯一一次终态赋值（由最后
+            // 一次 renderLiveArtifactsForMessage → renderPanel 触发）。
+            syncPendingStreamToFrame(panelState.frame, artifact);
+        } else {
+            panelState.frame.srcdoc = artifact.srcdoc;
+        }
     } else {
         panelState.frame.removeAttribute('srcdoc');
     }
@@ -3832,10 +3918,23 @@ function downloadArtifact(artifact) {
 
 function openArtifactInNewWindow(artifact) {
     const content = artifact.srcdoc || artifact.code;
-    const blob = new Blob([content], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank', 'noopener,noreferrer');
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    // 模型生成内容不可信：不得作为顶层文档与应用同源运行（会逃逸沙箱 iframe 设计）。
+    // 改为打开空白窗口，并在其中嵌一个沙箱 iframe（srcdoc）承载内容。
+    const win = window.open('about:blank', '_blank');
+    if (!win) return; // 弹窗被拦截
+    // 规范规定带 noopener 特性的 window.open 返回 null，因此先取句柄再手动切断
+    // opener（等效 noopener/noreferrer，阻断新页面对本应用的反向引用）。
+    try { win.opener = null; } catch { /* 已隔离则忽略 */ }
+    const doc = win.document;
+    doc.open();
+    doc.write('<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%}iframe{border:0;width:100%;height:100%}</style></head><body></body></html>');
+    doc.close();
+    const frame = doc.createElement('iframe');
+    // 与消息内嵌预览相同的沙箱 token（见 createLiveArtifactFrameNode），同样不含
+    // allow-same-origin：模型输出不可信。
+    frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals allow-downloads');
+    frame.srcdoc = content;
+    doc.body.appendChild(frame);
 }
 
 const FRAME_PING_TIMEOUT_MS = 1500;
@@ -3852,18 +3951,24 @@ const FRAME_VIEW_RECOVERY_TIMEOUT_MS = 1000;
 const FRAME_WAKE_RECOVERY_TIMEOUT_MS = 300;
 let visibilityRecoveryInitialized = false;
 
-// Phase 2.2: off-screen unloading. Chrome can only discard a document that
-// EXISTS off-screen; if we remove the iframe while the artifact is well out of
-// view, the blank-screen root cause disappears. A 1.5-screen rootMargin keeps
-// frames mounted a little beyond the edges (no flash on fast flick-past); we
-// unload after a 2s delay once fully out of the expanded region.
-const LA_VIEWPORT_UNLOAD_ENABLED = true;
+// Phase 2.2: off-screen unloading — DISABLED (2026-03).
+// 复现：单长产物滚出视口 2s 后必被本观察器移除，滚回即走 remountArtifactFrame
+// → 新 iframe srcdoc 导航 + bridge 握手约 200-400ms 白屏。产物为纯内联 HTML
+//（无 CDN，见 prompts.py 禁第三方库），白屏与 CDN 无关。对齐 AMC-WebUI：
+// AMC 用 Virtuoso 整行卸载，无此独立容器级卸载；前景滚动下 Chrome 极少主动
+// 丢弃仍在 DOM 中的 off-screen srcdoc，移除卸载可消除确定性白屏，代价是多
+// 保留数个 iframe（典型会话 <20 个，可接受）。如需重新启用，需配合快照占
+// 位或 display:none 保活而非 remove()。测试可通过
+// __liveArtifactsTestHooks.setViewportUnloadEnabled(true) 临时启用。
+let LA_VIEWPORT_UNLOAD_ENABLED = false;
 const LA_UNLOAD_DELAY_MS = 2000;
 // One observer for all inline artifact viewport containers (not a second
 // observer — merged into initLiveArtifactVisibilityRecovery below).
 let viewportUnloadObserver = null;
 const observedViewportContainers = new Set();
 const unloadTimers = new WeakMap(); // container -> setTimeout id
+// Foreground ping/rebuild switch（默认关，见 initLiveArtifactVisibilityRecovery 注释）。
+let laForegroundPingEnabled = false;
 
 /**
  * Ping a single Live Artifact frame's bridge. Frames that answer `pong` are
@@ -3906,9 +4011,6 @@ function unloadArtifactFrame(container) {
     }
     container.dataset.liveArtifactFrameId = frame.dataset?.liveArtifactFrameId || '';
     container.dataset.artifactUnloaded = '1';
-    // Cancel any in-flight final-height sweep so it cannot fire against the
-    // now-detached frame (Phase 4 leak/cleanup).
-    clearFinalHeightSweeps(frame);
     frameShell.remove();
 }
 
@@ -3960,7 +4062,8 @@ function onViewportIntersection(entries) {
 }
 
 function observeArtifactViewportContainer(container) {
-    if (!viewportUnloadObserver || !container) return;
+    // 卸载禁用时完全不注册观察（避免每个产物挂载都做无用 IO/Set 维护）。
+    if (!LA_VIEWPORT_UNLOAD_ENABLED || !viewportUnloadObserver || !container) return;
     // Lazy cleanup: containers that left the DOM (session switch, chat cleared)
     // are already auto-unobserved by the IO, but drop them from the Set so the
     // Set does not hold references and keep the unload observer lean.
@@ -3972,18 +4075,8 @@ function observeArtifactViewportContainer(container) {
     viewportUnloadObserver.observe(container);
 }
 
-function unobserveAllArtifactViewports() {
-    if (viewportUnloadObserver) {
-        observedViewportContainers.forEach((container) => {
-            cancelArtifactUnload(container);
-            viewportUnloadObserver.unobserve(container);
-        });
-    }
-    observedViewportContainers.clear();
-}
-
 function initViewportUnloadObserver() {
-    if (viewportUnloadObserver || !('IntersectionObserver' in window)) return;
+    if (!LA_VIEWPORT_UNLOAD_ENABLED || viewportUnloadObserver || !('IntersectionObserver' in window)) return;
     viewportUnloadObserver = new IntersectionObserver(onViewportIntersection, {
         rootMargin: '150% 0px',
     });
@@ -4062,13 +4155,14 @@ function initLiveArtifactVisibilityRecovery() {
                 viewportOnly: true,
             });
         });
-        // Rolling a Live Artifact back into view is where Chrome most often
-        // drops off-screen srcdoc documents while the page stays foregrounded
-        // (JustSearch renders all messages statically; AMC unloads off-screen
-        // messages via Virtuoso, so it never keeps an off-screen iframe alive).
-        // Ping only the frame that just entered the viewport — and give the
-        // viewport a small rootMargin head-start so a quick flick-past does
-        // not leave a blank artifact waiting for the next intersection.
+        // Foreground ping/rebuild — DISABLED (2026-03) to align with AMC.
+        // 之前：每个进入视口的帧都 ping（200px margin）+ 滚动停 400ms 扫视口内帧，
+        // 只要 1000ms 内未收到 pong（主线程忙于流式渲染时易误判）就重建新 iframe →
+        // 健康帧被误重建即白闪。AMC 无此前景巡检，仅靠 Virtuoso 卸载/挂载。
+        // 现保留仅后台可见性恢复（visibilitychange/pageshow/resume），前景滚动不再
+        // 主动 ping；若 Chrome 真在前景丢弃过长 off-screen 文档，用户再次滚动时
+        // 下一次后台切换或手动刷新会触发重建，代价远小于持续误杀。
+        // 测试可通过 __liveArtifactsTestHooks.setForegroundPingEnabled(true) 临时启用。
         if ('IntersectionObserver' in window) {
             // Phase 2.2: off-screen unloading. One observer watches the viewport
             // CONTAINERS and unloads / remounts them. A 1.5-screen rootMargin
@@ -4082,53 +4176,57 @@ function initLiveArtifactVisibilityRecovery() {
             };
             startObservingViewports();
 
-            // A frame entering the viewport still gets a fast recovery check
-            // (150ms here, 300ms for full-page wakes below): healthy frames answer
-            // pong synchronously and are never rebuilt; a frame whose document
-            // Chrome discarded (memory pressure / background stay) is rebuilt
-            // almost immediately — the "whole artifact is white when I scroll
-            // back" case, even when unload did not kick in.
-            const observer = new IntersectionObserver((entries) => {
-                entries.forEach((entry) => {
-                    if (entry.isIntersecting) {
-                        pingAndRebuildArtifactFrame(entry.target, FRAME_VIEW_RECOVERY_TIMEOUT_MS);
-                    }
-                });
-            }, { rootMargin: '200px 0px 200px 0px' });
-            // Observe existing frames plus any created later.
-            const startObserving = () => {
-                document.querySelectorAll('.live-artifact-inline-iframe, .live-artifacts-frame')
-                    .forEach((frame) => observer.observe(frame));
-            };
-            startObserving();
-            new MutationObserver(() => {
-                document.querySelectorAll('.live-artifact-inline-iframe, .live-artifacts-frame')
-                    .forEach((frame) => observer.observe(frame));
-            }).observe(document.body, { childList: true, subtree: true });
+            if (laForegroundPingEnabled) {
+                // A frame entering the viewport still gets a fast recovery check
+                // (150ms here, 300ms for full-page wakes below): healthy frames answer
+                // pong synchronously and are never rebuilt; a frame whose document
+                // Chrome discarded (memory pressure / background stay) is rebuilt
+                // almost immediately — the "whole artifact is white when I scroll
+                // back" case, even when unload did not kick in.
+                const observer = new IntersectionObserver((entries) => {
+                    entries.forEach((entry) => {
+                        if (entry.isIntersecting) {
+                            pingAndRebuildArtifactFrame(entry.target, FRAME_VIEW_RECOVERY_TIMEOUT_MS);
+                        }
+                    });
+                }, { rootMargin: '200px 0px 200px 0px' });
+                // Observe existing frames plus any created later.
+                const startObserving = () => {
+                    document.querySelectorAll('.live-artifact-inline-iframe, .live-artifacts-frame')
+                        .forEach((frame) => observer.observe(frame));
+                };
+                startObserving();
+                new MutationObserver(() => {
+                    document.querySelectorAll('.live-artifact-inline-iframe, .live-artifacts-frame')
+                        .forEach((frame) => observer.observe(frame));
+                }).observe(document.body, { childList: true, subtree: true });
+            }
         }
 
-        // Scroll-stop sweep: IntersectionObserver fires when a frame crosses into
-        // view, but a frame can stay in the viewport the whole time and still have
-        // its document discarded under memory pressure (a 20k-px srcdoc iframe is
-        // the top candidate). IO does not re-fire for an element that never leaves
-        // the viewport, so after a scroll settles we ping every in-viewport frame
-        // and rebuild the dead ones. Debounced so a long continuous scroll does not
-        // hammer the pings.
-        let scrollSettleTimer = null;
-        window.addEventListener('scroll', () => {
-            if (scrollSettleTimer) clearTimeout(scrollSettleTimer);
-            scrollSettleTimer = setTimeout(() => {
-                scrollSettleTimer = null;
-                const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-                if (!viewportHeight) return;
-                document.querySelectorAll('.live-artifact-inline-iframe, .live-artifacts-frame')
-                    .forEach((frame) => {
-                        const rect = frame.getBoundingClientRect();
-                        if (rect.bottom < -200 || rect.top > viewportHeight + 200) return;
-                        pingAndRebuildArtifactFrame(frame, FRAME_VIEW_RECOVERY_TIMEOUT_MS);
-                    });
-            }, 400);
-        }, { passive: true });
+        if (laForegroundPingEnabled) {
+            // Scroll-stop sweep: IntersectionObserver fires when a frame crosses into
+            // view, but a frame can stay in the viewport the whole time and still have
+            // its document discarded under memory pressure (a 20k-px srcdoc iframe is
+            // the top candidate). IO does not re-fire for an element that never leaves
+            // the viewport, so after a scroll settles we ping every in-viewport frame
+            // and rebuild the dead ones. Debounced so a long continuous scroll does not
+            // hammer the pings.
+            let scrollSettleTimer = null;
+            window.addEventListener('scroll', () => {
+                if (scrollSettleTimer) clearTimeout(scrollSettleTimer);
+                scrollSettleTimer = setTimeout(() => {
+                    scrollSettleTimer = null;
+                    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+                    if (!viewportHeight) return;
+                    document.querySelectorAll('.live-artifact-inline-iframe, .live-artifacts-frame')
+                        .forEach((frame) => {
+                            const rect = frame.getBoundingClientRect();
+                            if (rect.bottom < -200 || rect.top > viewportHeight + 200) return;
+                            pingAndRebuildArtifactFrame(frame, FRAME_VIEW_RECOVERY_TIMEOUT_MS);
+                        });
+                }, 400);
+            }, { passive: true });
+        }
     }
 }
 
@@ -4138,6 +4236,7 @@ function initLiveArtifactVisibilityRecovery() {
  * after sleep). The outer page survives — the frame keeps its srcdoc
  * attribute but renders blank until re-navigated. Rebuild every Live
  * Artifact frame from the in-memory registry instead of forcing a reload.
+ * 仅测试使用。
  */
 export function rebuildLiveArtifactFrames() {
     if (typeof document === 'undefined') return;
@@ -4177,8 +4276,6 @@ function recreateLiveArtifactFrame(frame) {
     fresh.dataset.liveArtifactMountedAt = String(Date.now());
     if (frame.style.height) fresh.style.height = frame.style.height;
 
-    // Cancel any pending final-height sweep on the old node (Phase 4 cleanup).
-    clearFinalHeightSweeps(frame);
     frame.replaceWith(fresh); // 新节点 = 新浏览上下文
     fresh.srcdoc = buildReloadSrcdoc(srcdoc);
 
@@ -4323,13 +4420,13 @@ export const __liveArtifactsTestHooks = {
     resolveLiveArtifactThemeId,
     resolveLiveArtifactsModeFlag,
     sanitizeClippingStylesInHtml,
-    scheduleFinalHeightSweep,
     scheduleArtifactUnload,
+    setForegroundPingEnabled(value) { laForegroundPingEnabled = Boolean(value); },
+    setViewportUnloadEnabled(value) { LA_VIEWPORT_UNLOAD_ENABLED = Boolean(value); },
     shouldMergeSupportingBlocks,
     syncInlineArtifactFrameHeight,
     syncPendingStreamToFrame,
     unloadArtifactFrame,
-    finalHeightSweepTimers,
     wrapAsArtifactRoot,
 };
 

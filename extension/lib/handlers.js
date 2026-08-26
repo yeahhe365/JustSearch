@@ -3,6 +3,7 @@
 
 import { detachTab, executeCdp } from "./debugger-api.js";
 import { TabGroupStore } from "./tab-groups.js";
+import { collectIdentity } from "./ws-transport.js";
 
 // 光标到达等待器:moveSequence -> { resolve, timer }。
 // moveMouse(waitForArrival=true) 注册一个,AGENT_CURSOR_ARRIVED 到达时 resolve。
@@ -16,15 +17,15 @@ export function setCursorOverlayController(controller) {
   _cursorOverlays = controller;
 }
 
-export function getCursorOverlayController() {
-  return _cursorOverlays;
-}
-
 // content script 上报光标到达 → 直接 resolve 对应的 moveMouse 等待器(进程内,不发回后端)。
 export function notifyCursorArrived({ sessionId, turnId, moveSequence } = {}) {
   const key = `${sessionId ?? ""}:${turnId ?? ""}:${moveSequence ?? ""}`;
   const waiter = _cursorArrivalWaiters.get(key);
-  if (waiter) waiter.resolve();
+  if (!waiter) return;
+  waiter.resolve();
+  // resolve 后立刻清理:清掉 1500ms 超时定时器并从等待表移除,
+  // 避免超时分支在 resolve 之后又 reject 的噪音和 1.5s 的 map 滞留。
+  waiter.cancel();
 }
 
 // 所有 agent 标签归入同一个全局分组,而不是按 session 分多组(多组占地方)。
@@ -49,21 +50,9 @@ export function registerHandlers(bridge) {
   const tabGroups = TabGroupStore.getInstance();
 
   bridge.registerRequestHandler("ping", async () => {
-    const manifest = chrome.runtime.getManifest?.() || {};
-    let instanceId = null;
-    try {
-      const stored = await chrome.storage.local.get("extensionInstanceId");
-      instanceId = stored.extensionInstanceId || null;
-    } catch {
-      // ignore
-    }
-    return {
-      ok: true,
-      ts: Date.now(),
-      name: typeof manifest.name === "string" ? manifest.name : "JustSearch Bridge",
-      version: typeof manifest.version === "string" ? manifest.version : "0.0.0",
-      instance_id: instanceId,
-    };
+    // 身份信息(name/version/instance_id/ts)与 hello/心跳共用 collectIdentity,
+    // 响应字段保持不变:{ ok, ts, name, version, instance_id }。
+    return { ok: true, ...(await collectIdentity()) };
   });
 
   bridge.registerRequestHandler("createTab", async ({ url, session_id } = {}) => {
@@ -121,7 +110,7 @@ export function registerHandlers(bridge) {
     requireInt(tabId, "tabId");
     requireStr(url, "url");
     await chrome.tabs.update(tabId, { url });
-    await waitForTabComplete(tabId, url, timeoutMs);
+    await waitForTabComplete(tabId, timeoutMs);
     const updated = await chrome.tabs.get(tabId);
     return { tabId, url: updated.url ?? url };
   });
@@ -139,7 +128,7 @@ export function registerHandlers(bridge) {
     const result = await executeCdp({
       tabId,
       method: "Runtime.evaluate",
-      params: { expression, awaitPromise, returnByValue, allowUnsafeEvalBlocking: false },
+      params: { expression, awaitPromise, returnByValue },
       timeoutMs,
     });
     // Runtime.evaluate 返回 { result: { type, value, ... }, exceptionDetails }
@@ -311,12 +300,19 @@ async function extractWithDefuddle(tabId) {
 }
 
 // 等待 tab 加载到 complete 状态。
-// 只在 info.status === "complete" 时 resolve,不在 URL 变化时提前返回。
-// 旧版在 info.url 变化时就 resolve,导致 navigate() 在页面 DOM 还没就绪时返回,
-// 后续 evaluate() 执行 document.body.cloneNode() 报 null 错误。
-function waitForTabComplete(tabId, expectedUrl, timeoutMs) {
+// - 观察到本 tab 的 loading → 其后的 complete 结束本次导航(同 URL 重载走这里)。
+// - 初始 chrome.tabs.get 抓取导航前 URL 作为基线:
+//   · complete 且携带不同 url:即使没观察到 loading(超快加载,迁移事件被错过)
+//     也视为已提交的 different-document 导航;
+//   · 无 status 的纯 url 事件(hash-only / pushState):文档从未进入 loading,
+//     DOM 全程可用,url 相对基线变化即完成 —— 否则这类导航必然干等满超时。
+// - 基线未就绪、或 url 与基线相同的 complete 可能是旧页面遗留,绝不提前
+//   resolve(竞态)。超时仍视为完成让调用方继续,语义与旧版一致。
+function waitForTabComplete(tabId, timeoutMs) {
   return new Promise((resolve) => {
     let resolved = false;
+    let sawLoading = false;
+    let initialUrl = null;
     const finish = () => {
       if (resolved) return;
       resolved = true;
@@ -325,16 +321,33 @@ function waitForTabComplete(tabId, expectedUrl, timeoutMs) {
       resolve();
     };
     const listener = (id, info) => {
-      if (id === tabId && info.status === "complete") {
+      if (id !== tabId) return;
+      if (info.status === "loading") {
+        sawLoading = true;
+        return;
+      }
+      if (info.status === "complete") {
+        if (sawLoading) return finish();
+        // 错过了 loading 的超快加载:complete 自带不同 url 即可确认导航已提交。
+        if (initialUrl != null && typeof info.url === "string" && info.url !== initialUrl) {
+          finish();
+        }
+        return;
+      }
+      // 纯 url 变更且无 loading 迁移:同文档导航,DOM 未卸载。
+      if (initialUrl != null && typeof info.url === "string" && info.url !== initialUrl) {
         finish();
       }
     };
     chrome.tabs.onUpdated.addListener(listener);
     // 超时也视为完成(让调用方继续)。
     const timer = setTimeout(finish, timeoutMs);
-    // 若已经是 complete,立即返回。
+    // 抓取导航前快照;若此刻已在 loading(可能错过了事件),新导航已在途。
+    // 注意:初始为 complete 且 url 未变时不 resolve —— 可能是旧页面的遗留状态。
     chrome.tabs.get(tabId).then((t) => {
-      if (t && t.status === "complete") finish();
+      if (resolved) return;
+      if (t?.status === "loading") sawLoading = true;
+      if (typeof t?.url === "string") initialUrl = t.url;
     }).catch(finish);
   });
 }
@@ -345,7 +358,9 @@ function createCursorArrivalWaiter({ sessionId, turnId, moveSequence }) {
   let resolve, reject;
   const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
   const timer = setTimeout(() => {
-    _cursorArrivalWaiters.delete(key);
+    // key 可能在本等待器超时前已被同 key 的新等待器复用:仅当映射里仍是自己时
+    // 才删除,避免误删后来者的条目(reject 自己即可,新等待者不受影响)。
+    if (_cursorArrivalWaiters.get(key) === waiter) _cursorArrivalWaiters.delete(key);
     reject(new Error(`Cursor arrival timeout for ${key}`));
   }, CURSOR_ARRIVAL_TIMEOUT_MS);
   const cancel = () => {

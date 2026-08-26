@@ -44,15 +44,11 @@ async def _periodic_cleanup():
     while True:
         try:
             await asyncio.sleep(300)  # Every 5 minutes
-            # Clean expired search cache
-            from .browser_manager import _search_cache, _SEARCH_CACHE_TTL
-            import time
-            now = time.time()
-            expired = [k for k, (_, ts) in _search_cache.items() if now - ts > _SEARCH_CACHE_TTL]
-            for k in expired:
-                del _search_cache[k]
-            if expired:
-                logger.debug("Cleaned %d expired search cache entries", len(expired))
+            # Clean expired search cache（走 browser_manager 公共 API，不碰私有全局）
+            from .browser_manager import purge_expired_search_cache, _SEARCH_CACHE_TTL
+            removed = purge_expired_search_cache(_SEARCH_CACHE_TTL)
+            if removed:
+                logger.debug("Cleaned %d expired search cache entries", removed)
         except asyncio.CancelledError:
             break
         except Exception as e:

@@ -434,34 +434,44 @@ async def _evaluate_extract(bridge, tab_id: int, expression: str) -> dict:
     return _coerce_extract_result(raw)
 
 
-async def _try_defuddle_extract(bridge, tab_id: int, log_func=None) -> dict | None:
-    """Call extension extractContent (Defuddle). Return coerced result or None if unavailable."""
+async def _try_defuddle_extract(
+    bridge, tab_id: int, log_func=None
+) -> tuple[str, dict | None]:
+    """Call extension extractContent (Defuddle).
+
+    返回 (status, payload)，status ∈ {"ok", "method_missing", "error"}：
+    - ("ok", result): 调用成功（result 可能是 ok=false 的薄结果，交由调用方比较）。
+    - ("method_missing", None): 扩展版本过旧、无 extractContent RPC —— 永久不可用，
+      调用方应关闭本页后续尝试。
+    - ("error", None): 超时 / 桥接错误等瞬态失败 —— 后续尝试仍应再调 Defuddle。
+    """
     extract_fn = getattr(bridge, "extract_content", None)
     if extract_fn is None or not callable(extract_fn):
-        return None
+        return ("method_missing", None)
     try:
         raw = await extract_fn(tab_id, timeout_ms=45000)
     except Exception as e:
         msg = str(e)
         # Older extension builds won't have the RPC method.
+        # 仅精确匹配扩展层抛出的缺方法信号，避免页面内 "Element not found" 误触发永久降级
+        low = msg.lower()
         if any(
-            token in msg
+            token in low
             for token in (
-                "extractContent",
-                "Unknown method",
-                "Method not found",
-                "not found",
+                "extractcontent",
+                "unknown method",
+                "method not found",
                 "unsupported",
             )
-        ):
+        ) or "extractcontent" in low and "not found" in low:
             logger.debug("Defuddle extractContent unavailable: %s", e)
             if log_func:
                 log_func("浏览器: Defuddle 不可用，回退到启发式抽取")
-            return None
+            return ("method_missing", None)
         logger.warning("Defuddle extractContent failed: %s", e)
         if log_func:
             log_func(f"浏览器: Defuddle 抽取失败（{e}），尝试回退")
-        return None
+        return ("error", None)
 
     result = _coerce_extract_result(raw)
     if raw and isinstance(raw, dict) and raw.get("ok") is False and result["useful"] == 0:
@@ -469,8 +479,8 @@ async def _try_defuddle_extract(bridge, tab_id: int, log_func=None) -> dict | No
         logger.debug("Defuddle returned ok=false: %s", err)
         if log_func:
             log_func(f"浏览器: Defuddle 未得到正文（{err}）")
-        return result  # still return for comparison; caller may treat as thin
-    return result
+        return ("ok", result)  # still return for comparison; caller may treat as thin
+    return ("ok", result)
 
 
 async def _wait_for_render(bridge, tab_id: int, spa: bool, log_func=None) -> None:
@@ -518,11 +528,11 @@ async def extract_page_content(bridge, tab_id: int, url: str, log_func=None) -> 
         try:
             # --- Primary: Defuddle (ToMarkdown engine) ---
             if defuddle_available:
-                dresult = await _try_defuddle_extract(bridge, tab_id, log_func=log_func)
-                if dresult is None and attempt == 0:
-                    # Method missing or hard failure → stop trying Defuddle this page
+                dstatus, dresult = await _try_defuddle_extract(bridge, tab_id, log_func=log_func)
+                if dstatus == "method_missing":
+                    # 扩展无此 RPC 方法 → 本页永久跳过 Defuddle。
                     defuddle_available = False
-                elif dresult is not None:
+                elif dstatus == "ok" and dresult is not None:
                     if dresult["useful"] > best["useful"]:
                         best = dresult
                     if dresult["useful"] >= MIN_USEFUL_CHARS:
@@ -534,6 +544,8 @@ async def extract_page_content(bridge, tab_id: int, url: str, log_func=None) -> 
                                 + "）"
                             )
                         return dresult["text"]
+                # status == "error": 瞬态失败 —— 本次走启发式回退，
+                # defuddle_available 保持 True，后续尝试仍会再调 Defuddle。
 
             # --- Secondary: legacy density / host-selector path ---
             result = await _evaluate_extract(bridge, tab_id, _JS_EXTRACT_CONTENT)

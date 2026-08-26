@@ -288,7 +288,7 @@ export function updateBridgeStatusUI(meta = null) {
         } else if (connected === null || connected === undefined) {
             settingsSubtitle.textContent = t('bridge.subtitleChecking');
         } else {
-            const latestNote = latestExtensionVersion ? `（${t('bridge.subtitleServerLatest', { version: latestExtensionVersion })}）` : '';
+            const latestNote = latestExtensionVersion ? `(${t('bridge.subtitleServerLatest', { version: latestExtensionVersion })})` : '';
             settingsSubtitle.textContent = t('bridge.subtitleInstallNeeded', { latestNote });
         }
     }
@@ -605,7 +605,7 @@ export async function ensureBridgeConnected({ forceRefresh = true } = {}) {
 
 export function warnIfBridgeDisconnected(contextLabel = '') {
     if (state.bridgeConnected !== false) return;
-    const suffix = contextLabel ? `（${contextLabel}）` : '';
+    const suffix = contextLabel ? `(${contextLabel})` : '';
     showToast(
         t('bridge.searchNeedsBridge', { context: suffix }),
         'warning',

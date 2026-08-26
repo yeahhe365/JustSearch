@@ -1,4 +1,4 @@
-import { BRIDGE_URL_KEY } from "../lib/ws-transport.js";
+import { BRIDGE_URL_KEY, DEFAULT_BRIDGE_URL } from "../lib/ws-transport.js";
 import { readStatus, subscribeStatus } from "./status-store.js";
 
 const statusDot = document.getElementById("status-dot");
@@ -33,7 +33,7 @@ async function init() {
   subscribeStatus(renderStatus);
 
   const stored = await chrome.storage.local.get(BRIDGE_URL_KEY);
-  urlInput.value = stored[BRIDGE_URL_KEY] ?? "ws://127.0.0.1:8000/justsearch";
+  urlInput.value = stored[BRIDGE_URL_KEY] ?? DEFAULT_BRIDGE_URL;
 
   const idStored = await chrome.storage.local.get("extensionInstanceId");
   instanceIdEl.textContent = idStored.extensionInstanceId ?? "—";

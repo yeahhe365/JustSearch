@@ -9,11 +9,11 @@ from fastapi import APIRouter, HTTPException, Body, Query
 from sqlalchemy import text as sql_text
 
 from ..database import (
-    list_chats, load_chat_history, save_chat_history,
+    list_chats, load_chat_history,
     delete_chat, delete_all_chats, get_session,
     list_chat_groups, create_chat_group, update_chat_group,
     delete_chat_group, move_chat_to_group, set_chat_pinned,
-    duplicate_chat, fork_chat_from,
+    duplicate_chat, fork_chat_from, update_chat_session_title,
     _format_utc_timestamp,
     export_history_package, import_history_package, normalize_route_safe_id,
 )
@@ -159,6 +159,32 @@ async def search_history_endpoint(q: str = Query(..., min_length=1, max_length=2
                     if len(chats) >= 20:
                         break
                 offset += len(rows)
+
+            # unicode61 分词器把整段连续 CJK 当作单个 token，多字中文子串永远
+            # MATCH 不中（静默空结果，标题兜底只在异常时触发）。FTS 无命中时
+            # 回退到 LIKE 内容扫描；通配符需转义避免全表误命中。
+            if not chats:
+                pattern = "%" + str(q).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                like_result = await session.execute(
+                    sql_text(
+                        "SELECT DISTINCT cs.id, cs.title, cs.group_id, cs.updated_at "
+                        "FROM chat_messages cm "
+                        "JOIN chat_sessions cs ON cs.id = cm.session_id "
+                        "WHERE cm.content LIKE :pattern ESCAPE '\\' "
+                        "ORDER BY cs.updated_at DESC LIMIT 20"
+                    ),
+                    {"pattern": pattern},
+                )
+                for row in like_result.fetchall():
+                    session_id = normalize_route_safe_id(row[0])
+                    if not session_id:
+                        continue
+                    chats.append({
+                        "id": session_id,
+                        "title": row[1],
+                        "group_id": normalize_route_safe_id(row[2]) if row[2] else None,
+                        "timestamp": _format_utc_timestamp(row[3]),
+                    })
             return chats
         except Exception as e:
             logger.warning("FTS search failed, falling back to title search: %s", e)
@@ -295,10 +321,11 @@ async def rename_chat_endpoint(session_id: str, body: object = Body(default=None
     new_title = _body_text(body, "title")
     if not new_title:
         raise HTTPException(status_code=400, detail="Title cannot be empty")
-    history_data = await load_chat_history(session_id)
-    if not history_data:
+    # 直接更新 ChatSession.title：save_chat_history 对空会话（无消息）会提前
+    # 返回，导致重命名静默失效；False 表示会话不存在。
+    renamed = await update_chat_session_title(session_id, new_title)
+    if not renamed:
         raise HTTPException(status_code=404, detail="Chat not found")
-    await save_chat_history(session_id, history_data.get("messages", []), title=new_title)
     return {"status": "ok", "title": new_title}
 
 
@@ -345,7 +372,6 @@ async def fork_chat_endpoint(session_id: str, body: object = Body(default=None))
 @router.get("/api/history/{session_id}/export")
 async def export_chat(session_id: str, format: str = "markdown"):
     """导出单个对话。支持 markdown (默认) 和 json 格式。"""
-    from ..database import load_chat_history
     from fastapi.responses import Response
     import datetime as _dt
 

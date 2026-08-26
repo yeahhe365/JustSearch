@@ -104,11 +104,14 @@ def _normalize_selector_config(raw_config: dict) -> dict:
 
 def load_selectors(engine: str = "google") -> dict:
     """Load search engine CSS selectors from config file.
-    
+
     Supports hot-reload: if the config file has been modified since last load,
     it will be re-read automatically.
-    
-    Returns the full engine config dict. Callers extract the specific engine by name.
+
+    Return value depends on ``engine``: with the default ``engine="google"``
+    only that engine's config dict is returned; only ``engine=None`` returns
+    the full ``{engine_name: config}`` mapping. Unknown engine names fall back
+    to the stable ``"google"`` config (empty dict if even that is unavailable).
     """
     global _config_cache, _config_mtime
 
@@ -135,6 +138,17 @@ def load_selectors(engine: str = "google") -> dict:
         return config[engine]
     # Engine not in config — return the stable default engine.
     return config.get("google", {})
+
+
+def clear_config_cache() -> None:
+    """清空选择器配置缓存（运行时「清除缓存」统一入口使用）。
+
+    下次 load_selectors 调用会因 _config_mtime 归零而触发重新加载；
+    加载失败时仍有 _FALLBACK_SELECTOR_CONFIG 兜底。
+    """
+    global _config_cache, _config_mtime
+    _config_cache = {}
+    _config_mtime = 0.0
 
 
 def get_all_engines() -> list:

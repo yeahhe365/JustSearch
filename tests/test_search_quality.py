@@ -229,15 +229,22 @@ def test_crawl_page_skips_pdf_after_browser_redirect(monkeypatch):
     )
 
 
-def test_private_url_blocks_direct_198_18_address_but_allows_proxy_resolved_domain(monkeypatch):
+def test_private_url_treats_198_18_consistently_for_direct_ip_and_resolved_domain(monkeypatch):
+    """审计修复：198.18.0.0/15（fake-IP 代理段）在「域名解析」与「直连 IP」两条
+    路径上必须结论一致（本地代理兼容豁免对两者同等生效）；私网地址仍被拦截。"""
     def fake_getaddrinfo(hostname, *_args, **_kwargs):
         assert hostname == "example.test"
         return [(None, None, None, None, ("198.18.0.12", 0))]
 
     monkeypatch.setattr(security.socket, "getaddrinfo", fake_getaddrinfo)
 
-    assert security.is_private_url("http://198.18.0.12/status") is True
+    # 直连与域名解析两条路径结论一致：均放行（fake-IP 代理兼容）
+    assert security.is_private_url("http://198.18.0.12/status") is False
     assert security.is_private_url("https://example.test/page") is False
+
+    # 真正的私网/链路本地地址依旧被拦（直连路径无需 DNS）
+    assert security.is_private_url("http://10.0.0.5/") is True
+    assert security.is_private_url("http://169.254.169.254/") is True
 
 
 def test_fallback_text_extract_cleans_multiline_search_titles(monkeypatch):
@@ -1526,7 +1533,12 @@ def test_run_interactive_mode_passes_tab_id_to_evaluate_and_clicks():
             })
             # Must receive an int/str tab id, not a JS blob.
             assert not isinstance(tab_id, str) or not tab_id.strip().startswith("(")
-            assert isinstance(expression, str) and "js-interact" in expression
+            assert isinstance(expression, str)
+            if "js-interact" not in expression:
+                # 候选收集之外的调用（正文长度探测 / prepare-click 重测坐标 /
+                # DOM 兜底点击）。wantId 死参数移除后，prepare 模板不再携带
+                # "js-interact" 标记——这些调用返回 None 即可。
+                return None
             return [
                 {
                     "id": "js-interact-0",

@@ -179,6 +179,27 @@ function initScrollBehavior() {
     if (scrollNav) scrollNav.classList.add('is-initialized');
 }
 
+/**
+ * 清空消息容器并恢复首页 hero（AMC 首页态）。
+ * 仅操作 DOM —— 会话 id / 历史高亮 / 在途流等状态复位由调用方负责
+ * （对齐 main.js showHomeState 中的三行 DOM 片段，作为唯一实现来源）。
+ * @param {{ focusComposer?: boolean }} [opts] - focusComposer 为 true 时随后聚焦输入框。
+ */
+export function resetChatDomToHero(opts = {}) {
+    const chatContainer = elements.chatContainer || document.getElementById('chat-container');
+    const heroSection = elements.heroSection || document.getElementById('hero-section');
+    if (!chatContainer) return;
+    chatContainer.innerHTML = '';
+    if (heroSection) {
+        heroSection.style.display = 'block';
+        chatContainer.appendChild(heroSection);
+    }
+    if (opts.focusComposer) {
+        const input = elements.userInput || document.getElementById('user-input');
+        input?.focus({ preventScroll: true });
+    }
+}
+
 function findPreviousUserContent(messages, fromIndex) {
     for (let i = fromIndex - 1; i >= 0; i -= 1) {
         if (messages[i]?.role === 'user' && messages[i]?.content) {
@@ -383,10 +404,17 @@ function createMessageActions({ role, content, msgDiv, messageIndex, actionCallb
         }));
         // Fork: branch a new chat from this user message's index (inclusive).
         if (messageIndex !== null && messageIndex !== undefined) {
+            // 渲染时固定会话 id：请求在途时视图可能已切走，点击时读全局
+            // state.currentSessionId 会作用到错误的会话上。
+            const sidAtRender = state.currentSessionId;
             buttons.push(createForkMessageButton(async () => {
                 const { forkChatAPI } = await import('./api.js?v=14');
                 const { showToast } = await import('./toast.js');
-                const summary = await forkChatAPI(state.currentSessionId, messageIndex);
+                if (!sidAtRender) {
+                    showToast(t('chat.forkFailed'), 'error');
+                    return;
+                }
+                const summary = await forkChatAPI(sidAtRender, messageIndex);
                 if (summary && summary.id) {
                     showToast(t('chat.forkedToNewSession'), 'success');
                     if (typeof actionCallbacks.onForked === 'function') {
@@ -415,10 +443,17 @@ function createMessageActions({ role, content, msgDiv, messageIndex, actionCallb
     }
 
     if (messageIndex !== null && messageIndex !== undefined) {
+        // 渲染时固定会话 id（同 fork）：避免删除落到切换后的会话上。
+        const sidAtRender = state.currentSessionId;
         buttons.push(createDeleteMessageButton(async () => {
             if (!await showConfirm(t('ui.confirmDeleteMessage'), t('ui.deleteMessage'))) return;
             const { deleteMessageAPI } = await import('./api.js?v=14');
-            const ok = await deleteMessageAPI(state.currentSessionId, messageIndex, content);
+            if (!sidAtRender) {
+                const { showToast } = await import('./toast.js');
+                showToast(t('ui.deleteFailed'), 'error');
+                return;
+            }
+            const ok = await deleteMessageAPI(sidAtRender, messageIndex, content);
             if (ok) {
                 msgDiv.remove();
                 if (typeof actionCallbacks.onMessageDeleted === 'function') {

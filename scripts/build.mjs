@@ -236,6 +236,21 @@ function generateIndexHtml(assets) {
     }
 
     const out = join(OUT_DIR, 'index.html');
+
+    // Post-assertions: if index.html drifts (non-numeric ?v=, renamed path,
+    // removed query), the rewrites above would silently leave stale unhashed
+    // references pointing at source assets that dist never ships. Fail loudly.
+    const stalePatterns = [
+        /src="\/static\/js\/main\.js[^"]*"/,
+        /\/static\/css\/style\.css\?v=\d+/,
+        /src="\/static\/vendor\/(?:markdown-it|purify|highlight)[^"]*"/,
+    ];
+    for (const pattern of stalePatterns) {
+        if (pattern.test(html)) {
+            throw new Error(`generateIndexHtml: stale reference matching ${pattern} survived rewrite — update the rewrite rules`);
+        }
+    }
+
     ensureDir(dirname(out));
     writeFileSync(out, html);
 }

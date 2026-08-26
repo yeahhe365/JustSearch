@@ -1,7 +1,29 @@
+import asyncio
 import base64
 import html
 import re
 import urllib.parse
+
+
+async def _ssrf_guard_ok(candidate_url: str, log_func=None) -> bool:
+    """SSRF 守卫：解析出的目标必须不是内网/链路本地地址。
+
+    这些搜索引擎跳转包装是纯参数解码，任何人可构造 uddg/u=a1 指向
+    http://169.254.169.254/ 等元数据地址。page_crawler 在抓取前会复检，
+    但解析结果还会作为引用链接进入用户界面——这里在源头就拒绝，命中时
+    回退保留原包装 URL。is_private_url 内部做阻塞式 getaddrinfo，须走线程。
+    """
+    from .security import is_private_url
+
+    try:
+        blocked = await asyncio.to_thread(is_private_url, candidate_url)
+    except Exception as e:  # DNS 解析失败等：按不可达处理，回退包装 URL。
+        if log_func:
+            log_func(f"浏览器: 跳转目标校验失败，保留原链接: {e}")
+        return False
+    if blocked and log_func:
+        log_func("浏览器: 跳转目标为内网/保留地址，已拒绝并保留原链接")
+    return not blocked
 
 
 async def resolve_redirect_url(url: str, log_func=None) -> str:
@@ -70,7 +92,7 @@ async def resolve_redirect_url(url: str, log_func=None) -> str:
     elif is_sogou:
         try:
             html_text = await _fetch_sogou_redirect_html(url)
-            extracted_url = _extract_html_redirect_url(html_text)
+            extracted_url = _extract_html_redirect_url(html_text, base_url=url)
             if extracted_url:
                 final_url = extracted_url
                 if log_func:
@@ -78,6 +100,10 @@ async def resolve_redirect_url(url: str, log_func=None) -> str:
         except Exception as e:
             if log_func:
                 log_func(f"浏览器: 提取 Sogou 重定向 URL 失败: {e}")
+
+    # SSRF 复验：仅当解析出了新目标时校验；命中内网/保留地址回退包装 URL。
+    if final_url != url and not await _ssrf_guard_ok(final_url, log_func):
+        return url
 
     return final_url
 
@@ -182,12 +208,14 @@ async def _resolve_baidu_link_url(url: str) -> str:
         headers={"User-Agent": "JustSearch/1.0"},
     ) as client:
         response = await client.get(url)
-        # 302/301 直接读 Location
+        # 302/301 直接读 Location（相对路径先按包装页地址补全）
         location = response.headers.get("location", "")
-        if location and _is_http_url(location):
-            return location
+        if location:
+            location = urllib.parse.urljoin(url, location.strip())
+            if _is_http_url(location):
+                return location
         # 否则从响应体里抽 JS/meta 跳转目标
-        target = _extract_html_redirect_url(response.text)
+        target = _extract_html_redirect_url(response.text, base_url=url)
         if target:
             return target
     return ""
@@ -207,8 +235,13 @@ async def _fetch_sogou_redirect_html(url: str) -> str:
         return response.text
 
 
-def _extract_html_redirect_url(html_text: str) -> str:
-    """Extract a target URL from script/meta HTML redirects."""
+def _extract_html_redirect_url(html_text: str, base_url: str = "") -> str:
+    """Extract a target URL from script/meta HTML redirects.
+
+    ``base_url``：包装页地址。JS/meta 里的跳转目标常见相对路径
+    （如 window.location.replace("/link?url=…")），先 urljoin 补全，
+    再做 http(s) scheme 校验（同时挡掉 javascript: 等降权 scheme）。
+    """
     if not html_text:
         return ""
 
@@ -224,6 +257,8 @@ def _extract_html_redirect_url(html_text: str) -> str:
         if not match:
             continue
         candidate = html.unescape(match.group(1)).strip(" '\"")
+        if base_url:
+            candidate = urllib.parse.urljoin(base_url, candidate)
         if candidate.startswith(("http://", "https://")):
             return candidate
     return ""

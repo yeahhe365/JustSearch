@@ -5,16 +5,20 @@ Chat router – /api/chat
 import asyncio
 import json
 import logging
-from datetime import datetime
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+# SSE 注释帧（keepalive）的最小发送间隔：代理空闲超时通常 ≥60s，15s 足够。
+_SSE_KEEPALIVE_INTERVAL = 15.0
 
 from ..database import (
     load_settings, save_chat_history, load_chat_history, get_next_api_key,
     delete_message, replace_messages_from, _extract_title,
+    generate_session_id,
     normalize_route_safe_id,
 )
 from ..providers import (
@@ -86,11 +90,11 @@ def _task_terminal_exception(task: asyncio.Task) -> BaseException | None:
 
 
 class ChatRequest(BaseModel):
-    query: str
-    provider_id: str
-    session_id: Optional[str] = None
-    model: Optional[str] = None
-    search_engine: Optional[str] = None
+    query: str = Field(..., min_length=1, max_length=8000)
+    provider_id: str = Field(..., min_length=1, max_length=128)
+    session_id: Optional[str] = Field(None, max_length=128)
+    model: Optional[str] = Field(None, max_length=128)
+    search_engine: Optional[str] = Field(None, max_length=32)
     max_results: Optional[int] = None
     max_iterations: Optional[int] = None
     interactive_search: Optional[bool] = None
@@ -278,7 +282,7 @@ async def chat_endpoint(request: ChatRequest):
         if not session_id:
             raise HTTPException(status_code=400, detail="session_id 格式无效")
     else:
-        session_id = datetime.now().strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:4]
+        session_id = generate_session_id()
 
     defaults = await load_settings()
     provider_id = request.provider_id.strip()
@@ -325,6 +329,8 @@ async def chat_endpoint(request: ChatRequest):
         else saved_live_artifacts_mode
     )
     if request.canvas_mode:
+        import warnings
+        warnings.warn("canvas_mode deprecated", DeprecationWarning, stacklevel=2)
         live_artifacts_mode = True
     citation_verification_enabled = _coerce_bool(
         defaults.get("citation_verification_enabled"),
@@ -374,7 +380,9 @@ async def chat_endpoint(request: ChatRequest):
         if raw_session_id:
             # Verify the session exists so we still 404 cleanly when it doesn't,
             # but do NOT delete anything yet — context_messages is sliced below.
-            existing = await load_chat_history(session_id)
+            # 复用上方已加载的 chat_history_data：两次调用之间只有纯 CPU 校验，
+            # 没有任何数据变更，重复查询是浪费。
+            existing = chat_history_data
             if not existing:
                 raise HTTPException(status_code=404, detail="会话不存在，无法截断消息")
             # 并发防护：客户端前缀与 DB 前缀比对，不一致(另一窗口已编辑/追加)
@@ -433,11 +441,16 @@ async def chat_endpoint(request: ChatRequest):
                          context_messages, source_callback, stats_callback)
         )
 
+        # keepalive 注释帧的节流：短轮询保证任务完成后能及时收尾，但注释帧
+        # 本身只在静默超过 _SSE_KEEPALIVE_INTERVAL 秒时才发——否则每个
+        # keepalive 都会经 GZipMiddleware 变成独立 gzip 成员，纯耗带宽。
+        last_frame_sent = time.monotonic()
         try:
             while not task.done():
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=0.1)
                     yield f"data: {json.dumps(item)}\n\n"
+                    last_frame_sent = time.monotonic()
 
                     while not queue.empty():
                         try:
@@ -446,16 +459,23 @@ async def chat_endpoint(request: ChatRequest):
                         except asyncio.QueueEmpty:
                             break
                 except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
+                    if time.monotonic() - last_frame_sent >= _SSE_KEEPALIVE_INTERVAL:
+                        yield ": keepalive\n\n"
+                        last_frame_sent = time.monotonic()
                     continue
 
             task_error = _task_terminal_exception(task)
             if task_error:
-                error_content = (
-                    "请求已取消"
-                    if isinstance(task_error, asyncio.CancelledError)
-                    else str(task_error) or task_error.__class__.__name__
-                )
+                if isinstance(task_error, asyncio.CancelledError):
+                    error_content = "请求已取消"
+                else:
+                    # 完整异常只进服务端日志；对外仅发通用提示，
+                    # 避免内部异常字符串（路径/依赖细节）泄漏给客户端。
+                    logger.error(
+                        "[Chat] workflow failed: session=%s", session_id,
+                        exc_info=task_error,
+                    )
+                    error_content = "生成过程中出现错误，请重试"
                 yield f"data: {json.dumps({'type': 'error', 'content': error_content})}\n\n"
                 return
 
@@ -556,6 +576,12 @@ async def chat_endpoint(request: ChatRequest):
             if not task.done():
                 logger.info("Cleaning up running task: %s", session_id)
             await _cancel_and_drain_tasks([task])
+            # run() 刻意不自关客户端（引用验证在 task.result() 之后还要用
+            # answer 步骤的 LLM），由所有者——本生成器退出时统一关闭。
+            try:
+                await workflow.aclose()
+            except Exception as e:
+                logger.warning("[Chat] 关闭 workflow LLM 客户端失败: %s", e)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -574,9 +600,16 @@ async def delete_message_endpoint(request: DeleteMessageRequest):
     session_id = normalize_route_safe_id(request.session_id)
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id 格式无效")
-    ok = await delete_message(
+    result = await delete_message(
         session_id, request.message_index, request.expected_content
     )
-    if not ok:
+    # 三态：True 成功；"missing" 会话/下标不存在；"mismatch" 内容与客户端所见
+    # 不一致（并发防护命中）。前端对非 2xx 一律 toast，区分状态码即可。
+    if result == "missing":
         raise HTTPException(status_code=404, detail="Message not found")
+    if result == "mismatch":
+        raise HTTPException(
+            status_code=409,
+            detail="消息内容与当前记录不一致，可能已在其他窗口修改，请刷新后重试",
+        )
     return {"status": "ok"}

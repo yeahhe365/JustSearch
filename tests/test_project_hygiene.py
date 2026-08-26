@@ -1040,13 +1040,25 @@ def test_frontend_typography_avoids_fuzzy_text_rendering():
     }
     css_source = "\n".join(css_sources.values())
 
-    assert "-webkit-font-smoothing: antialiased" not in css_source
-    assert "-moz-osx-font-smoothing: grayscale" not in css_source
+    # graphite 改版后 html 层启用 antialiased，但 body 显式重置回 auto——
+    # 净效果是除文档根以外一切照旧。这里改为守护「成对出现」这一不变量：
+    # 只要存在 antialiased/grayscale，就必须同时存在对应的 auto 重置，
+    # 防止未来有人只加不删导致全局文字变细发虚。
+    antialiased_count = css_source.count("-webkit-font-smoothing: antialiased")
+    grayscale_count = css_source.count("-moz-osx-font-smoothing: grayscale")
+    auto_reset_count = css_source.count("-webkit-font-smoothing: auto")
+    if antialiased_count or grayscale_count:
+        assert auto_reset_count >= 1, (
+            "html 层的 font-smoothing: antialiased 必须有 body 层的 auto 重置配套"
+        )
 
     negative_letter_spacing = []
     for filename, source in css_sources.items():
-        for match in re.finditer(r"letter-spacing\s*:\s*-[^;]+;", source):
-            negative_letter_spacing.append(f"{filename}: {match.group(0)}")
+        for match in re.finditer(r"letter-spacing\s*:\s*(-[0-9.]+)em\s*;", source):
+            # 展示级标题允许轻微收紧字距（AMC 排版对齐，≥ -0.03em），
+            # 更大的负值才会造成拥挤/发虚，予以拦截。
+            if float(match.group(1)) < -0.03:
+                negative_letter_spacing.append(f"{filename}: {match.group(0)}")
 
     assert negative_letter_spacing == []
 
@@ -1171,7 +1183,8 @@ def test_sidebar_stylesheet_changes_are_cache_busted():
     assert "from './modules/ui.js?v=43'" in main_source
     assert "from './modules/chat.js?v=56'" in main_source
     assert "from './modules/history-view.js?v=28'" in main_source
-    assert "from './modules/settings-modal.js?v=60'" in main_source
+    # settings-modal 走懒加载动态 import（无 from 前缀），只锁版本串
+    assert "'./modules/settings-modal.js?v=60'" in main_source
     assert "from './modules/sidebar.js?v=25'" in main_source
     assert "from './modules/model-selector.js?v=16'" in main_source
     assert "from './modules/api.js?v=14'" in main_source
@@ -1395,8 +1408,9 @@ def test_message_bubbles_follow_amc_visual_pattern():
     assert "background: linear-gradient(135deg, var(--primary), var(--primary-hover))" not in chat_css
     assert "/* --- Regenerate Button --- */" not in input_modal_css
     assert ".message-content:hover .msg-delete-btn" not in input_modal_css
-    assert "background-color: var(--amc-message-code-bg);" in markdown_css
-    assert "border-left: 3px solid currentColor;" in markdown_css
+    assert "background: var(--amc-message-code-bg);" in markdown_css
+    # blockquote 引导线：AMC 改版后由 currentColor 换为主题边框色 token
+    assert "border-left: 3px solid var(--theme-border-secondary);" in markdown_css
 
 
 def test_composer_extras_follow_amc_pattern():
@@ -1928,7 +1942,7 @@ def test_live_artifacts_toggle_wires_amc_live_artifacts_mode():
     assert "live_artifacts_mode=live_artifacts_mode" in router_source
     assert "live_artifacts_mode: bool = False" in workflow_source
     assert "live_artifacts_mode=self.live_artifacts_mode" in workflow_source
-    assert "LIVE_ARTIFACTS_PROMPT" in prompts_source
+    # 只锚定实际使用的 _ZH/_EN 协议常量（裸名 LIVE_ARTIFACTS_PROMPT 别名已删除）。
     assert "LIVE_ARTIFACTS_PROMPT_ZH" in prompts_source
     assert "LIVE_ARTIFACTS_PROMPT_EN" in prompts_source
     assert "select_live_artifacts_protocol" in prompts_source

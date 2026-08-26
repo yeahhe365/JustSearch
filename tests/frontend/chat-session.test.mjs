@@ -279,3 +279,142 @@ test('detachCurrentStream keeps an in-flight stream running (background), abando
     globalThis.fetch = originalFetch;
 });
 
+
+test('resetChatDomToHero clears the container, restores hero, and can focus composer', async () => {
+    installBrowserGlobals(`
+        <!doctype html>
+        <body>
+            <div id="chat-container"><div class="message">stale</div></div>
+            <section id="hero-section" style="display:none"></section>
+            <input id="user-input">
+        </body>
+    `);
+    const uiUrl = pathToFileURL(path.join(root, 'backend/static/js/modules/ui.js')).href + `?v=43&t=${Date.now()}`;
+    const ui = await import(uiUrl);
+    ui.elements.chatContainer = document.getElementById('chat-container');
+    ui.elements.heroSection = document.getElementById('hero-section');
+    ui.elements.userInput = document.getElementById('user-input');
+
+    // Precondition: container holds stale message DOM and hero is hidden.
+    assert.ok(document.querySelector('#chat-container .message'), 'stale message present');
+    document.body.appendChild(ui.elements.heroSection);
+
+    let focused = false;
+    ui.elements.userInput.focus = () => { focused = true; };
+
+    ui.resetChatDomToHero();
+
+    const container = document.getElementById('chat-container');
+    const hero = document.getElementById('hero-section');
+    assert.equal(container.querySelectorAll('.message').length, 0, 'container cleared');
+    assert.equal(hero.style.display, 'block', 'hero shown');
+    assert.equal(container.contains(hero), true, 'hero re-appended into container');
+    assert.equal(focused, false, 'composer not focused without focusComposer');
+
+    ui.resetChatDomToHero({ focusComposer: true });
+    assert.equal(focused, true, 'composer focused with focusComposer: true');
+});
+
+test('chat.js History API calls go through window.history (bare history breaks module scopes)', async () => {
+    // Regression: bare `history.replaceState(...)` resolves via window in browsers,
+    // but throws ReferenceError in any JS environment where window exists without
+    // a global `history` binding (jsdom-based tests, workers). Pin the invariant.
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(path.join(root, 'backend/static/js/modules/chat.js'), 'utf8');
+    const bare = src.match(/(?<![.\w$])history\.(?:pushState|replaceState|back|forward|go)\b/g) || [];
+    assert.deepEqual(bare, [], `bare history.* calls found: ${bare.join(', ')}`);
+});
+
+test('detachCurrentStream detaches a freshly started stream (view registration at send)', async () => {
+    installBrowserGlobals(`
+        <!doctype html>
+        <body>
+            <select id="model-select"><option value="model-a" data-provider-id="provider-a">Model A</option></select>
+            <button id="send-btn"><span class="material-symbols-rounded">send</span></button>
+            <textarea id="user-input"></textarea>
+            <div id="chat-container"></div>
+            <section id="hero-section"></section>
+            <button id="new-chat-btn"></button>
+        </body>
+    `);
+    const originalFetch = globalThis.fetch;
+    const { state, setCurrentSessionId, setLiveArtifactsMode } = await import(
+        pathToFileURL(path.join(root, 'backend/static/js/modules/state.js')).href + '?v=5'
+    );
+    const uiUrl = pathToFileURL(path.join(root, 'backend/static/js/modules/ui.js')).href + '?v=43';
+    const { elements } = await import(uiUrl);
+    const chatUrl = pathToFileURL(path.join(root, 'backend/static/js/modules/chat.js')).href + `?t=${Date.now()}`;
+    const { setupChatHandler, detachCurrentStream } = await import(chatUrl);
+
+    setCurrentSessionId(null);
+    setLiveArtifactsMode(false);
+    state.settings = {
+        default_provider_id: 'provider-a',
+        search_engine: 'google',
+        max_results: 10,
+        max_iterations: 3,
+        interactive_search: true,
+    };
+
+    globalThis.fetch = async (input) => {
+        const url = String(input);
+        if (url === '/api/chat') {
+            const encoder = new TextEncoder();
+            return new Response(new ReadableStream({
+                start(controller) {
+                    controller.enqueue(encoder.encode(
+                        `data: ${JSON.stringify({ type: 'meta', session_id: 'fresh-detach-session' })}\n\n`,
+                    ));
+                    // keep open
+                },
+            }), { status: 200 });
+        }
+        if (url === '/api/health') {
+            return new Response(JSON.stringify({ bridge: { extension_connected: true } }), {
+                status: 200, headers: { 'Content-Type': 'application/json' },
+            });
+        }
+        if (url === '/api/history' || url === '/api/history/groups') {
+            return new Response(JSON.stringify([]), { status: 200 });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+    };
+
+    const testElements = {
+        chatContainer: document.getElementById('chat-container'),
+        userInput: document.getElementById('user-input'),
+        sendBtn: document.getElementById('send-btn'),
+        heroSection: document.getElementById('hero-section'),
+        newChatBtn: document.getElementById('new-chat-btn'),
+    };
+    Object.assign(elements, testElements);
+    setupChatHandler(testElements, () => {});
+
+    const input = document.getElementById('user-input');
+    input.value = 'hello';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('send-btn').click();
+
+    for (let i = 0; i < 50; i += 1) {
+        if (state.isProcessing && state.abortController) break;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.equal(state.isProcessing, true, 'stream should be in-flight');
+    assert.ok(
+        document.querySelector('#chat-container .message'),
+        'user bubble appended while streaming',
+    );
+
+    // Regression: handleSendMessage must register the new stream as
+    // currentViewStream. Before the fix, detachCurrentStream read null and
+    // left rec.attached=true, so the background finalizer mutated shared
+    // chrome of whichever session was visible next.
+    detachCurrentStream(testElements);
+    assert.equal(
+        document.querySelectorAll('#chat-container .message').length,
+        0,
+        'freshly started stream must be detached from the view (bubbles removed)',
+    );
+
+    globalThis.fetch = originalFetch;
+});

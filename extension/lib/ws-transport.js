@@ -1,7 +1,7 @@
 // WebSocket 出站连接到 JustSearch 后端,带自动重连。
 // 仿 browser-control-bridge 的 src/background/webSocketTransport.ts,简化。
 
-const DEFAULT_BRIDGE_URL = "ws://127.0.0.1:8000/justsearch";
+export const DEFAULT_BRIDGE_URL = "ws://127.0.0.1:8000/justsearch";
 export const BRIDGE_URL_KEY = "JUSTSEARCH_BRIDGE_URL";
 const RECONNECT_DELAY_MS = 2000;
 // chrome.alarms 最小 0.5 分钟,这里用 1 分钟做兜底重连。
@@ -139,26 +139,9 @@ export class WebSocketTransport {
     }
   };
 
-  async _collectIdentity() {
-    const manifest = chrome.runtime.getManifest?.() || {};
-    let instanceId = null;
-    try {
-      const stored = await chrome.storage.local.get("extensionInstanceId");
-      instanceId = stored.extensionInstanceId || null;
-    } catch {
-      // storage 可能暂不可用
-    }
-    return {
-      name: typeof manifest.name === "string" ? manifest.name : "JustSearch Bridge",
-      version: typeof manifest.version === "string" ? manifest.version : "0.0.0",
-      instance_id: instanceId,
-      ts: Date.now(),
-    };
-  }
-
   async _sendHello() {
     if (!this._isConnected()) return;
-    const identity = await this._collectIdentity();
+    const identity = await collectIdentity();
     this.sendMessage({ jsonrpc: "2.0", method: "hello", params: identity });
   }
 
@@ -166,7 +149,7 @@ export class WebSocketTransport {
     // WS 活跃时 service worker 不会被回收,但仍定期 ping 让后端知道扩展还在。
     if (!this._isConnected()) return;
     try {
-      const identity = await this._collectIdentity();
+      const identity = await collectIdentity();
       // 直接发一个 ping 通知,不等响应;顺带刷新版本元数据。
       this.sendMessage({ jsonrpc: "2.0", method: "ping", params: identity });
     } catch {
@@ -200,18 +183,46 @@ export class WebSocketTransport {
   }
 
   _updateStatus(state, extra = {}) {
-    this._status = {
+    const next = {
       state,
       url: this._resolvedUrl,
       reconnectAttempt: this._reconnectAttempt,
       ...(extra.error ? { error: extra.error } : {}),
     };
+    // 去重:state/error/reconnectAttempt 全部没变就不再触发回调。
+    // 否则每条入站 WS 消息都会走一次 statusCallback → storage.local.set,
+    // 造成每消息一次存储写。首次发布(无上次值可比)仍会照常发出。
+    const prev = this._status;
+    const unchanged =
+      prev != null &&
+      prev.state === next.state &&
+      (prev.error ?? null) === (next.error ?? null) &&
+      prev.reconnectAttempt === next.reconnectAttempt;
+    this._status = next;
+    if (unchanged) return;
     this._statusCallback?.(this.getStatus());
   }
 
   _isConnected() {
     return this.socket?.readyState === WebSocket.OPEN;
   }
+}
+
+export async function collectIdentity() {
+  const manifest = chrome.runtime.getManifest?.() || {};
+  let instanceId = null;
+  try {
+    const stored = await chrome.storage.local.get("extensionInstanceId");
+    instanceId = stored.extensionInstanceId || null;
+  } catch {
+    // storage 可能暂不可用
+  }
+  return {
+    name: typeof manifest.name === "string" ? manifest.name : "JustSearch Bridge",
+    version: typeof manifest.version === "string" ? manifest.version : "0.0.0",
+    instance_id: instanceId,
+    ts: Date.now(),
+  };
 }
 
 export async function getConfiguredBridgeUrl() {

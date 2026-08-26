@@ -4,15 +4,47 @@
 const attachedTabs = new Set();
 const tabQueues = new Map();   // tabId -> Promise chain
 const DEFAULT_CDP_TIMEOUT_MS = 10000;
-
+// attachedTabs 的持久化镜像:SW 重启后内存集合为空,而 chrome.debugger 没有
+// 枚举接口,detachAll 只能靠这份记录清掉重启前的残留附着。
+const ATTACHED_STORAGE_KEY = "jsAttachedTabIds";
 export function registerDetachListener() {
   chrome.debugger.onDetach.addListener((source) => {
-    if (typeof source.tabId === "number") attachedTabs.delete(source.tabId);
+    if (typeof source.tabId === "number") {
+      attachedTabs.delete(source.tabId);
+      void persistAttachedTabs();
+    }
   });
 }
 
-export async function attachTab(tabId) {
-  await withQueue(tabId, () => ensureAttached(tabId));
+// 持久化失败只记日志:内存态仍是权威,不能因为 storage 问题影响爬取。
+// 写入必须排在 hydration 之后:否则 SW 重启后第一次 attach 会用纯内存集合
+// (不含重启前残留)覆写存储,旧附着 id 被抹掉 → detachAll 清不掉残留。
+const hydration = loadPersistedAttachedTabs()
+  .then((ids) => {
+    for (const id of ids) attachedTabs.add(id);
+  })
+  .catch((err) => {
+    // 水合失败只记日志;catch 确保 persist 的 await(hydration)永不悬挂。
+    console.warn("debugger-api: 恢复 attachedTabs 失败:", err?.message ?? err);
+  });
+
+async function persistAttachedTabs() {
+  await hydration;
+  try {
+    await chrome.storage.local.set({ [ATTACHED_STORAGE_KEY]: [...attachedTabs] });
+  } catch (err) {
+    console.warn("debugger-api: 持久化 attachedTabs 失败:", err?.message ?? err);
+  }
+}
+
+async function loadPersistedAttachedTabs() {
+  try {
+    const stored = (await chrome.storage.local.get(ATTACHED_STORAGE_KEY))[ATTACHED_STORAGE_KEY];
+    return Array.isArray(stored) ? stored.filter((id) => typeof id === "number") : [];
+  } catch (err) {
+    console.warn("debugger-api: 读取 attachedTabs 失败:", err?.message ?? err);
+    return [];
+  }
 }
 
 /**
@@ -26,6 +58,7 @@ async function ensureAttached(tabId) {
   try {
     await chrome.debugger.attach({ tabId }, "1.3");
     attachedTabs.add(tabId);
+    await persistAttachedTabs();
   } catch (err) {
     // 重复 attach:若我们未登记但 Chrome 认为已附着,可能是自己残留,尝试当成功。
     // 若是「另一个扩展/工具」占着 debugger,绝不能假成功,否则 sendCommand 会挂死。
@@ -40,6 +73,7 @@ async function ensureAttached(tabId) {
       try {
         await chrome.debugger.attach({ tabId }, "1.3");
         attachedTabs.add(tabId);
+        await persistAttachedTabs();
         return;
       } catch (err2) {
         attachedTabs.delete(tabId);
@@ -62,13 +96,22 @@ export async function detachTab(tabId) {
       /* already detached */
     } finally {
       attachedTabs.delete(tabId);
+      await persistAttachedTabs();
     }
   });
 }
 
 export async function detachAll() {
+  // 水合在模块初始化时已完成(见顶部 hydration):内存集合即权威,含重启前
+  // 的残留附着。直接逐个 detach,最后清掉存储键;storage 失败不影响 detach 本身。
+  await hydration;
   const ids = [...attachedTabs];
   await Promise.allSettled(ids.map((t) => detachTab(t)));
+  try {
+    await chrome.storage.local.remove(ATTACHED_STORAGE_KEY);
+  } catch (err) {
+    console.warn("debugger-api: 清理 attachedTabs 失败:", err?.message ?? err);
+  }
 }
 
 /**
@@ -101,6 +144,7 @@ export async function executeCdp({ tabId, method, params = {}, timeoutMs }) {
           /* ignore */
         }
         attachedTabs.delete(tabId);
+        await persistAttachedTabs();
       }
       throw err;
     } finally {
