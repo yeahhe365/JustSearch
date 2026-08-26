@@ -25,6 +25,18 @@ test('P2: composer shell shadow & focus align with AMC', () => {
   assert.doesNotMatch(focus[0], /0 0 0 2px/, 'AMC focus has no ring');
 });
 
+test('P2: send button aligns with AMC size/colors/states', () => {
+  const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
+  const block = css.match(/#send-btn\s*\{[^}]*\}/);
+  assert.ok(block, '#send-btn rule exists');
+  assert.match(block[0], /width:\s*34px/);
+  assert.match(block[0], /height:\s*34px/);
+  assert.doesNotMatch(block[0], /box-shadow/, 'flat button — no glow');
+  assert.match(css, /--amc-send-bg:\s*#3964fe/i);
+  assert.match(css, /--amc-send-bg:\s*#679efe/i);
+  assert.doesNotMatch(css, /is-editing-message #send-btn/, 'edit-state amber override removed');
+});
+
 test('P1: composer graphite theme tokens exist', () => {
   const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
   assert.match(css, /\[data-theme="graphite"\][^{]*#input-area/, 'input-area should have graphite theme block');

@@ -67,15 +67,6 @@
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-bg-warning-strong, #f59e0b) 25%, transparent);
 }
 
-#input-area.is-editing-message #send-btn:not(.processing) {
-    background: var(--theme-bg-warning-strong, #f59e0b);
-    color: #fff;
-}
-
-#input-area.is-editing-message #send-btn:not(.processing):hover {
-    background: var(--theme-bg-warning-strong-hover, #d97706);
-}
-
 #input-area {
     --amc-radius-lg: 1.25rem; /* AMC COMPOSER_SHELL_RADIUS_CLASS rounded-[20px] */
     --amc-composer-shadow: 0 8px 30px rgba(0, 0, 0, 0.06); /* AMC shadow-[0_8px_30px_rgba(0,0,0,0.06)] */
@@ -109,6 +100,8 @@
     --amc-success-text: #16a34a;
     /* Solid accent for the send button (AMC uses a flat accent circle, no gradient). */
     --primary-gradient: #2563eb;
+    --amc-send-bg: #3964fe;           /* AMC SendControls bg-[#3964FE] */
+    --amc-send-bg-hover: #3358e0;     /* hover:bg-[#3358e0] */
 }
 
 [data-theme="dark"] #input-area {
@@ -128,6 +121,8 @@
     --amc-success-bg: rgba(16, 185, 129, 0.15);
     --amc-success-text: #34d399;
     --primary-gradient: #4f7cf5;
+    --amc-send-bg: #679efe;           /* AMC dark:bg-[#679EFE] */
+    --amc-send-bg-hover: #5a8de0;     /* dark:hover:bg-[#5a8de0] */
 }
 
 [data-theme="graphite"] #input-area {
@@ -147,6 +142,8 @@
     --amc-success-bg: var(--theme-bg-success-light, rgba(134, 239, 172, 0.15));
     --amc-success-text: var(--theme-text-success, #86efac);
     --primary-gradient: var(--theme-bg-accent);
+    --amc-send-bg: var(--theme-bg-accent);
+    --amc-send-bg-hover: var(--theme-bg-accent-hover, #3b6bed);
     /* P1: expose theme warning tokens for edit banner */
     --amc-warning: var(--theme-bg-warning-strong, #d97706);
     --amc-warning-hover: var(--theme-bg-warning-strong-hover, #b45309);
@@ -727,12 +724,13 @@
     box-shadow: 0 0 4px var(--primary);
 }
 
-/* Submit/Send Button - Morphing and Animations */
+/* Submit/Send Button — AMC flat accent circle (CHAT_INPUT_BUTTON_CLASS + SendControls) */
 #send-btn {
-    width: 40px;
-    height: 40px;
-    background: var(--primary-gradient, var(--amc-accent));
+    width: 34px;
+    height: 34px;
+    background: var(--amc-send-bg, var(--amc-accent));
     border: none;
+    margin: 0;
     color: var(--amc-accent-text);
     cursor: pointer;
     padding: 0;
@@ -740,40 +738,33 @@
     align-items: center;
     justify-content: center;
     border-radius: 9999px; /* rounded-full */
-    box-shadow: 0 4px 12px -2px color-mix(in srgb, var(--amc-accent) 40%, transparent);
-    transition: filter 0.15s ease, box-shadow 0.2s ease, transform 0.15s ease, border-radius 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+    transition: background-color 0.15s ease, color 0.15s ease;
     flex-shrink: 0;
     position: relative;
     overflow: hidden;
 }
 
-#send-btn:hover {
-    filter: brightness(1.08);
-    box-shadow: 0 6px 16px -2px color-mix(in srgb, var(--amc-accent) 50%, transparent);
-    transform: translateY(-1px);
+#send-btn:hover:not(:disabled) {
+    background: var(--amc-send-bg-hover, var(--amc-accent-hover));
 }
 
-#send-btn:active {
-    transform: translateY(0) scale(0.96);
-    filter: brightness(0.98);
+#send-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--theme-bg-input, var(--amc-bg-input)), 0 0 0 4px var(--theme-border-focus, var(--amc-border-focus));
 }
 
 #send-btn:disabled {
-    background-color: var(--amc-btn-hover);
-    color: var(--amc-text-tertiary);
+    opacity: 0.5;
     cursor: not-allowed;
-    transform: none !important;
 }
 
-/* Processing/Stop state morphing */
+/* Processing/Stop state — danger circle (AMC bg-danger); no square morph */
 #send-btn.processing {
     background: var(--amc-danger);
     color: var(--amc-accent-text);
-    border-radius: 10px; /* morph from circle to rounded square */
-    box-shadow: 0 4px 12px -2px color-mix(in srgb, var(--amc-danger) 40%, transparent);
 }
 
-#send-btn.processing:hover {
+#send-btn.processing:hover:not(:disabled) {
     background: var(--amc-danger-hover);
 }
 
