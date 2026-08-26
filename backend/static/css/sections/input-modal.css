@@ -77,8 +77,8 @@
 }
 
 #input-area {
-    --amc-radius-lg: 1.625rem; /* AMC COMPOSER_SHELL_RADIUS_CLASS pill */
-    --amc-composer-shadow: var(--shadow-md);
+    --amc-radius-lg: 1.25rem; /* AMC COMPOSER_SHELL_RADIUS_CLASS rounded-[20px] */
+    --amc-composer-shadow: 0 8px 30px rgba(0, 0, 0, 0.06); /* AMC shadow-[0_8px_30px_rgba(0,0,0,0.06)] */
     position: relative;
     flex-shrink: 0;
     width: 100%;
@@ -285,7 +285,7 @@
     align-items: stretch;
     gap: 6px;
     box-shadow: var(--amc-composer-shadow);
-    transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
+    transition: all 0.2s ease-in-out;
     box-sizing: border-box;
 }
 
@@ -295,18 +295,10 @@
     }
 }
 
-[data-theme="dark"] .input-box {
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.06);
-}
-
 .input-box:focus-within {
     border-color: var(--theme-border-focus);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-border-focus) 15%, transparent);
-    background-color: var(--theme-bg-input);
-}
-
-[data-theme="dark"] .input-box:focus-within {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-border-focus) 15%, transparent);
+    /* AMC: no ring — the ambient shadow deepens slightly on focus. */
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
 }
 
 #user-input {

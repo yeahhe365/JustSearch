@@ -12,8 +12,17 @@ const require = createRequire(import.meta.url);
 
 test('composer shell radius aligns with AMC pill radius', () => {
   const css = readFileSync('backend/static/css/sections/input-modal.css','utf8');
-  assert.match(css, /--amc-radius-lg\s*:\s*1\.625rem|26px|18px/);
-  assert.match(css, /\.input-box\s*\{[^}]*border-radius[^}]*var\(--amc-radius-lg|--radius-xl/);
+  assert.match(css, /--amc-radius-lg\s*:\s*1\.25rem/, 'shell radius must be AMC rounded-[20px]');
+  assert.match(css, /\.input-box\s*\{[^}]*border-radius[^}]*var\(--amc-radius-lg/);
+});
+
+test('P2: composer shell shadow & focus align with AMC', () => {
+  const css = readFileSync('backend/static/css/sections/input-modal.css','utf8');
+  assert.match(css, /--amc-composer-shadow:\s*0 8px 30px rgba\(0, 0, 0, 0\.06\)/);
+  const focus = css.match(/\.input-box:focus-within\s*\{[^}]*\}/);
+  assert.ok(focus, 'focus-within rule exists');
+  assert.match(focus[0], /0 8px 30px rgba\(0, 0, 0, 0\.08\)/);
+  assert.doesNotMatch(focus[0], /0 0 0 2px/, 'AMC focus has no ring');
 });
 
 test('P1: composer graphite theme tokens exist', () => {
