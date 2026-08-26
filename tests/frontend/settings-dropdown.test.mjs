@@ -22,6 +22,7 @@ function install() {
     globalThis.window = dom.window;
     globalThis.document = dom.window.document;
     globalThis.CustomEvent = dom.window.CustomEvent;
+    globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
     return dom;
 }
 function moduleUrl() {
