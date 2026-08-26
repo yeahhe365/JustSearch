@@ -281,7 +281,19 @@
                 <div id="slash-command-menu" class="slash-command-menu" hidden>
                     <div class="slash-command-list" id="slash-command-list" role="listbox" data-i18n-aria-label="composer.menu" aria-label="斜杠命令"></div>
                 </div>
-                <textarea id="user-input" placeholder="提出问题..." rows="1" data-i18n-placeholder="inputArea.placeholder" data-i18n-aria-label="inputArea.messageInput" aria-label="消息输入" enterkeyhint="send" autofocus></textarea>
+                <div class="composer-resize-handle" id="composer-resize-handle" role="separator" aria-orientation="horizontal" tabindex="0" data-i18n-aria-label="inputArea.resizeHandle" aria-label="调整输入框高度">
+                    <div class="composer-resize-handle-bar"></div>
+                </div>
+                <div class="composer-expand-corner">
+                    <span class="composer-expand-corner-line" aria-hidden="true"></span>
+                    <button type="button" id="expand-btn" class="composer-expand-btn" aria-pressed="false" data-i18n-aria-label="inputArea.expand" data-i18n-title="inputArea.expand" aria-label="展开输入框" title="展开输入框">
+                        <svg class="icon-maximize" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                        <svg class="icon-minimize" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                    </button>
+                </div>
+                <div id="composer-editor-frame" class="composer-editor-frame">
+                    <textarea id="user-input" placeholder="提出问题..." rows="1" data-i18n-placeholder="inputArea.placeholder" data-i18n-aria-label="inputArea.messageInput" aria-label="消息输入" enterkeyhint="send" autofocus></textarea>
+                </div>
                 <div class="input-toolbar">
                     <div class="input-toolbar-left">
                         <button type="button" id="bridge-status-btn" class="toolbar-btn bridge-status-btn" data-state="unknown" data-i18n-aria-label="inputArea.bridgeStatus" data-i18n-title="inputArea.bridgeStatus" aria-label="浏览器桥接状态" title="浏览器桥接状态">

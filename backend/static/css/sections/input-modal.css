@@ -302,7 +302,7 @@
     width: 100%;
     border: none;
     background: transparent;
-    padding: 2px 4px 0 4px;
+    padding: 2px 36px 0 4px; /* AMC px-1 pr-9 pt-0.5 pb-0 (right clears the expand corner) */
     margin: 0;
     font-size: 16px;
     line-height: 1.5;
@@ -319,6 +319,130 @@
 
 #user-input::placeholder {
     color: var(--amc-text-tertiary);
+}
+
+/* --- AMC composer expand corner + top resize handle --- */
+.composer-editor-frame {
+    position: relative;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.composer-resize-handle {
+    position: absolute;
+    top: 0;
+    right: 16px;
+    left: 16px;
+    z-index: 30;
+    height: 8px;
+    border-radius: 9999px;
+    cursor: row-resize;
+}
+
+.composer-resize-handle:focus-visible {
+    outline: none;
+    background: color-mix(in srgb, var(--amc-accent) 40%, transparent);
+}
+
+.composer-resize-handle-bar {
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    height: 2px;
+    border-radius: 9999px;
+    background: color-mix(in srgb, var(--amc-accent) 20%, transparent);
+    opacity: 0;
+    transition: opacity 0.2s ease-out, background-color 0.2s ease-out;
+}
+
+.composer-resize-handle:hover .composer-resize-handle-bar,
+.composer-resize-handle:focus-visible .composer-resize-handle-bar {
+    opacity: 1;
+}
+
+.composer-resize-handle[data-resizing] .composer-resize-handle-bar {
+    opacity: 1;
+    background: color-mix(in srgb, var(--amc-accent) 35%, transparent);
+}
+
+.composer-expand-corner {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    z-index: 10;
+    width: 32px;
+    height: 32px;
+}
+
+.composer-expand-corner-line {
+    pointer-events: none;
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 12px;
+    height: 12px;
+    border-top: 1.5px solid color-mix(in srgb, var(--amc-text-primary) 60%, transparent);
+    border-right: 1.5px solid color-mix(in srgb, var(--amc-text-primary) 60%, transparent);
+    border-top-right-radius: 16px;
+    opacity: 0.7;
+    transform-origin: top right;
+    transition: opacity 0.2s ease-out, scale 0.2s ease-out;
+}
+
+.composer-expand-corner:hover .composer-expand-corner-line,
+.composer-expand-corner:focus-within .composer-expand-corner-line {
+    scale: 0.5;
+    opacity: 0;
+}
+
+.composer-expand-btn {
+    pointer-events: none;
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: none;
+    border-radius: 9999px;
+    background: transparent;
+    color: var(--amc-text-tertiary);
+    cursor: pointer;
+    opacity: 0;
+    transform: translate(10px, -10px) rotate(-8deg) scale(0.8);
+    transition: opacity 0.3s ease-out, translate 0.3s ease-out, scale 0.3s ease-out, rotate 0.3s ease-out, color 0.3s ease-out, background-color 0.3s ease-out;
+    outline: none;
+}
+
+.composer-expand-corner:hover .composer-expand-btn,
+.composer-expand-corner:focus-within .composer-expand-btn,
+.composer-expand-btn:focus-visible {
+    pointer-events: auto;
+    opacity: 1;
+    transform: translate(0, 0) rotate(0deg) scale(1);
+    background: color-mix(in srgb, var(--amc-btn-hover) 80%, transparent);
+    color: var(--amc-text-primary);
+}
+
+.composer-expand-btn svg {
+    width: 12px;
+    height: 12px;
+    display: block;
+}
+
+.composer-expand-btn .icon-minimize {
+    display: none;
+}
+
+.input-box.expanded .composer-expand-btn .icon-maximize {
+    display: none;
+}
+
+.input-box.expanded .composer-expand-btn .icon-minimize {
+    display: block;
 }
 
 .input-toolbar {
