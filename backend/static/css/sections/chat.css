@@ -11,21 +11,26 @@
 }
 
 /* --- Main Header --- */
+/* AMC 对齐（Header.tsx）：无边框、无毛玻璃、实色表面。
+   默认 bg-secondary（AMC 非 pearl 主题）；light 下覆写为 bg-primary 与页面同色无缝。
+   聊天区在顶栏下方独立滚动，没有内容从底下穿过，模糊无意义。 */
 .main-header {
     display: flex;
     align-items: center;
-    padding: 8px 16px;
-    gap: 10px;
+    padding: 8px 12px;
+    gap: 8px;
     width: 100%;
     box-sizing: border-box;
     /* 高于消息气泡 sticky 头像 (.message-side z-index: 10)，避免模型下拉被挡住 */
     position: relative;
     z-index: 40;
-    background: color-mix(in srgb, var(--theme-bg-secondary, var(--glass-bg)) 70%, transparent);
-    backdrop-filter: blur(12px) saturate(1.4);
-    -webkit-backdrop-filter: blur(12px) saturate(1.4);
-    border-bottom: 1px solid var(--theme-border-primary, transparent);
+    background: var(--theme-bg-secondary);
     min-height: 48px;
+}
+
+/* AMC pearl 规则：浅色主题顶栏与页面背景同色，视觉上完全融入 */
+[data-theme="light"] .main-header {
+    background: var(--theme-bg-primary);
 }
 
 /* --- Model Selector Wrapper & Trigger --- */
@@ -395,6 +400,16 @@
     /* AMC对齐：视口外消息跳过渲染，轻量虚拟化（react-virtuoso 前的 80% 收益） */
     content-visibility: auto;
     contain-intrinsic-size: 0 500px;
+}
+
+/* Live Artifacts 含 iframe 的消息禁用 content-visibility:auto：
+   Chrome 对 srcdoc + sandbox iframe 在 content-visibility 隐藏后重绘会白屏
+   （与 AMC Virtuoso 整节点卸载不同，CSS 隐藏不会重导航 srcdoc）。
+   :has() 覆盖 + JS 兜底类名 live-artifact-message（兼容旧浏览器/流式时序）。 */
+.message:has(.live-artifact-inline-frame),
+.message.live-artifact-message {
+    content-visibility: visible;
+    contain-intrinsic-size: none;
 }
 
 .message:first-child {

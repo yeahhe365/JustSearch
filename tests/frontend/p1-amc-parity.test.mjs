@@ -182,6 +182,20 @@ test('P1: main-header glass aligns with theme (not legacy --glass-bg)', () => {
   assert.match(css, /main-header[^{]*\{[^}]*var\(--theme-bg-secondary|--theme-bg-primary/, 'main-header should reference theme tokens');
 });
 
+test('P2: main-header surface matches AMC (no border, no blur, solid themed bg)', () => {
+  const css = readFileSync('backend/static/css/sections/chat.css', 'utf8');
+  const header = css.match(/\.main-header\s*\{[^}]*\}/);
+  assert.ok(header, '.main-header exists');
+  const block = header[0];
+  assert.doesNotMatch(block, /border-bottom/, 'AMC header carries no bottom border');
+  assert.doesNotMatch(block, /backdrop-filter/, 'AMC header has no glass blur (nothing scrolls beneath)');
+  assert.doesNotMatch(block, /color-mix/, 'header surface is solid, not a translucent mix');
+  assert.match(block, /background:\s*var\(--theme-bg-secondary\)/, 'default surface = bg-secondary (AMC non-pearl themes)');
+  assert.match(css, /\[data-theme="light"\]\s+\.main-header\s*\{[^}]*var\(--theme-bg-primary\)/,
+    'light theme surface = bg-primary so the bar melts into the page (AMC pearl rule)');
+  assert.match(block, /padding:\s*8px 12px/, 'padding aligns AMC sm:px-3 / py-[0.52rem]');
+});
+
 test('P1: markdown code header uses theme code block header', () => {
   const css = readFileSync('backend/static/css/sections/markdown.css', 'utf8');
   assert.match(css, /\.code-block-header[^{]*\{[^}]*var\(--theme-bg-code-block-header/, 'code header should use theme var');
