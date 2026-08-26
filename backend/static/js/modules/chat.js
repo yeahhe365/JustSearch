@@ -15,8 +15,9 @@ import {
 } from './state.js?v=5';
 import { createCopyButton, createMessageActionRail, createRegenerateButton, encodePathSegment } from './utils.js?v=14';
 import { updateActiveHistoryItem } from './history-view.js?v=28';
-import { createDynamicLogContainer, createLogEntry, scrollToBottom, appendMessage, renderMessages, createMessageShell, renderAssistantAnswerBody } from './ui.js?v=43';
+import { createDynamicLogContainer, createLogEntry, scrollToBottom, appendMessage, renderMessages, createMessageShell, renderAssistantAnswerBody, resetChatDomToHero } from './ui.js?v=43';
 import { hasCitationSources } from './source-renderer.js?v=12';
+import { getEngineDisplayName } from './provider-catalog.js?v=2';
 import {
     applyIntensityPresetToSettings,
     getIntensityPreset,
@@ -29,6 +30,7 @@ import { showToast } from './toast.js';
 import * as API from './api.js?v=14';
 import { ensureBridgeConnected, warnIfBridgeDisconnected } from './bridge.js?v=9';
 import { setupComposerExtras } from './composer-extras.js?v=2';
+import { setupComposerExpand, isComposerCustomHeight } from './composer-expand.js?v=1';
 import { setupTextSelectionToolbar } from './text-selection.js?v=1';
 import { playCompletionSound, showCompletionNotification } from './completion-feedback.js?v=1';
 import { t } from './i18n.js?v=1';
@@ -54,6 +56,7 @@ function ensureSessionState(sessionId) {
 
 const activeStreams = new Map(); // provisionalKey -> live stream record
 let currentViewStream = null;    // the stream currently owning the visible view
+let sendInFlight = false;        // 防重入闩：覆盖 isProcessing 置位前的桥接探测窗口
 
 function chatRoute(sessionId) {
     return `/c/${encodePathSegment(sessionId)}`;
@@ -152,21 +155,6 @@ export function shouldRenderStreamTick({
 /**
  * 设置聊天处理器：发送消息、加载/删除对话、输入框自动调整等。
  */
-// 搜索引擎 → 显示名。sogou/baidu 的文案走 t() 运行时取值（切语言后刷新）；
-// 其余为固定品牌名。提升到模块级：syncQuickSettingsFromState 也引用它。
-function getEngineName(engine) {
-    switch (engine) {
-        case 'duckduckgo': return 'DuckDuckGo';
-        case 'google': return 'Google';
-        case 'bing': return 'Bing';
-        case 'sogou': return t('engine.sogou');
-        case 'brave': return 'Brave Search';
-        case 'baidu': return t('engine.baidu');
-        case 'yandex': return 'Yandex';
-        default: return engine || 'Google';
-    }
-}
-
 export function setupChatHandler(elements, renderHistory) {
     // 记录最后一条用户消息，用于重新生成
     let lastUserMessage = '';
@@ -269,7 +257,7 @@ export function setupChatHandler(elements, renderHistory) {
      * Remove DOM message bubbles from `fromIndex` onward (optimistic AMC truncate).
      */
     function removeMessagesFromDom(fromIndex) {
-        if (!Number.isFinite(Number(fromIndex))) return;
+        if (!Number.isFinite(Number(fromIndex))) return [];
         const cutoff = Math.floor(Number(fromIndex));
         const nodes = Array.from(elements.chatContainer.querySelectorAll('.message'));
         const lastKept = nodes
@@ -279,10 +267,14 @@ export function setupChatHandler(elements, renderHistory) {
             })
             .pop();
 
+        const removedNodes = [];
         nodes.forEach((node) => {
             const idx = Number(node.dataset.messageIndex);
             if (Number.isFinite(idx)) {
-                if (idx >= cutoff) node.remove();
+                if (idx >= cutoff) {
+                    node.remove();
+                    removedNodes.push(node);
+                }
                 return;
             }
             // Unindexed stream bubbles after the last kept message are abandoned tails.
@@ -293,9 +285,11 @@ export function setupChatHandler(elements, renderHistory) {
             ) {
                 if (!lastKept || (lastKept.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)) {
                     node.remove();
+                    removedNodes.push(node);
                 }
             }
         });
+        return removedNodes;
     }
 
     /**
@@ -350,7 +344,7 @@ export function setupChatHandler(elements, renderHistory) {
         // 更新浏览器地址栏
         const route = chatRoute(sessionId);
         if (window.location.pathname !== route) {
-            history.pushState({ sessionId }, '', route);
+            window.history.pushState({ sessionId }, '', route);
         }
         const data = await API.fetchChat(sessionId);
         // Stale response: user already switched away (new chat / other history).
@@ -386,9 +380,8 @@ export function setupChatHandler(elements, renderHistory) {
                 onForked: refreshHistory,
             });
         } else {
-            elements.chatContainer.innerHTML = '';
-            elements.heroSection.style.display = 'block';
-            elements.chatContainer.appendChild(elements.heroSection);
+            // 空会话：恢复首页 hero（与 main.js showHomeState 同源的唯一实现）。
+            resetChatDomToHero();
         }
 
         // Re-attach a background stream belonging to this session (live, or a
@@ -465,6 +458,13 @@ export function setupChatHandler(elements, renderHistory) {
         const text = (overrideText !== undefined ? overrideText : elements.userInput.value).trim();
         if (!text) return;
 
+        // 防重入闩：isProcessing 要等桥接探测（真实 HTTP 往返）之后才置位，
+        // 该 await 窗口内的双击/回车会双发 POST，让两条 rec 抢同一
+        // provisionalKey 并在 onMeta 迁移时互相踢掉对方的 Map 槽位。
+        if (sendInFlight) return;
+        sendInFlight = true;
+        const releaseSendLatch = () => { sendInFlight = false; };
+
         // Capture the session BEFORE any await. A new-chat / history switch during
         // the bridge check must not let us attach to another session. The send is
         // always bound to its own session record (see activeStreams), so switching
@@ -497,11 +497,13 @@ export function setupChatHandler(elements, renderHistory) {
         const bridgeReady = await ensureBridgeConnected({ forceRefresh: true });
         if (!bridgeReady) {
             showToast(t('chat.requireBridge'), 'warning', 4000);
+            releaseSendLatch();
             return;
         }
         if (state.currentSessionId !== requestSessionId) {
             // User already left this view (new chat / switched history) while
             // we were waiting on the bridge. Do not start a stray request.
+            releaseSendLatch();
             return;
         }
 
@@ -523,6 +525,10 @@ export function setupChatHandler(elements, renderHistory) {
             truncateFromIndex: null,
         };
         activeStreams.set(provisionalKey, rec);
+        // 关键：新流必须立刻登记为当前视图流。否则 detachCurrentStream 读到
+        // null 而空转，后台收尾的 `rec.attached` 守卫不触发——切走会话后，
+        // 旧流完成时会把 isProcessing/发送按钮/完成提示打到别人视图上。
+        currentViewStream = rec;
         const ownsView = () => rec.attached && state.currentSessionId === (rec.sessionId ?? requestSessionId);
 
         // 记录发送前状态(在乐观截断之前)：失败/取消时回滚，避免 stale 下标
@@ -533,7 +539,8 @@ export function setupChatHandler(elements, renderHistory) {
         // Optimistic DOM truncate (AMC slice) before appending the new turn.
         if (truncateFromIndex !== null) {
             rec.truncateFromIndex = truncateFromIndex;
-            removeMessagesFromDom(truncateFromIndex);
+            // 暂存被删节点：失败回滚时原位插回（比整体重渲染安全，不丢错误框）。
+            rec.removedDomNodes = removeMessagesFromDom(truncateFromIndex);
             setSessionMessageCount(truncateFromIndex);
         }
 
@@ -732,7 +739,7 @@ export function setupChatHandler(elements, renderHistory) {
                         setCurrentSessionId(sessionId);
                         const route = chatRoute(sessionId);
                         if (window.location.pathname !== route) {
-                            history.replaceState({ sessionId }, '', route);
+                            window.history.replaceState({ sessionId }, '', route);
                         }
                     }
                 },
@@ -878,6 +885,14 @@ export function setupChatHandler(elements, renderHistory) {
             }
         } finally {
             clearInterval(elapsedTimer);
+            // 渲染节流 timer 在 shouldRenderStreamTick 恒 false 时会无限自续
+            // （~8Hz 空转）；失败/停止后缓冲冻结，必须在此显式拆除。
+            if (renderTimer !== null) {
+                clearTimeout(renderTimer);
+                renderTimer = null;
+            }
+            pendingRender = false;
+            releaseSendLatch();
             // Always clear the controller if we still own it — even after view switch.
             if (state.abortController === controller) {
                 setAbortController(null);
@@ -893,9 +908,16 @@ export function setupChatHandler(elements, renderHistory) {
             // 恢复发送前计数，让后续 regenerate/截断拿到真实下标，同时保留错误提示。
             // 仅当 prevSessionMessageCount 有效（增量追加而非新会话）且镜像长度确实
             // 大于它时才回滚，避免截断其他会话的镜像。
+            // 仅当 prevSessionMessageCount 有效（增量追加而非新会话）时回滚。
+            // 截断发送必须无条件回滚：镜像只在成功路径增长，失败时其长度恰等
+            // 于发送前值，旧的 length > prev 守卫恒为假，而乐观的
+            // removeMessagesFromDom/setSessionMessageCount 已把视图和计数砍到
+            // 截断点 → 下标漂移会让后续发送触发 409。
             if (streamOutcome !== 'completed' && prevSessionMessageCount >= 0) {
                 const rollbackState = ensureSessionState(rec.sessionId ?? requestSessionId);
-                if (rollbackState.mirror.length > prevSessionMessageCount) {
+                const needsRollback = truncateFromIndex !== null
+                    || rollbackState.mirror.length > prevSessionMessageCount;
+                if (needsRollback) {
                     rollbackState.count = prevSessionMessageCount;
                     rollbackState.lastUserIndex = prevLastUserMessageIndex;
                     rollbackState.mirror = rollbackState.mirror.slice(0, prevSessionMessageCount);
@@ -903,6 +925,14 @@ export function setupChatHandler(elements, renderHistory) {
                         setSessionMessageCount(rollbackState.count);
                         setLastUserMessageIndex(rollbackState.lastUserIndex);
                         messagesMirror = rollbackState.mirror;
+                        if (truncateFromIndex !== null && Array.isArray(rec.removedDomNodes)) {
+                            // 截断失败：把乐观删除的气泡原位插回（在本次发送的
+                            // user 气泡之前），保留错误提示框不被重渲染抹掉。
+                            const anchor = rec.userNode ?? null;
+                            for (const node of rec.removedDomNodes) {
+                                elements.chatContainer.insertBefore(node, anchor);
+                            }
+                        }
                     }
                 }
             }
@@ -911,9 +941,14 @@ export function setupChatHandler(elements, renderHistory) {
                 // Completed turn is persisted server-side — drop the record; a later
                 // loadChat renders it from the DB.
                 activeStreams.delete(rec.provisionalKey);
+            } else if (!rec.sessionId) {
+                // 失败/取消且真实会话 id 尚未分配（meta 未到达）：记录仍挂在临时
+                // `new-*` 键下，而 loadChat 只按真实 sessionId 查找，永远无法回收
+                // → 直接删除，避免 activeStreams 泄漏。
+                activeStreams.delete(rec.provisionalKey);
             }
-            // cancelled/failed records are kept so returning to the session can show
-            // their bubble once (loadChat releases them).
+            // 其余 cancelled/failed 记录保留，返回该会话时展示一次气泡后由
+            // loadChat 释放。
 
             if (currentViewStream === rec) {
                 currentViewStream = null;
@@ -989,11 +1024,14 @@ export function setupChatHandler(elements, renderHistory) {
     }
 
     function resetInputHeight() {
+        // Expand/resize owns the height while active (AMC parity).
+        if (isComposerCustomHeight(elements.userInput)) return;
         elements.userInput.style.height = '26px';
         elements.userInput.style.overflowY = 'hidden';
     }
 
     function autoResizeInput() {
+        if (isComposerCustomHeight(elements.userInput)) { updateSendButtonState(); return; }
         const maxHeight = 150; // AMC MAX_TEXTAREA_HEIGHT_PX
         // 先重置再读取 scrollHeight：否则空内容时 scrollHeight 会塌缩为当前
         // clientHeight（上一次撑开的高度），导致清空后高度卡在旧值无法恢复。
@@ -1229,6 +1267,12 @@ export function setupChatHandler(elements, renderHistory) {
 
     syncQuickSettingsFromState();
 
+    // AMC-style composer expand corner + top resize handle.
+    setupComposerExpand({
+        inputBoxEl: elements.userInput.closest('.input-box'),
+        textareaEl: elements.userInput,
+    });
+
     // AMC-style composer extras: suggestion chips, slash commands, status pill.
     setupComposerExtras({
         inputEl: elements.userInput,
@@ -1244,7 +1288,7 @@ export function setupChatHandler(elements, renderHistory) {
         getStatusText: () => {
             if (!state.settings) return null;
             const preset = matchIntensityPreset(state.settings.max_results, state.settings.max_iterations);
-            const engine = getEngineName(state.settings.search_engine);
+            const engine = getEngineDisplayName(state.settings.search_engine, t);
             return { title: t('chat.searching'), subtitle: `${preset?.label || t('searchIntensity.custom')} · ${engine}` };
         },
     });
@@ -1260,7 +1304,13 @@ export function setupChatHandler(elements, renderHistory) {
     // re-translates without a reload. No-op when no session is loaded.
     function rerenderCurrentView() {
         if (!state.currentSessionId) {
-            showHomeState();
+            // 对齐 main.js showHomeState 的复位序列：脱离在途流 → 复位会话 id 与
+            // 历史高亮 → 恢复首页 hero。（此前此处引用了仅存在于 main.js 模块作用域的
+            // showHomeState，切语言时在首页触发 ReferenceError。）
+            detachCurrentStream(elements);
+            setCurrentSessionId(null);
+            resetChatDomToHero();
+            updateActiveHistoryItem(null);
             return;
         }
         const s = ensureSessionState(state.currentSessionId);
@@ -1354,12 +1404,12 @@ export function syncQuickSettingsFromState() {
     const quickLiveArtifactsBtn = document.getElementById('quick-live-artifacts-btn');
 
     if (!state.settings) return;
-    
+
     const engine = state.settings.search_engine || 'google';
     if (quickEngineName) {
-        quickEngineName.textContent = getEngineName(engine);
+        quickEngineName.textContent = getEngineDisplayName(engine, t);
     }
-    
+
     if (quickEngineDropdown) {
         const dropdownItems = quickEngineDropdown.querySelectorAll('.quick-dropdown-item');
         let activeSvg = null;

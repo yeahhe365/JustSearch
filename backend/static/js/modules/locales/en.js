@@ -66,6 +66,9 @@ export const en = {
     'inputArea.suggestions': 'Suggested questions',
     'inputArea.scrollLeft': 'Scroll suggestions left',
     'inputArea.scrollRight': 'Scroll suggestions right',
+    'inputArea.expand': 'Expand input',
+    'inputArea.collapse': 'Collapse input',
+    'inputArea.resizeHandle': 'Resize input height',
 
     // --- search intensity ---
     'searchIntensity.label': 'Search intensity',

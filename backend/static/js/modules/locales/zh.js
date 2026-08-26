@@ -66,6 +66,9 @@ export const zh = {
     'inputArea.suggestions': '建议问题',
     'inputArea.scrollLeft': '向左滚动建议',
     'inputArea.scrollRight': '向右滚动建议',
+    'inputArea.expand': '展开输入框',
+    'inputArea.collapse': '收起输入框',
+    'inputArea.resizeHandle': '调整输入框高度',
 
     // --- search intensity ---
     'searchIntensity.label': '搜索强度',
