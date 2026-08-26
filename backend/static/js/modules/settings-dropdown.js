@@ -37,6 +37,7 @@ export function initSettingsDropdowns(root = document) {
         const panel = root.createElement('div');
         panel.className = 'settings-dd-panel';
         panel.setAttribute('role', 'listbox');
+        panel.hidden = true;
 
         Array.from(select.options).forEach((option) => {
             const opt = root.createElement('button');
