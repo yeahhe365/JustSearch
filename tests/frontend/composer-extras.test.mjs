@@ -1,9 +1,10 @@
 /**
- * composer-extras: suggestion chips, slash-command menu and the generation
- * status pill — AMC-aligned composer interactions.
+ * composer-extras: slash-command menu and the generation status pill —
+ * AMC-aligned composer interactions. (Suggestion chips were removed.)
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
@@ -15,11 +16,6 @@ const root = path.resolve(__dirname, '../..');
 
 const HARNESS_HTML = `<!doctype html><html><body>
     <div id="input-area">
-        <div id="suggestion-chips" hidden>
-            <div id="suggestion-chips-track"></div>
-            <button id="suggestion-scroll-left"></button>
-            <button id="suggestion-scroll-right"></button>
-        </div>
         <div id="generation-status" hidden>
             <span id="generation-status-title"></span>
             <span id="generation-status-subtitle"></span>
@@ -32,7 +28,6 @@ const HARNESS_HTML = `<!doctype html><html><body>
             <textarea id="user-input"></textarea>
         </div>
     </div>
-    <div id="hero-section" style="display: block"></div>
     <button id="send-btn"></button>
 </body></html>`;
 
@@ -59,45 +54,11 @@ function extrasModuleUrl() {
 
 const tick = () => new Promise((r) => setTimeout(r, 20));
 
-test('suggestion chips render when the hero is visible and hide with it', async () => {
+test('suggestion chips code is fully removed from composer-extras', async () => {
     installBrowserGlobals();
-    const heroEl = document.getElementById('hero-section');
-    const chipsBox = document.getElementById('suggestion-chips');
-    const track = document.getElementById('suggestion-chips-track');
-    const inputEl = document.getElementById('user-input');
-
-    heroEl.style.display = 'block';
-    const { setupComposerExtras, SUGGESTIONS } = await import(extrasModuleUrl());
-    setupComposerExtras({ inputEl, sendBtn: document.getElementById('send-btn'), heroEl, onPickSuggestion: () => {} });
-
-    await tick();
-    assert.equal(chipsBox.hidden, false, 'chips visible on empty conversation');
-    assert.equal(track.children.length, SUGGESTIONS.length, 'one chip per suggestion');
-
-    heroEl.style.display = 'none';
-    await tick();
-    assert.equal(chipsBox.hidden, true, 'chips hide when a conversation starts');
-});
-
-test('clicking a suggestion chip sends its text', async () => {
-    installBrowserGlobals();
-    const heroEl = document.getElementById('hero-section');
-    heroEl.style.display = 'block';
-    const inputEl = document.getElementById('user-input');
-    const picked = [];
-    const { setupComposerExtras } = await import(extrasModuleUrl());
-    setupComposerExtras({
-        inputEl,
-        sendBtn: document.getElementById('send-btn'),
-        heroEl,
-        onPickSuggestion: (text) => picked.push(text),
-    });
-    await tick();
-    const chip = document.querySelector('.suggestion-chip');
-    assert.ok(chip, 'chip rendered');
-    chip.click();
-    assert.equal(picked.length, 1);
-    assert.equal(picked[0], chip.querySelector('.suggestion-chip-text').textContent);
+    const js = readFileSync(path.join(root, 'backend/static/js/modules/composer-extras.js'), 'utf8');
+    assert.doesNotMatch(js, /SUGGESTIONS/, 'no SUGGESTIONS export');
+    assert.doesNotMatch(js, /suggestion/i, 'no suggestion remnants');
 });
 
 test('slash menu opens on "/", keyboard select applies intensity and strips the token', async () => {
@@ -108,8 +69,6 @@ test('slash menu opens on "/", keyboard select applies intensity and strips the 
     setupComposerExtras({
         inputEl,
         sendBtn: document.getElementById('send-btn'),
-        heroEl: document.getElementById('hero-section'),
-        onPickSuggestion: () => {},
         onApplyIntensity: (id) => applied.push(id),
     });
 
@@ -132,6 +91,27 @@ test('slash menu opens on "/", keyboard select applies intensity and strips the 
     assert.equal(inputEl.value, '关于 AI 的问题');
 });
 
+test('slash menu filters by latin command id under zh labels', async () => {
+    installBrowserGlobals();
+    const inputEl = document.getElementById('user-input');
+    const { setupComposerExtras } = await import(extrasModuleUrl());
+    setupComposerExtras({
+        inputEl,
+        sendBtn: document.getElementById('send-btn'),
+        onApplyIntensity: () => {},
+    });
+
+    // Default locale is zh, so the visible label is 快速 — the latin id "quick"
+    // must still match (ids are stable even when labels are translated).
+    inputEl.value = '/quick';
+    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+    assert.equal(document.getElementById('slash-command-menu').hidden, false, 'menu opens on slash');
+    const items = Array.from(document.querySelectorAll('.slash-command-item'));
+    assert.equal(items.length, 1, 'only the matching command remains');
+    assert.equal(items[0].dataset.commandId, 'quick', 'matched by latin id');
+    assert.match(items[0].querySelector('.slash-command-label').textContent, /快速/);
+});
+
 test('generation status pill mirrors the send button processing state', async () => {
     installBrowserGlobals();
     const inputEl = document.getElementById('user-input');
@@ -141,8 +121,6 @@ test('generation status pill mirrors the send button processing state', async ()
     setupComposerExtras({
         inputEl,
         sendBtn,
-        heroEl: document.getElementById('hero-section'),
-        onPickSuggestion: () => {},
         onApplyIntensity: () => {},
         getStatusText: () => ({ title: '正在搜索', subtitle: '均衡 · Google' }),
     });

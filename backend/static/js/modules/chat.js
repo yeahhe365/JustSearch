@@ -29,7 +29,7 @@ import {
 import { showToast } from './toast.js';
 import * as API from './api.js?v=14';
 import { ensureBridgeConnected, warnIfBridgeDisconnected } from './bridge.js?v=9';
-import { setupComposerExtras } from './composer-extras.js?v=2';
+import { setupComposerExtras } from './composer-extras.js?v=3';
 import { setupComposerExpand, isComposerCustomHeight } from './composer-expand.js?v=1';
 import { setupTextSelectionToolbar } from './text-selection.js?v=1';
 import { playCompletionSound, showCompletionNotification } from './completion-feedback.js?v=1';
@@ -1273,15 +1273,10 @@ export function setupChatHandler(elements, renderHistory) {
         textareaEl: elements.userInput,
     });
 
-    // AMC-style composer extras: suggestion chips, slash commands, status pill.
+    // AMC-style composer extras: slash commands + generation status pill.
     setupComposerExtras({
         inputEl: elements.userInput,
         sendBtn: elements.sendBtn,
-        heroEl: elements.heroSection,
-        onPickSuggestion: (text) => {
-            elements.userInput.value = text;
-            handleSendMessage(text);
-        },
         onApplyIntensity: (presetId) => {
             applyIntensityPreset(presetId);
         },

@@ -71,29 +71,11 @@ test('P2: intensity preset segments align with AMC segmented control', () => {
   assert.doesNotMatch(css, /\.intensity-chip-custom\.active/, 'custom override removed');
 });
 
-test('P2: suggestion chips align with AMC suggestion chip tokens', () => {
+test('P2: suggestion chips feature is fully removed', () => {
+  const html = readFileSync('backend/static/index.html', 'utf8');
+  assert.doesNotMatch(html, /suggestion-chip/, '#suggestion-chips block removed from index.html');
   const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
-  const chip = css.match(/\.suggestion-chip\s*\{[^}]*\}/);
-  assert.ok(chip, '.suggestion-chip rule exists');
-  assert.match(chip[0], /padding:\s*10px 10px/, 'mobile py-2.5 px-2.5 touch target');
-  assert.match(chip[0], /border-radius:\s*8px/, 'rounded-lg kept');
-  assert.match(chip[0], /color-mix\(in srgb, var\(--amc-btn-hover\) 35%, transparent\)/, 'default bg-tertiary/35 via amc token');
-  assert.match(chip[0], /color-mix\(in srgb, var\(--amc-border\) 70%, transparent\)/, 'default border-secondary/70 via amc token');
-  assert.match(chip[0], /color:\s*var\(--amc-text-secondary\)/);
-
-  const hover = css.match(/\.suggestion-chip:hover\s*\{[^}]*\}/);
-  assert.ok(hover, ':hover rule exists');
-  assert.match(hover[0], /border-color:\s*var\(--amc-border-focus\)/, 'AMC hover:border-focus');
-  assert.match(hover[0], /background:\s*var\(--amc-btn-hover\)/, 'solid tertiary hover bg');
-
-  const focus = css.match(/\.suggestion-chip:focus-visible\s*\{[^}]*\}/);
-  assert.ok(focus, ':focus-visible rule exists');
-  assert.match(focus[0], /box-shadow:\s*inset 0 0 0 2px var\(--amc-border-focus\)/, 'inset focus ring');
-
-  const mq = css.match(/@media \(min-width: 640px\)\s*\{\s*\.suggestion-chip\s*\{[^}]*\}/);
-  assert.ok(mq, 'desktop media query exists');
-  assert.match(mq[0], /padding:\s*8px 12px/, 'desktop sm:px-3 py-2');
-  assert.match(mq[0], /gap:\s*6px/, 'desktop sm:gap-1.5');
+  assert.doesNotMatch(css, /\.suggestion-chip/, '.suggestion-chip rules removed from CSS');
 });
 
 test('P1: composer graphite theme tokens exist', () => {

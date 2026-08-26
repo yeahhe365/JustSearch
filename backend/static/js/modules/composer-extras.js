@@ -1,31 +1,18 @@
 // ===========================================================================
-// Composer extras — UI aligned with AMC-WebUI's ChatSuggestions /
-// SlashCommandMenu / LiveStatusBanner.
+// Composer extras — UI aligned with AMC-WebUI's SlashCommandMenu /
+// LiveStatusBanner.
 //
-//   • Suggestion chips   — horizontal, scrollable row of preset questions,
-//                          shown only while the conversation is empty.
 //   • Slash command menu — type "/" to switch the search-intensity preset.
 //   • Generation status  — a pill mirroring the send/stop state, so the
 //                          running search is visible above the composer.
 //
-// The module is self-contained: it observes the hero (empty state) and the
-// send button (.processing) so it needs no chat.js wiring beyond the two
-// callbacks for sending and for applying an intensity preset.
+// The module is self-contained: it observes the send button (.processing) so
+// it needs no chat.js wiring beyond the callbacks for applying an intensity
+// preset and for reading status labels.
 // ===========================================================================
 import { abortActiveStream } from './state.js?v=5';
 import { t } from './i18n.js?v=1';
 import { INTENSITY_PRESETS } from './search-intensity.js?v=3';
-
-// --- Suggestion data (search-domain prompts) -------------------------------
-export const SUGGESTIONS = Object.freeze([
-    { icon: 'trending_up', textKey: 'composer.suggestion1' },
-    { icon: 'compare_arrows', textKey: 'composer.suggestion2' },
-    { icon: 'lightbulb', textKey: 'composer.suggestion3' },
-    { icon: 'rocket_launch', textKey: 'composer.suggestion4' },
-    { icon: 'eco', textKey: 'composer.suggestion5' },
-    { icon: 'school', textKey: 'composer.suggestion6' },
-    { icon: 'monitoring', textKey: 'composer.suggestion7' },
-]);
 
 // --- Slash command data (derived from search-intensity presets) ------------
 const SLASH_COMMAND_ICONS = Object.freeze({
@@ -56,19 +43,13 @@ const SLASH_RE = /^\/([^\s]*)/;
 export function setupComposerExtras({
     inputEl,
     sendBtn,
-    heroEl,
     root = document,
-    onPickSuggestion,
     onApplyIntensity,
     getStatusText = () => null, // () => { title, subtitle } | null
 }) {
     if (!inputEl) return null;
 
     const inputArea = inputEl.closest('#input-area') || root.getElementById('input-area');
-    const chipsBox = inputArea?.querySelector('#suggestion-chips');
-    const chipsTrack = inputArea?.querySelector('#suggestion-chips-track');
-    const chipsLeft = inputArea?.querySelector('#suggestion-scroll-left');
-    const chipsRight = inputArea?.querySelector('#suggestion-scroll-right');
     const slashMenu = inputArea?.querySelector('#slash-command-menu');
     const slashList = inputArea?.querySelector('#slash-command-list');
     const statusPill = inputArea?.querySelector('#generation-status');
@@ -77,77 +58,10 @@ export function setupComposerExtras({
     const statusStop = inputArea?.querySelector('#generation-status-stop');
 
     // ------------------------------------------------------------------
-    // Suggestion chips
+    // Slash command menu
     // ------------------------------------------------------------------
     let selectedIndex = 0;
 
-    function renderChips() {
-        if (!chipsTrack || chipsTrack.dataset.rendered) return;
-        chipsTrack.dataset.rendered = '1';
-        const frag = root.createDocumentFragment();
-        SUGGESTIONS.forEach((s, i) => {
-            const btn = root.createElement('button');
-            btn.type = 'button';
-            btn.className = 'suggestion-chip';
-            btn.setAttribute('role', 'listitem');
-            btn.dataset.suggestionIndex = String(i);
-            const chipText = t(s.textKey);
-            btn.title = chipText;
-            btn.innerHTML = `<span class="material-symbols-rounded suggestion-chip-icon" aria-hidden="true">${s.icon}</span><span class="suggestion-chip-text">${chipText}</span>`;
-            btn.addEventListener('click', () => {
-                if (typeof onPickSuggestion === 'function') onPickSuggestion(chipText);
-            });
-            frag.appendChild(btn);
-        });
-        chipsTrack.appendChild(frag);
-    }
-
-    function updateChipScrollArrows() {
-        if (!chipsTrack || !chipsLeft || !chipsRight) return;
-        const { scrollLeft, scrollWidth, clientWidth } = chipsTrack;
-        const showLeft = scrollLeft > 4;
-        const showRight = scrollLeft < scrollWidth - clientWidth - 4;
-        chipsLeft.classList.toggle('is-visible', showLeft);
-        chipsRight.classList.toggle('is-visible', showRight);
-    }
-
-    if (chipsTrack) {
-        chipsTrack.addEventListener('scroll', updateChipScrollArrows, { passive: true });
-    }
-    const scrollChips = (dir) => {
-        if (!chipsTrack) return;
-        chipsTrack.scrollBy({ left: dir * chipsTrack.clientWidth * 0.6, behavior: 'smooth' });
-    };
-    if (chipsLeft) chipsLeft.addEventListener('click', () => scrollChips(-1));
-    if (chipsRight) chipsRight.addEventListener('click', () => scrollChips(1));
-
-    // Show/hide with the empty-state hero (the app drives hero visibility via
-    // inline style.display, so read it directly rather than getComputedStyle).
-    const raf = (typeof requestAnimationFrame === 'function')
-        ? requestAnimationFrame
-        : (cb) => setTimeout(cb, 0);
-    function syncSuggestionsVisibility() {
-        if (!chipsBox || !heroEl) return;
-        const heroVisible = heroEl.style.display !== 'none';
-        chipsBox.hidden = !heroVisible;
-        if (heroVisible) {
-            renderChips();
-            // Wait a frame so the track has layout before measuring overflow.
-            raf(updateChipScrollArrows);
-        }
-    }
-    if (heroEl && chipsBox) {
-        syncSuggestionsVisibility();
-        try {
-            const mo = new MutationObserver(syncSuggestionsVisibility);
-            mo.observe(heroEl, { attributes: true, attributeFilter: ['style'] });
-        } catch { /* older test env without MutationObserver */ }
-        window.addEventListener('resize', updateChipScrollArrows);
-    }
-
-    // ------------------------------------------------------------------
-    // Slash command menu
-    // ------------------------------------------------------------------
     function isSlashOpen() {
         return slashMenu && !slashMenu.hidden;
     }
@@ -157,7 +71,11 @@ export function setupComposerExtras({
         const query = (inputEl.value || '').trim();
         const match = query.match(SLASH_RE);
         const filter = match ? match[1].toLowerCase() : '';
-        const commands = SLASH_COMMANDS.filter((c) => getSlashCommandLabel(c).toLowerCase().includes(filter));
+        // 同时匹配 id / label / hint：id 是稳定的拉丁词（如 quick/deep），
+        // 翻译后的中文标签下输入 "/quick" 也应能命中。
+        const commands = SLASH_COMMANDS.filter((c) => (
+            [c.id, getSlashCommandLabel(c), getSlashCommandHint(c)].join(' ').toLowerCase().includes(filter)
+        ));
         slashList.textContent = '';
         selectedIndex = 0;
         if (!commands.length) {
@@ -282,7 +200,6 @@ export function setupComposerExtras({
 
     return {
         update: () => {
-            syncSuggestionsVisibility();
             updateStatusPill();
         },
         openSlashMenu,
