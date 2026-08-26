@@ -106,3 +106,18 @@ JustSearch 设置弹窗此前已做过布局级对齐（256px 侧栏 / 768px 内
 - 侧栏桌面关闭钮隐藏而非删除 DOM：移动端复用同一按钮，避免双份接线。
 - 分段控件不抽公共模块：仅两组使用，YAGNI；工具函数放 settings-modal.js 内并导出给 sidebar.js 复用。
 - 保存状态胶囊是 JustSearch 特有功能，AMC 无对应物——保留原位仅微调容器样式。
+
+---
+
+## 附录：第二轮补齐（用户反馈「还不够复刻」，2026-08-26 批准：八项全补）
+
+| # | 差距 | 补齐方案 |
+|---|---|---|
+| A1 | 下拉框形态 | 新模块 `settings-dropdown.js` 对原生 `<select>` 做**渐进增强**：隐藏原 select（保留 DOM 与 change 事件），渲染 trigger 按钮 + 浮层 listbox。trigger=bg-input+border-secondary+hover 边框 focus 色+chevron 旋转；面板=bg-secondary、rounded-xl(12px)、shadow-premium 级阴影、p-4px、选项 hover tertiary/50、选中项 accent/10 底。`fillSettingsForm` 写值后调用 `syncFromSelect` 回读 |
+| A2 | 内容头位置 | 移入 `.settings-panels` 滚动容器内部作首子元素，宽 `var(--amc-content-width)` 居中随内容滚动；panels 顶部 padding 归零由头部自带 |
+| A3 | 卡内行分隔 | `.settings-card` 内相邻字段行之间加 1px 分隔线（border-secondary/40），即 AMC divide-y |
+| A4 | Toggle 开关 | 44×24 轨道不变；关底 `--border → theme-bg-tertiary`、开底 `--primary → theme-bg-accent`、拇指白色 16px 加 shadow、focus-visible ring-offset-secondary |
+| A5 | 滑杆 | 轨道 6px 高、`theme-border-secondary` 底、圆角；thumb accent 圆点白边 shadow；focus-visible ring |
+| A6 | 导航分组 | tabs 拆三组容器：常规+模型+桥接+数据管理 ／ 快捷键 ／ 关于，组间 gap 14px |
+| A7 | 细滚动条 | `.settings-tabs/.settings-panels/.settings-search-results` 用 5px webkit 滚动条 + `scrollbar-color: var(--theme-scrollbar-thumb, …) transparent`，hover 变 focus 色 |
+| A8 | 搜索结果面板 | 容器改 bg-secondary+rounded-xl+divide 行；行 padding 10px→12px 16px、hover tertiary/50；tab 徽标大写 xs secondary |
