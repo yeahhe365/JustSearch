@@ -6,6 +6,7 @@ import { elements, resetChatDomToHero, showConfirm } from './ui.js?v=43';
 import { t, getLanguage, setLanguage } from './i18n.js?v=1';
 import { setupSettingsSearch } from './settings-search.js?v=2';
 import { initSegmentedGroups, getSegmentedValue, setSegmentedValue } from './settings-segmented.js?v=1';
+import { initSettingsDropdowns, syncFromSelect } from './settings-dropdown.js?v=1';
 import { renderHistory } from './history-view.js?v=28';
 import {
     getModelDisplayName,
@@ -409,6 +410,9 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
         },
     });
 
+    // AMC-style custom dropdowns over remaining native selects.
+    initSettingsDropdowns(elements.settingsModal);
+
     // 开启「桌面通知」开关时申请浏览器通知权限（仅申请一次；已拒绝/已授权时不打扰）。
     const completionNotificationInput = document.getElementById('completion-notification-input');
     if (completionNotificationInput) {
@@ -553,6 +557,9 @@ function fillSettingsForm(settings) {
         setSegmentedValue('theme', settings.theme || 'light', { silent: true });
         setSegmentedValue('language', getLanguage(), { silent: true });
         document.getElementById('engine-select').value = settings.search_engine || 'google';
+        syncFromSelect(document.getElementById('engine-select'));
+        const pollSelect = document.getElementById('bridge-poll-interval-select');
+        if (pollSelect) syncFromSelect(pollSelect);
         document.getElementById('max-results-input').value = normalizeNumberSetting(settings.max_results, 50, 1, 50);
         document.getElementById('max-iterations-input').value = normalizeNumberSetting(settings.max_iterations, 5, 1, 10);
         document.getElementById('history-window-input').value = normalizeNumberSetting(settings.history_window, 12, 2, 30);

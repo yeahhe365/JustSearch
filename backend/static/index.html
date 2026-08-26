@@ -388,7 +388,7 @@
                     </div>
                     <div id="settings-search-results" class="settings-search-results" hidden></div>
                     <nav class="settings-tabs" role="tablist" data-i18n-aria-label="settings.tabsLabel" aria-label="设置分类">
-                        <div class="settings-tab-group">
+                        <div class="settings-tab-group" data-settings-nav-group="primary">
                             <button class="settings-tab-btn active" data-tab="general" role="tab" aria-selected="true" aria-controls="tab-general">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
                                 <span data-i18n="settings.tabs.general">常规设置</span>
@@ -406,10 +406,14 @@
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
                                 <span data-i18n="settings.tabs.maintenance">数据管理</span>
                             </button>
+                            </div>
+                            <div class="settings-tab-group" data-settings-nav-group="shortcuts">
                             <button class="settings-tab-btn" data-tab="shortcuts" role="tab" aria-selected="false" aria-controls="tab-shortcuts">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></svg>
                                 <span data-i18n="settings.tabs.shortcuts">快捷键</span>
                             </button>
+                            </div>
+                            <div class="settings-tab-group" data-settings-nav-group="about">
                             <button class="settings-tab-btn" data-tab="about" role="tab" aria-selected="false" aria-controls="tab-about">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
                                 <span data-i18n="settings.tabs.about">关于</span>
@@ -421,13 +425,13 @@
 
                 <!-- Settings Content Pane -->
                 <main class="settings-main">
-                    <div class="settings-content-header">
-                        <h2 id="settings-content-title" class="settings-content-title" data-i18n="settings.tabs.general">常规设置</h2>
-                        <button type="button" id="settings-close-btn" class="settings-content-close" data-i18n-aria-label="modal.close" aria-label="关闭设置">
-                            <span class="material-symbols-rounded" aria-hidden="true">close</span>
-                        </button>
-                    </div>
                     <div class="settings-panels">
+                        <div class="settings-content-header">
+                            <h2 id="settings-content-title" class="settings-content-title" data-i18n="settings.tabs.general">常规设置</h2>
+                            <button type="button" id="settings-close-btn" class="settings-content-close" data-i18n-aria-label="modal.close" aria-label="关闭设置">
+                                <span class="material-symbols-rounded" aria-hidden="true">close</span>
+                            </button>
+                        </div>
                         <!-- Tab 1: General -->
                         <div id="tab-general" class="settings-panel active" role="tabpanel">
                             <div class="settings-card">
@@ -512,7 +516,7 @@
                                         <label for="engine-select" data-i18n="settings.searchEngine">搜索引擎</label>
                                         <span class="field-desc" data-i18n="settings.searchEngineDesc">默认使用 Google，必要时可切换其它引擎。</span>
                                     </div>
-                                    <select id="engine-select">
+                                    <select id="engine-select" class="settings-select">
                                         <option value="google" data-i18n="settings.engineGoogle">Google（默认）</option>
 <option value="bing">Bing</option>
                                         <option value="sogou" data-i18n="settings.engineSogou">搜狗（中文备用）</option>
@@ -792,7 +796,7 @@
                                         <label for="bridge-poll-interval-select" data-i18n="settings.bridgePollInterval">状态轮询间隔</label>
                                         <span class="field-desc" data-i18n="settings.bridgePollIntervalDesc">仅在页面可见时轮询。选择「手动」后只在打开本页或点击检测时刷新。</span>
                                     </div>
-                                    <select id="bridge-poll-interval-select" data-i18n-aria-label="settings.bridgePollInterval" aria-label="桥接状态轮询间隔">
+                                    <select id="bridge-poll-interval-select" class="settings-select" data-i18n-aria-label="settings.bridgePollInterval" aria-label="桥接状态轮询间隔">
                                         <option value="3" data-i18n="settings.poll3s">3 秒</option>
                                         <option value="5" selected data-i18n="settings.poll5s">5 秒</option>
                                         <option value="15" data-i18n="settings.poll15s">15 秒</option>
@@ -907,7 +911,7 @@
                                             <span class="material-symbols-rounded" aria-hidden="true">close</span>
                                         </button>
                                     </div>
-                                    <select id="shortcuts-settings-filter" class="shortcuts-settings-filter" aria-label="分类筛选">
+                                    <select id="shortcuts-settings-filter" class="shortcuts-settings-filter settings-select" aria-label="分类筛选">
                                         <option value="all" data-i18n="settings.shortcuts.filterAll">全部</option>
                                         <option value="shortcuts.group.input" data-i18n="shortcuts.group.input">输入</option>
                                         <option value="shortcuts.group.generation" data-i18n="shortcuts.group.generation">生成</option>

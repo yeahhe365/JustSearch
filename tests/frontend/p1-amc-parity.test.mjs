@@ -139,6 +139,31 @@ test('P2: settings content header and segmented groups wired', () => {
   assert.match(sb, /setSegmentedValue\('theme'/, 'external theme sync uses setter');
 });
 
+test('P2: settings round-2 replica details', () => {
+  const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
+  const ddTrigger = css.match(/\.settings-dd-trigger\s*\{[^}]*\}/);
+  assert.ok(ddTrigger, '.settings-dd-trigger exists');
+  assert.match(ddTrigger[0], /var\(--theme-bg-input\)/, 'trigger bg-input');
+  const ddPanel = css.match(/\.settings-dd-panel\s*\{[^}]*\}/);
+  assert.ok(ddPanel, '.settings-dd-panel exists');
+  assert.match(ddPanel[0], /border-radius:\s*12px/, 'rounded-xl panel');
+  assert.match(css, /\.ios-slider\s*\{[^}]*var\(--theme-bg-tertiary\)/, 'toggle off=tertiary');
+  assert.match(css, /checked \+ \.ios-slider\s*\{[^}]*var\(--theme-bg-accent\)/, 'toggle on=accent');
+  assert.doesNotMatch(css, /checked \+ \.ios-slider\s*\{[^}]*var\(--primary\)/, 'toggle no legacy primary');
+  assert.match(css, /border-top:\s*1px solid color-mix\(in srgb, var\(--theme-border-secondary\) 40%/, 'row dividers');
+  assert.match(css, /--theme-scrollbar-thumb/, 'thin scrollbar token');
+  assert.match(css, /\.settings-tabs\s*\{[^}]*gap:\s*14px/, 'grouped nav gap');
+  const header = css.match(/\.settings-content-header\s*\{[^}]*\}/);
+  assert.ok(header, '.settings-content-header exists');
+  assert.match(header[0], /max-width:\s*var\(--amc-content-width\)/, 'header scrolls inside content column');
+
+  const html = readFileSync('backend/static/index.html', 'utf8');
+  assert.match(html, /data-settings-nav-group/, 'grouped nav containers');
+  assert.match(html, /class="settings-select"/, 'selects marked for dropdown upgrade');
+  assert.equal((html.match(/<div class="settings-content-header">[\s\S]*?<div class="settings-panels">/) || []).length, 0,
+    'header lives inside panels scroll container');
+});
+
 test('P1: composer graphite theme tokens exist', () => {
   const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
   assert.match(css, /\[data-theme="graphite"\][^{]*#input-area/, 'input-area should have graphite theme block');

@@ -1171,6 +1171,9 @@
     overflow-x: hidden;
     padding: 0 12px 12px;
     scrollbar-width: thin;
+    display: flex;
+    flex-direction: column;
+    gap: 14px; /* grouped nav — AMC primary / shortcuts / about */
 }
 
 .settings-tab-group {
@@ -1239,13 +1242,18 @@
     overflow: hidden;
 }
 
-/* AMC-style persistent content header (tab title + round close) */
+/* AMC-style persistent content header (tab title + round close).
+   Lives INSIDE the scrolling panels container, centered like the content,
+   so it scrolls away with the page exactly as AMC does. */
 .settings-content-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 16px 32px 0;
+    width: 100%;
+    max-width: var(--amc-content-width);
+    margin: 0 auto;
+    padding: 4px 0 16px;
     flex-shrink: 0;
 }
 .settings-content-title {
@@ -1327,6 +1335,120 @@
     background: var(--theme-bg-accent);
     color: var(--theme-text-inverse, #ffffff);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* AMC Select look — progressive enhancement over select.settings-select */
+.settings-dd {
+    position: relative;
+    width: min(280px, 45%);
+    flex-shrink: 0;
+}
+.settings-field-row .settings-dd { margin: 0; }
+.settings-dd-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 12px;
+    border-radius: var(--amc-radius);
+    border: 1px solid var(--theme-border-secondary);
+    background: var(--theme-bg-input);
+    color: var(--text-primary);
+    font-size: 14px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.settings-dd-trigger:hover {
+    border-color: var(--theme-border-focus);
+}
+.settings-dd-trigger:focus-visible,
+.settings-dd-trigger[aria-expanded="true"] {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--theme-border-focus);
+}
+.settings-dd-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+}
+.settings-dd-chevron {
+    flex-shrink: 0;
+    color: var(--theme-text-tertiary);
+    transition: transform 0.2s ease;
+}
+.settings-dd-trigger[aria-expanded="true"] .settings-dd-chevron { transform: rotate(180deg); }
+.settings-dd-panel {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 60;
+    width: 100%;
+    max-height: 300px;
+    overflow-y: auto;
+    padding: 4px;
+    border-radius: 12px;
+    border: 1px solid var(--theme-border-primary);
+    background: var(--theme-bg-secondary);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+.settings-dd-panel[hidden] { display: none; }
+.settings-dd-option {
+    display: block;
+    width: 100%;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--theme-text-primary);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+.settings-dd-option:hover { background: color-mix(in srgb, var(--theme-bg-tertiary) 50%, transparent); }
+.settings-dd-option.is-selected {
+    background: color-mix(in srgb, var(--theme-bg-accent) 10%, transparent);
+    font-weight: 600;
+}
+
+/* AMC custom-scrollbar — thin profile with hover state */
+.settings-tabs,
+.settings-panels,
+.settings-search-results,
+.settings-dd-panel {
+    scrollbar-width: thin;
+    scrollbar-color: var(--theme-scrollbar-thumb, color-mix(in srgb, var(--theme-text-tertiary) 45%, transparent)) transparent;
+}
+.settings-tabs::-webkit-scrollbar,
+.settings-panels::-webkit-scrollbar,
+.settings-search-results::-webkit-scrollbar,
+.settings-dd-panel::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+}
+.settings-tabs::-webkit-scrollbar-track,
+.settings-panels::-webkit-scrollbar-track,
+.settings-search-results::-webkit-scrollbar-track,
+.settings-dd-panel::-webkit-scrollbar-track {
+    background: transparent;
+}
+.settings-tabs::-webkit-scrollbar-thumb,
+.settings-panels::-webkit-scrollbar-thumb,
+.settings-search-results::-webkit-scrollbar-thumb,
+.settings-dd-panel::-webkit-scrollbar-thumb {
+    background-color: var(--theme-scrollbar-thumb, color-mix(in srgb, var(--theme-text-tertiary) 45%, transparent));
+    border-radius: 10px;
+}
+.settings-tabs::-webkit-scrollbar-thumb:hover,
+.settings-panels::-webkit-scrollbar-thumb:hover,
+.settings-search-results::-webkit-scrollbar-thumb:hover,
+.settings-dd-panel::-webkit-scrollbar-thumb:hover {
+    background-color: var(--theme-border-focus);
 }
 
 .settings-panels {
@@ -1449,6 +1571,19 @@
     padding-bottom: 0;
 }
 
+/* AMC divide-y between adjacent field rows inside a card */
+.settings-card > .form-group + .form-group,
+.settings-card > .form-group + .settings-field-row,
+.settings-card > .settings-field-row + .settings-field-row,
+.settings-card > .settings-field-row + .form-group,
+.settings-card > .toggle-group + .toggle-group,
+.settings-card > .settings-field-row + .settings-font-size-group,
+.settings-card > .settings-font-size-group + .settings-field-row,
+.settings-card > .bridge-field-stack + .settings-field-row,
+.settings-card > .engine-check-row + .settings-field-row {
+    border-top: 1px solid color-mix(in srgb, var(--theme-border-secondary) 40%, transparent);
+}
+
 .settings-field-row {
     display: flex;
     align-items: center;
@@ -1552,29 +1687,36 @@
     height: 6px;
     padding: 0;
     border: 0;
-    border-radius: 999px;
-    background: var(--border);
-    accent-color: var(--primary);
+    border-radius: 8px;
+    background: var(--theme-border-secondary);
+    accent-color: var(--theme-bg-accent);
     cursor: pointer;
     appearance: none;
+}
+
+.settings-font-size-group input[type="range"]:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--theme-border-focus);
 }
 
 .settings-font-size-group input[type="range"]::-webkit-slider-thumb {
     width: 16px;
     height: 16px;
-    border: 0;
+    border: 2px solid #ffffff;
     border-radius: 50%;
-    background: var(--primary);
+    background: var(--theme-bg-accent);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
     cursor: pointer;
     appearance: none;
 }
 
 .settings-font-size-group input[type="range"]::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
-    border: 0;
+    width: 12px;
+    height: 12px;
+    border: 2px solid #ffffff;
     border-radius: 50%;
-    background: var(--primary);
+    background: var(--theme-bg-accent);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
     cursor: pointer;
 }
 
@@ -1738,26 +1880,29 @@
     position: absolute;
     cursor: pointer;
     inset: 0;
-    background: var(--border);
+    background: var(--theme-bg-tertiary);
+    border: 1px solid var(--theme-border-secondary);
     border-radius: 24px;
-    transition: background-color 0.22s ease;
+    transition: background-color 0.22s ease, border-color 0.22s ease;
 }
 
 .ios-slider::before {
     position: absolute;
     content: "";
-    height: 18px;
-    width: 18px;
+    height: 16px;
+    width: 16px;
     left: 3px;
-    bottom: 3px;
+    top: 50%;
+    margin-top: -8px;
     background: #ffffff;
     border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
     transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.22s ease;
 }
 
 .ios-switch input:checked + .ios-slider {
-    background: var(--primary);
+    background: var(--theme-bg-accent);
+    border-color: transparent;
 }
 
 .ios-switch input:checked + .ios-slider::before {
@@ -1766,7 +1911,7 @@
 
 /* 键盘焦点环：隐藏原生 input 后必须显式给出焦点指示，否则键盘用户看不到位置 */
 .ios-switch input:focus-visible + .ios-slider {
-    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--primary);
+    box-shadow: 0 0 0 2px var(--theme-bg-secondary), 0 0 0 4px var(--theme-border-focus);
 }
 
 .ios-switch input:disabled + .ios-slider {
@@ -3398,8 +3543,8 @@
     max-height: 320px;
     overflow-y: auto;
     border: 1px solid var(--theme-border-secondary);
-    border-radius: 10px;
-    background: var(--theme-bg-primary);
+    border-radius: 12px;
+    background: var(--theme-bg-secondary);
     box-shadow: var(--shadow-md);
     z-index: 5;
 }
@@ -3408,21 +3553,23 @@
     flex-direction: column;
     gap: 2px;
     width: 100%;
-    padding: 8px 10px;
+    padding: 12px 16px;
     border: 0;
-    border-bottom: 1px solid var(--theme-border-primary);
+    border-bottom: 1px solid color-mix(in srgb, var(--theme-border-secondary) 40%, transparent);
     background: transparent;
     text-align: left;
     cursor: pointer;
     font-family: inherit;
 }
 .settings-search-result:last-child { border-bottom: 0; }
-.settings-search-result:hover { background: var(--theme-bg-tertiary); }
+.settings-search-result:hover,
+.settings-search-result[aria-selected="true"] { background: color-mix(in srgb, var(--theme-bg-tertiary) 50%, transparent); }
 .settings-search-result-tab {
     font-size: 10px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--theme-text-tertiary);
+    letter-spacing: 0.08em;
+    color: var(--theme-text-secondary);
 }
 .settings-search-result-label {
     font-size: 13px;
