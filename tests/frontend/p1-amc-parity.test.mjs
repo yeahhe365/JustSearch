@@ -109,7 +109,7 @@ test('P2: settings surface aligns with AMC tokens', () => {
   assert.ok(search, '.settings-search exists');
   assert.match(search[0], /border:\s*1px solid transparent/, 'borderless search');
   assert.match(search[0], /var\(--theme-bg-tertiary\) 45%, transparent/, 'bg-tertiary/45');
-  assert.match(search[0], /height:\s*40px/, 'h-10');
+  assert.match(search[0], /height:\s*36px/, 'compact h-9 (AMC sidebar search variant)');
   const focusWithin = css.match(/\.settings-search:focus-within\s*\{[^}]*\}/);
   assert.ok(focusWithin, ':focus-within exists');
   assert.match(focusWithin[0], /inset 0 0 0 2px/, 'inset focus ring');
@@ -214,6 +214,50 @@ test('P2: settings danger zone matches AMC (card surface, graded buttons)', () =
   const desc = css.match(/^\.maintenance-desc\s*\{[^}]*\}/m);
   assert.ok(desc, '.maintenance-desc exists');
   assert.match(desc[0], /var\(--theme-text-secondary\)/, 'row desc uses theme token');
+});
+
+test('P2: settings search bar and spacing match AMC metrics', () => {
+  const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
+  const html = readFileSync('backend/static/index.html', 'utf8');
+
+  // --- Search box = AMC SettingsSearchBar compact variant ---
+  const search = css.match(/\.settings-search\s*\{[^}]*\}/);
+  assert.ok(search, '.settings-search exists');
+  assert.match(search[0], /height:\s*36px/, 'compact h-9 (36px)');
+  assert.match(search[0], /margin:\s*14px 12px 14px/, 'centers the 36px control in AMC\'s 64px header row');
+  const searchInput = css.match(/\.settings-search-input\s*\{[^}]*\}/);
+  assert.ok(searchInput, '.settings-search-input exists');
+  assert.match(searchInput[0], /font-size:\s*14px/, 'input text-sm');
+  assert.match(css, /\.settings-search-icon\s*\{[^}]*font-size:\s*16px/, 'compact 16px icon');
+
+  // '/' kbd hint: element exists, floats in on hover/focus while empty, yields once typing.
+  assert.match(html, /class="settings-search-kbd"/, 'kbd hint markup');
+  assert.match(css, /\.settings-search-kbd\s*\{[^}]*display:\s*none/, 'kbd hidden by default');
+  assert.match(css, /\.settings-search:focus-within \.settings-search-kbd\s*\{[^}]*display:\s*inline-flex/,
+    'kbd shows on hover/focus');
+  assert.match(css, /:not\(:placeholder-shown\) ~ \.settings-search-kbd\s*\{[^}]*display:\s*none/,
+    'kbd hides once input has value');
+
+  // Clear button = AMC rounded-md chip with primary-tinted hover.
+  const clearBtn = css.match(/\.settings-search-clear\s*\{[^}]*\}/);
+  assert.ok(clearBtn, '.settings-search-clear exists');
+  assert.match(clearBtn[0], /border-radius:\s*6px/, 'clear button rounded-md');
+  assert.match(css, /\.settings-search-clear:hover \{[^}]*var\(--theme-bg-primary\) 60%/, 'clear hover bg-primary/60');
+
+  // --- Sidebar nav spacing = AMC md:pt-1 / md:py-3 md:px-4 ---
+  const tabs = css.match(/\.settings-tabs\s*\{[^}]*\}/);
+  assert.ok(tabs, '.settings-tabs exists');
+  assert.match(tabs[0], /padding:\s*4px 12px 12px/, 'nav container pt-1');
+  const tabBtn = css.match(/\.settings-tab-btn\s*\{[^}]*\}/);
+  assert.ok(tabBtn, '.settings-tab-btn exists');
+  assert.match(tabBtn[0], /padding:\s*12px 16px/, 'tab rows py-3 px-4');
+
+  // Mobile keeps its own tighter search margins (sidebar header still visible there).
+  const tail = css.slice(css.lastIndexOf('@media (max-width: 768px)'));
+  assert.match(tail, /\.settings-search\s*\{[^}]*margin:\s*0 12px 10px/, 'mobile restores original margins');
+
+  // Modal shell = AMC max-w-6xl.
+  assert.match(css, /--amc-modal-width:\s*1152px/, 'modal width max-w-6xl (1152px)');
 });
 
 test('P1: composer graphite theme tokens exist', () => {

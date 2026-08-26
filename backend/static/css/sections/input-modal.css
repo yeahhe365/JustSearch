@@ -1089,7 +1089,7 @@
 }
 
 .amc-settings-modal {
-    --amc-modal-width: 1120px;
+    --amc-modal-width: 1152px; /* AMC max-w-6xl */
     --amc-sidebar-width: 256px;
     --amc-content-width: 768px;
     --amc-radius: 8px;
@@ -1169,7 +1169,7 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 0 12px 12px;
+    padding: 4px 12px 12px; /* AMC md:pt-1（上方紧贴 64px 搜索行） */
     scrollbar-width: thin;
     display: flex;
     flex-direction: column;
@@ -1188,7 +1188,7 @@
     align-items: center;
     gap: 12px;
     min-height: 44px;
-    padding: 10px 14px;
+    padding: 12px 16px; /* AMC md:py-3 md:px-4 */
     background: transparent;
     border: 0;
     border-radius: var(--amc-radius);
@@ -3515,9 +3515,10 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    height: 40px;
+    height: 36px;
     padding: 0 10px;
-    margin: 0 12px 10px;
+    /* AMC 桌面：36px 控件垂直居中于与主 header 对齐的 64px 行（14/36/14） */
+    margin: 14px 12px 14px;
     border-radius: 8px;
     border: 1px solid transparent;
     background: color-mix(in srgb, var(--theme-bg-tertiary) 45%, transparent);
@@ -3531,7 +3532,7 @@
     box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--theme-border-focus) 35%, transparent);
 }
 .settings-search-icon {
-    font-size: 17px;
+    font-size: 16px;
     color: var(--theme-text-tertiary);
     flex-shrink: 0;
 }
@@ -3541,7 +3542,7 @@
     border: 0;
     background: transparent;
     color: var(--theme-text-primary);
-    font-size: 13px;
+    font-size: 14px;
     outline: none;
     font-family: inherit;
 }
@@ -3551,17 +3552,42 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: 22px;
+    height: 22px;
     border: 0;
-    border-radius: 999px;
+    border-radius: 6px;
     background: transparent;
-    color: var(--theme-text-tertiary);
+    color: var(--theme-text-secondary);
     cursor: pointer;
     flex-shrink: 0;
 }
-.settings-search-clear:hover { background: var(--theme-bg-tertiary); color: var(--theme-text-primary); }
-.settings-search-clear .material-symbols-rounded { font-size: 15px; }
+.settings-search-clear:hover { background: color-mix(in srgb, var(--theme-bg-primary) 60%, transparent); color: var(--theme-text-primary); }
+.settings-search-clear .material-symbols-rounded { font-size: 14px; }
+
+/* AMC SETTINGS_KBD_KEY_CLASS：空值时 hover/focus 右内浮出「/」提示 */
+.settings-search-kbd {
+    display: none;
+    flex-shrink: 0;
+    padding: 0 6px;
+    border: 1px solid var(--theme-border-secondary);
+    border-radius: 4px;
+    background: var(--theme-bg-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    line-height: 16px;
+    color: var(--theme-text-secondary);
+}
+
+.settings-search:hover .settings-search-kbd,
+.settings-search:focus-within .settings-search-kbd {
+    display: inline-flex;
+}
+
+/* 有输入后隐藏提示，给清除按钮让位（AMC {!hasValue && kbd}）。
+   ~ 要求 kbd 位于 input 之后；:not 计入一个伪类，特异性高于上一条。 */
+.settings-search .settings-search-input:not(:placeholder-shown) ~ .settings-search-kbd {
+    display: none;
+}
 
 .settings-search-results {
     margin: 0 12px 10px;
@@ -3650,4 +3676,6 @@
     .settings-content-header { display: none; }
     .settings-panels { padding-top: 20px; }
     .settings-segmented { width: 100%; justify-content: center; }
+    /* 移动端侧栏头（关闭按钮+标题）仍在，搜索框恢复紧凑原边距 */
+    .settings-search { margin: 0 12px 10px; }
 }
