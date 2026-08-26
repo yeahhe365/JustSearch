@@ -164,6 +164,58 @@ test('P2: settings round-2 replica details', () => {
     'header lives inside panels scroll container');
 });
 
+test('P2: settings danger zone matches AMC (card surface, graded buttons)', () => {
+  const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
+
+  // AMC danger zone = normal section card + danger-tinted border; never a red gradient block.
+  const zone = css.match(/\.settings-danger-zone\s*\{[^}]*\}/);
+  assert.ok(zone, '.settings-danger-zone exists');
+  assert.doesNotMatch(zone[0], /linear-gradient|box-shadow/, 'no solid red gradient block / drop shadow');
+  assert.match(zone[0], /color-mix\(in srgb, var\(--theme-text-danger\b[^;]*30%/, 'border tinted danger/30 (AMC border-danger/30)');
+  assert.match(zone[0], /var\(--theme-bg-secondary\) 35%/, 'surface uses same secondary/35 card mix as .settings-card');
+  assert.match(zone[0], /border-radius:\s*12px/, 'rounded-xl like other section cards');
+
+  // Heading = uppercase label in danger text color (AMC h4 text-danger).
+  const head = css.match(/\.settings-danger-header\s*\{[^}]*\}/);
+  assert.ok(head, '.settings-danger-header exists');
+  assert.match(head[0], /var\(--theme-text-danger\b/, 'danger-colored label');
+  assert.doesNotMatch(head[0], /#fff/i, 'label no longer white-on-red');
+
+  // Rows share the round-1 divider formula (AMC divide-y divide-secondary/40).
+  assert.match(css, /\.settings-danger-zone \.maintenance-card \+ \.maintenance-card\s*\{[^}]*border-top/,
+    'danger rows divided like other cards');
+
+  // Severity escalation: neutral reset < danger-outline history < solid danger wipe.
+  const resetBtn = css.match(/\.settings-danger-zone \.secondary-btn\s*\{[^}]*\}/);
+  assert.ok(resetBtn, 'scoped reset button rule exists');
+  assert.match(resetBtn[0], /background:\s*transparent/, 'reset = neutral outline (transparent bg)');
+  assert.match(resetBtn[0], /var\(--theme-text-secondary\)/, 'reset text = neutral secondary');
+  const historyBtn = css.match(/\.settings-danger-zone \.danger-btn\s*\{[^}]*\}/);
+  assert.ok(historyBtn, 'scoped clear-history button rule exists');
+  assert.match(historyBtn[0], /background:\s*transparent/, 'clear history = danger outline (transparent bg)');
+  assert.match(historyBtn[0], /var\(--theme-text-danger\b/, 'clear history text = danger');
+  const wipeBtn = css.match(/\.settings-danger-zone \.danger-btn\.fill\s*\{[^}]*\}/);
+  assert.ok(wipeBtn, 'scoped wipe button rule exists');
+  assert.match(wipeBtn[0], /background:\s*var\(--theme-bg-danger\)/, 'wipe = the only solid danger fill');
+
+  // No white-on-red leftovers: the old style used translucent WHITE fills/borders
+  // on a red block. White TEXT on the solid danger button is legitimate (AMC text-white).
+  for (const m of css.matchAll(/\.settings-danger-zone[^{]*\{[^}]*\}/g)) {
+    assert.doesNotMatch(m[0], /rgba\(255/, `no translucent white fill/border in: ${m[0].slice(0, 40)}...`);
+    assert.doesNotMatch(m[0], /background:\s*(#fff|white)/i, `no white background in: ${m[0].slice(0, 40)}...`);
+    assert.doesNotMatch(m[0], /border:(1px solid )?\s*rgba|\bborder:[^;]*#fff/i, `no white border in: ${m[0].slice(0, 40)}...`);
+  }
+
+  // Base maintenance copy follows theme tokens (AMC ActionRow primary/secondary), not hardcoded white.
+  // ^ anchors to the standalone base rule, not .history-transfer-card scoped overrides above it.
+  const title = css.match(/^\.maintenance-title\s*\{[^}]*\}/m);
+  assert.ok(title, '.maintenance-title exists');
+  assert.match(title[0], /var\(--theme-text-primary\)/, 'row title uses theme token');
+  const desc = css.match(/^\.maintenance-desc\s*\{[^}]*\}/m);
+  assert.ok(desc, '.maintenance-desc exists');
+  assert.match(desc[0], /var\(--theme-text-secondary\)/, 'row desc uses theme token');
+});
+
 test('P1: composer graphite theme tokens exist', () => {
   const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
   assert.match(css, /\[data-theme="graphite"\][^{]*#input-area/, 'input-area should have graphite theme block');

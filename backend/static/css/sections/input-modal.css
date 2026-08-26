@@ -2289,31 +2289,32 @@
     user-select: none;
 }
 
+/* 危险区域：对齐 AMC DataManagementSection —— 普通 section 卡片 + danger 染色边框，
+   不做整块红底；按钮按后果严重程度分级：中性 outline < danger outline < 实心 danger。 */
 .settings-danger-zone {
     display: flex;
     flex-direction: column;
-    padding: 20px;
-    border-radius: var(--amc-radius-lg);
-    border: 1px solid rgba(127, 29, 29, 0.35);
-    background: linear-gradient(135deg, #dc2626, #991b1b);
-    color: #ffffff;
-    box-shadow: var(--shadow-lg);
+    padding: 16px;
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-text-danger, #ef4444) 30%, transparent);
+    background: color-mix(in srgb, var(--theme-bg-secondary) 35%, transparent);
 }
 
 .settings-danger-header {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding-bottom: 4px;
-    color: #ffffff;
+    margin-bottom: 4px;
+    color: var(--theme-text-danger, #ef4444);
     font-size: 12px;
-    font-weight: 800;
-    letter-spacing: 0.06em;
+    font-weight: 600;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
 }
 
+/* lucide AlertTriangle 14px ≈ 符号字体 16px 的视觉尺寸 */
 .settings-danger-header .material-symbols-rounded {
-    font-size: 18px;
+    font-size: 16px;
 }
 
 .maintenance-card {
@@ -2332,13 +2333,13 @@
 }
 
 .maintenance-title {
-    color: #ffffff;
+    color: var(--theme-text-primary);
     font-size: 14px;
     font-weight: 650;
 }
 
 .maintenance-desc {
-    color: rgba(255, 255, 255, 0.78);
+    color: var(--theme-text-secondary);
     font-size: 12px;
     line-height: 1.5;
 }
@@ -2353,21 +2354,49 @@
     font-weight: 650 !important;
 }
 
-.settings-danger-zone .secondary-btn,
+/* 行分隔线：与其它卡片的 divide 公式一致（AMC divide-secondary/40） */
+.settings-danger-zone .maintenance-card + .maintenance-card {
+    border-top: 1px solid color-mix(in srgb, var(--theme-border-secondary) 40%, transparent);
+}
+
+/* 恢复默认 —— 中性 outline（AMC SETTINGS_OUTLINE_BUTTON_CLASS） */
+.settings-danger-zone .secondary-btn {
+    background: transparent;
+    border: 1px solid var(--theme-border-secondary);
+    color: var(--theme-text-secondary);
+}
+
+.settings-danger-zone .secondary-btn:hover {
+    background: var(--theme-bg-tertiary);
+    border-color: var(--theme-border-secondary);
+    color: var(--theme-text-primary);
+}
+
+/* 清除历史 —— danger outline（AMC SETTINGS_DANGER_OUTLINE_BUTTON_CLASS） */
 .settings-danger-zone .danger-btn {
-    background: rgba(255, 255, 255, 0.1) !important;
-    border: 1px solid rgba(255, 255, 255, 0.3) !important;
-    color: #ffffff !important;
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--theme-text-danger, #ef4444) 30%, transparent);
+    color: var(--theme-text-danger, #ef4444);
 }
 
-.settings-danger-zone .secondary-btn:hover,
 .settings-danger-zone .danger-btn:hover {
-    background: rgba(255, 255, 255, 0.18) !important;
+    background: color-mix(in srgb, var(--theme-bg-danger, #ef4444) 10%, transparent);
 }
 
-.danger-btn.fill {
-    background: rgba(255, 255, 255, 0.16) !important;
-    color: #ffffff !important;
+/* 清除全部缓存 —— 唯一实心 danger（AMC SETTINGS_DANGER_SOLID_BUTTON_CLASS） */
+.settings-danger-zone .danger-btn.fill {
+    background: var(--theme-bg-danger);
+    border-color: transparent;
+    color: #ffffff;
+}
+
+.settings-danger-zone .danger-btn.fill:hover {
+    background: var(--theme-bg-danger-hover);
+}
+
+.settings-danger-zone button:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
 }
 
 .settings-actions {
@@ -2517,10 +2546,6 @@
         align-items: flex-start;
         flex-direction: column;
         gap: 5px;
-    }
-
-    .settings-danger-zone {
-        padding: 16px;
     }
 
     .about-hero {
