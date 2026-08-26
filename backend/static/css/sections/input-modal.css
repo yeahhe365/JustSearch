@@ -3125,11 +3125,11 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 6px 10px;
+    padding: 10px 10px; /* AMC mobile py-2.5 px-2.5 touch target */
     border-radius: 8px; /* AMC rounded-lg */
-    border: 1px solid color-mix(in srgb, var(--theme-border-secondary) 70%, transparent);
-    background: color-mix(in srgb, var(--theme-bg-tertiary) 35%, transparent);
-    color: var(--theme-text-secondary);
+    border: 1px solid color-mix(in srgb, var(--amc-border) 70%, transparent);
+    background: color-mix(in srgb, var(--amc-btn-hover) 35%, transparent); /* bg-tertiary/35 */
+    color: var(--amc-text-secondary);
     font-size: 12px;
     font-weight: 500;
     white-space: nowrap;
@@ -3137,9 +3137,13 @@
     transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 .suggestion-chip:hover {
-    background: var(--theme-bg-tertiary);
-    color: var(--theme-text-primary);
-    border-color: var(--theme-border-secondary);
+    background: var(--amc-btn-hover);
+    color: var(--amc-text-primary);
+    border-color: var(--amc-border-focus); /* AMC hover:border-focus */
+}
+.suggestion-chip:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--amc-border-focus);
 }
 .suggestion-chip-icon {
     font-size: 15px;
@@ -3178,7 +3182,8 @@
 
 @media (min-width: 640px) {
     .suggestion-chip {
-        padding: 8px 13px;
+        padding: 8px 12px; /* AMC sm:px-3 py-2 */
+        gap: 6px; /* sm:gap-1.5 */
         font-size: 14px;
     }
 }
