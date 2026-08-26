@@ -37,6 +37,40 @@ test('P2: send button aligns with AMC size/colors/states', () => {
   assert.doesNotMatch(css, /is-editing-message #send-btn/, 'edit-state amber override removed');
 });
 
+test('P2: intensity preset segments align with AMC segmented control', () => {
+  const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
+  const track = css.match(/\.search-intensity-presets\s*\{[^}]*\}/);
+  assert.ok(track, '.search-intensity-presets rule exists');
+  assert.match(track[0], /gap:\s*2px/, 'track gap-0.5');
+  assert.match(track[0], /padding:\s*2px/, 'track p-0.5');
+  assert.match(track[0], /border-radius:\s*8px/, 'track rounded-lg, not pill');
+  assert.match(track[0], /background:\s*var\(--amc-bg-input\)/, 'track bg-input');
+  assert.match(track[0], /border:\s*1px solid var\(--amc-border\)/, 'track border-secondary');
+
+  const chip = css.match(/\.intensity-chip\s*\{[^}]*\}/);
+  assert.ok(chip, '.intensity-chip rule exists');
+  assert.match(chip[0], /height:\s*32px/, 'segment fills h-9 track minus p-0.5');
+  assert.match(chip[0], /padding:\s*0 10px/, 'segment px-2.5');
+  assert.match(chip[0], /border-radius:\s*6px/, 'segment rounded-md');
+  assert.match(chip[0], /color:\s*var\(--amc-text-tertiary\)/, 'idle text tertiary');
+
+  const hover = css.match(/\.intensity-chip:hover:not\(:disabled\)\s*\{[^}]*\}/);
+  assert.ok(hover, 'hover rule exists');
+  assert.match(hover[0], /color-mix\(in srgb, var\(--amc-btn-hover\) 70%, transparent\)/, 'hover bg-tertiary/70');
+
+  const focus = css.match(/\.intensity-chip:focus-visible\s*\{[^}]*\}/);
+  assert.ok(focus, 'focus-visible rule exists');
+  assert.match(focus[0], /box-shadow:\s*inset 0 0 0 2px var\(--amc-border-focus\)/, 'inset focus ring');
+
+  const active = css.match(/\.intensity-chip\.active\s*\{[^}]*\}/);
+  assert.ok(active, '.active rule exists');
+  assert.match(active[0], /color-mix\(in srgb, var\(--amc-accent\) 12%, transparent\)/, 'active accent/12 tint');
+  assert.match(active[0], /box-shadow:\s*0 1px 2px rgba\(0, 0, 0, 0\.05\)/, 'active shadow-sm');
+  assert.doesNotMatch(active[0], /var\(--amc-bg-input\)/, 'no solid bg-input active fill');
+  assert.doesNotMatch(css, /intensity-chip\.active\[data-intensity/, 'research/deep special-case removed');
+  assert.doesNotMatch(css, /\.intensity-chip-custom\.active/, 'custom override removed');
+});
+
 test('P1: composer graphite theme tokens exist', () => {
   const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
   assert.match(css, /\[data-theme="graphite"\][^{]*#input-area/, 'input-area should have graphite theme block');
