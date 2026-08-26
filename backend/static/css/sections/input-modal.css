@@ -1279,6 +1279,19 @@
 }
 .settings-content-close .material-symbols-rounded { font-size: 18px; }
 
+/* Hidden native select behind the custom dropdown trigger */
+.settings-dd .sr-only-native {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 /* AMC SETTINGS_SEGMENTED_* tokens */
 .settings-segmented {
     display: inline-flex;

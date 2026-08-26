@@ -70,6 +70,9 @@ export function initSettingsDropdowns(root = document) {
         wrap.appendChild(panel);
         wrap.appendChild(select); // keep select inside for closest('.settings-dd')
         select.classList.add('sr-only-native');
+        // Inline style (not just the class) so hiding works even before the
+        // stylesheet loads and inside test harnesses without CSS.
+        select.style.display = 'none';
         syncFromSelect(select);
     });
 }
