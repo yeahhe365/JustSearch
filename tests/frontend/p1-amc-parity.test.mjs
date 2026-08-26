@@ -78,6 +78,67 @@ test('P2: suggestion chips feature is fully removed', () => {
   assert.doesNotMatch(css, /\.suggestion-chip/, '.suggestion-chip rules removed from CSS');
 });
 
+test('P2: settings surface aligns with AMC tokens', () => {
+  const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
+  const navActive = css.match(/\.settings-tab-btn\.active\s*\{[^}]*\}/);
+  assert.ok(navActive, '.settings-tab-btn.active exists');
+  assert.match(navActive[0], /color-mix\(in srgb, var\(--theme-bg-accent\) 10%, transparent\)/, 'accent/10 tint');
+  assert.doesNotMatch(navActive[0], /--bg-elevated/, 'solid elevated bg removed');
+  assert.match(navActive[0], /font-weight:\s*500/);
+
+  const card = css.match(/\.settings-card\s*\{[^}]*\}/);
+  assert.ok(card, '.settings-card exists');
+  assert.match(card[0], /border-radius:\s*12px/, 'rounded-xl card');
+  assert.match(card[0], /padding:\s*16px/, 'card p-4');
+  assert.match(card[0], /var\(--theme-border-secondary\) 60%, transparent/, 'border-secondary/60');
+  assert.match(card[0], /var\(--theme-bg-secondary\) 35%, transparent/, 'bg-secondary/35');
+
+  const title = css.match(/\.panel-header-title\s*\{[^}]*\}/);
+  assert.ok(title, '.panel-header-title exists');
+  assert.match(title[0], /text-transform:\s*uppercase/, 'uppercase section label');
+  assert.match(title[0], /letter-spacing:\s*0\.08em/, 'tracking-wider');
+  assert.match(title[0], /font-size:\s*12px/, 'xs label');
+
+  const badge = css.match(/\.settings-font-size-value\s*\{[^}]*\}/);
+  assert.ok(badge, '.settings-font-size-value exists');
+  assert.match(badge[0], /monospace/, 'mono badge');
+  assert.match(badge[0], /tabular-nums/, 'tabular numerals');
+  assert.match(badge[0], /var\(--theme-bg-tertiary\)/, 'tertiary chip bg');
+
+  const search = css.match(/\.settings-search\s*\{[^}]*\}/);
+  assert.ok(search, '.settings-search exists');
+  assert.match(search[0], /border:\s*1px solid transparent/, 'borderless search');
+  assert.match(search[0], /var\(--theme-bg-tertiary\) 45%, transparent/, 'bg-tertiary/45');
+  assert.match(search[0], /height:\s*40px/, 'h-10');
+  const focusWithin = css.match(/\.settings-search:focus-within\s*\{[^}]*\}/);
+  assert.ok(focusWithin, ':focus-within exists');
+  assert.match(focusWithin[0], /inset 0 0 0 2px/, 'inset focus ring');
+
+  const panels = css.match(/\.settings-panels\s*\{[^}]*\}/);
+  assert.match(panels[0], /padding:\s*16px 32px 32px/, 'compact top padding under header');
+
+  const segActive = css.match(/\.settings-segment\[aria-checked="true"\]\s*\{[^}]*\}/);
+  assert.ok(segActive, 'checked segment style exists');
+  assert.match(segActive[0], /background:\s*var\(--theme-bg-accent\)/, 'solid accent');
+});
+
+test('P2: settings content header and segmented groups wired', () => {
+  const html = readFileSync('backend/static/index.html', 'utf8');
+  assert.match(html, /class="settings-content-header"/, 'persistent header row');
+  assert.match(html, /id="settings-content-title"/, 'live tab title');
+  assert.match(html, /id="settings-close-btn"/, 'round close button');
+  assert.match(html, /id="theme-segmented"/, 'theme radiogroup');
+  assert.match(html, /id="language-segmented"/, 'language radiogroup');
+  assert.doesNotMatch(html, /settings-section-kicker/, 'kickers removed');
+  assert.equal((html.match(/<select id="theme-select">/) || []).length, 0, 'theme select replaced');
+  const sm = readFileSync('backend/static/js/modules/settings-modal.js', 'utf8');
+  assert.match(sm, /initSegmentedGroups\(/, 'groups initialized');
+  assert.match(sm, /settings-content-title/, 'title updated on tab switch');
+  assert.match(sm, /settings-close-btn/, 'close wired');
+  const sb = readFileSync('backend/static/js/modules/sidebar.js', 'utf8');
+  assert.match(sb, /setSegmentedValue\('theme'/, 'external theme sync uses setter');
+});
+
 test('P1: composer graphite theme tokens exist', () => {
   const css = readFileSync('backend/static/css/sections/input-modal.css', 'utf8');
   assert.match(css, /\[data-theme="graphite"\][^{]*#input-area/, 'input-area should have graphite theme block');

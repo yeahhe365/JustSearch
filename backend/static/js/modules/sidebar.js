@@ -1,5 +1,5 @@
 import { state, setCurrentSessionId } from './state.js?v=5';
-import { elements } from './ui.js?v=43';
+import { elements, resetChatDomToHero } from './ui.js?v=43';
 import { updateActiveHistoryItem, getCachedHistory, openHistorySearch } from './history-view.js?v=28';
 import { detachCurrentStream } from './chat.js?v=56';
 import { t } from './i18n.js?v=1';
@@ -203,9 +203,6 @@ export function setupSidebar(loadChat) {
     elements.closeSidebarBtn.addEventListener('click', closeMobileSidebar);
     elements.mobileOverlay.addEventListener('click', closeMobileSidebar);
 
-    // Track observers and listeners for cleanup
-    const _sidebarCleanup = [];
-
     // Mirror AMC uiStore.syncHistorySidebarForViewport(): isHistorySidebarOpen = isDesktop()? desktopOpen : mobileOpen
     const syncSidebarForViewport = () => {
         const isDesktop = isDesktopViewport();
@@ -224,7 +221,6 @@ export function setupSidebar(loadChat) {
         syncSidebarForViewport();
     };
     window.addEventListener('resize', resizeHandler);
-    _sidebarCleanup.push(() => window.removeEventListener('resize', resizeHandler));
 
     const themeBtn = document.getElementById('quick-theme-btn');
     if (themeBtn) {
@@ -253,7 +249,6 @@ export function setupSidebar(loadChat) {
             });
         });
         observer.observe(document.documentElement, { attributes: true });
-        _sidebarCleanup.push(() => observer.disconnect());
 
         themeBtn.addEventListener('click', async () => {
             const currentTheme = document.documentElement.getAttribute('data-theme');
@@ -271,10 +266,8 @@ export function setupSidebar(loadChat) {
             if (state.settings) {
                 const newSettings = { ...state.settings, theme: newTheme };
                 await saveSettingsAPI(newSettings);
-                const themeSelect = document.getElementById('theme-select');
-                if (themeSelect) {
-                    themeSelect.value = newTheme;
-                }
+                const { setSegmentedValue } = await import('./settings-segmented.js?v=1');
+                setSegmentedValue('theme', newTheme, { silent: true });
             }
         });
     }
@@ -323,9 +316,7 @@ function resetToNewChat() {
     // Keep any in-flight stream running in the background (switch-away, not abort).
     detachCurrentStream(elements);
     setCurrentSessionId(null);
-    elements.chatContainer.innerHTML = '';
-    elements.heroSection.style.display = 'block';
-    elements.chatContainer.appendChild(elements.heroSection);
+    resetChatDomToHero();
     updateActiveHistoryItem(null);
     elements.userInput.value = '';
     elements.userInput.style.height = '26px';

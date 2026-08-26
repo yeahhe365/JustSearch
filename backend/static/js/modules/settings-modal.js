@@ -5,6 +5,7 @@ import { showToast } from './toast.js';
 import { elements, resetChatDomToHero, showConfirm } from './ui.js?v=43';
 import { t, getLanguage, setLanguage } from './i18n.js?v=1';
 import { setupSettingsSearch } from './settings-search.js?v=2';
+import { initSegmentedGroups, getSegmentedValue, setSegmentedValue } from './settings-segmented.js?v=1';
 import { renderHistory } from './history-view.js?v=28';
 import {
     getModelDisplayName,
@@ -104,6 +105,11 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
         panels.forEach(panel => {
             panel.classList.toggle('active', panel.id === `tab-${activeTabId}`);
         });
+        const activeTabBtn = Array.from(tabs).find(tab => tab.getAttribute('data-tab') === activeTabId);
+        const contentTitle = document.getElementById('settings-content-title');
+        if (contentTitle && activeTabBtn) {
+            contentTitle.textContent = activeTabBtn.querySelector('span')?.textContent?.trim() || activeTabId;
+        }
         safeSetLocalStorageItem(SETTINGS_LAST_TAB_STORAGE_KEY, activeTabId);
         if (activeTabId === 'bridge') {
             wireBridgeSettingsPanel();
@@ -174,6 +180,8 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
     };
 
     closeBtn.addEventListener('click', closeSettingsModal);
+    const contentCloseBtn = document.getElementById('settings-close-btn');
+    if (contentCloseBtn) contentCloseBtn.addEventListener('click', closeSettingsModal);
 
     // 焦点陷阱：在设置模态内循环 Tab，防止跑到背景页面
     const SETTINGS_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
@@ -360,7 +368,6 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
     };
 
     const autoSaveInputs = [
-        'theme-select',
         'engine-select',
         'max-results-input',
         'max-iterations-input',
@@ -386,15 +393,21 @@ export function setupSettingsModal({ updateModelSelector, historyCallbacks, onSe
         }
     });
 
-    // Language select — client-only preference, deliberately OUTSIDE
-    // autoSaveInputs/collectSettingsForm so it never enters the backend payload.
-    const langSelect = document.getElementById('language-select');
-    if (langSelect) {
-        langSelect.addEventListener('change', () => {
-            setLanguage(langSelect.value);
-            if (typeof onLanguageChanged === 'function') onLanguageChanged();
-        });
-    }
+    // Segmented groups (AMC radiogroups). Language stays client-only — it
+    // never enters the backend payload; other keys flow through autosave.
+    initSegmentedGroups({
+        onChange: ({ key }) => {
+            if (key === 'language') {
+                const lang = getSegmentedValue('language');
+                if (lang && lang !== getLanguage()) {
+                    setLanguage(lang);
+                    if (typeof onLanguageChanged === 'function') onLanguageChanged();
+                }
+                return;
+            }
+            requestSettingsAutoSave();
+        },
+    });
 
     // 开启「桌面通知」开关时申请浏览器通知权限（仅申请一次；已拒绝/已授权时不打扰）。
     const completionNotificationInput = document.getElementById('completion-notification-input');
@@ -537,9 +550,8 @@ async function populateSettingsForm(onFilled) {
 function fillSettingsForm(settings) {
     isApplyingSettingsForm = true;
     try {
-        document.getElementById('theme-select').value = settings.theme || 'light';
-        const langSel = document.getElementById('language-select');
-        if (langSel) langSel.value = getLanguage();
+        setSegmentedValue('theme', settings.theme || 'light', { silent: true });
+        setSegmentedValue('language', getLanguage(), { silent: true });
         document.getElementById('engine-select').value = settings.search_engine || 'google';
         document.getElementById('max-results-input').value = normalizeNumberSetting(settings.max_results, 50, 1, 50);
         document.getElementById('max-iterations-input').value = normalizeNumberSetting(settings.max_iterations, 5, 1, 10);
@@ -616,7 +628,7 @@ function collectSettingsForm() {
     const pollIntervalSelect = document.getElementById('bridge-poll-interval-select');
     const citationVerifyInput = document.getElementById('citation-verify-input');
     return {
-        theme: document.getElementById('theme-select').value,
+        theme: getSegmentedValue('theme') || 'light',
         search_engine: document.getElementById('engine-select').value,
         max_results: normalizeNumberSetting(document.getElementById('max-results-input').value, 50, 1, 50),
         max_iterations: normalizeNumberSetting(document.getElementById('max-iterations-input').value, 5, 1, 10),
